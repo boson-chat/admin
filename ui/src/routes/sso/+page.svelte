@@ -79,40 +79,66 @@
 		list-style: none;
 		padding: 0;
 		margin: 0;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
 	}
+	.list li {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		padding: var(--space-3) var(--space-4);
+		border-bottom: 1px solid var(--border-soft);
+	}
+	.list li:last-child {
+		border-bottom: 0;
+	}
+	.list strong {
+		font-family: var(--font-mono);
+	}
+	/* the roadmap is a real sequence (auth phases 2, 3), drawn as a dashed track */
 	.plan {
 		list-style: none;
-		margin: 0;
+		margin: 0 0 0 7px;
 		padding: 0;
 		display: grid;
 		gap: 0;
-		border-left: 2px dashed var(--line-strong);
+		border-left: 2px dashed var(--border-strong);
 	}
 	.plan li {
-		padding: var(--space-3) 0 var(--space-4) var(--space-5);
+		padding: var(--space-3) 0 var(--space-5) var(--space-6);
 		position: relative;
+		max-width: 72ch;
 	}
 	.plan li::before {
 		content: '';
 		position: absolute;
-		left: -7px;
-		top: 18px;
-		width: 12px;
-		height: 12px;
+		left: -8px;
+		top: 16px;
+		width: 14px;
+		height: 14px;
 		border-radius: 50%;
-		background: var(--ink);
-		border: 2px dashed var(--muted);
+		background: var(--bg);
+		border: 2px dashed var(--fg-3);
 	}
 	.phase {
-		font-size: var(--t-xs);
-		color: var(--muted);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--tracking-label);
+		text-transform: uppercase;
+		color: var(--fg-quiet);
+	}
+	.plan h3 {
+		margin: var(--space-1) 0;
 	}
 	.plan p {
-		font-size: var(--t-sm);
+		font-size: var(--text-sm);
+		color: var(--fg-2);
 	}
 	.after {
 		margin-top: var(--space-4);
-		font-size: var(--t-sm);
+		font-size: var(--text-sm);
 		max-width: 70ch;
 	}
 </style>

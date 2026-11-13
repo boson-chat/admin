@@ -48,84 +48,119 @@
 <svelte:head><title>Sign in · boson admin</title></svelte:head>
 
 <div class="wrap">
-	<form class="card" onsubmit={submit} aria-describedby={error ? 'login-error' : undefined}>
-		<div class="brand"><Logo /><span>boson</span><span class="muted">admin</span></div>
-		<h1>Sign in to manage your server</h1>
-		<p class="lede">Use your boson account. Only accounts with the admin role can open the panel.</p>
+	<div class="col">
+		<div class="logo">
+			<div class="mark"><Logo size={26} /><span>Boson</span></div>
+			<div class="tagline">Admin panel</div>
+		</div>
+		<form class="card" onsubmit={submit} aria-describedby={error ? 'login-error' : undefined}>
+			<h1>Sign in to manage your server</h1>
+			<p class="lede">Use your boson account. Only accounts with the admin role can open the panel.</p>
 
-		{#if session.notice && !error}
-			<Notice tone="info">{session.notice}</Notice>
-		{/if}
-		{#if error}
-			<div id="login-error"><Notice>{error}</Notice></div>
-		{/if}
+			{#if session.notice && !error}
+				<Notice tone="info">{session.notice}</Notice>
+			{/if}
+			{#if error}
+				<div id="login-error"><Notice>{error}</Notice></div>
+			{/if}
 
-		<label class="field">
-			<span>Username or email</span>
-			<input
-				type="text"
-				bind:value={login}
-				autocomplete="username"
-				required
-				autocapitalize="none"
-				spellcheck="false"
-			/>
-		</label>
-		<label class="field">
-			<span>Password</span>
-			<input type="password" bind:value={password} autocomplete="current-password" required />
-		</label>
-		<button class="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-		<p class="help muted">
+			<label class="field">
+				<span>Username or email</span>
+				<input
+					type="text"
+					bind:value={login}
+					autocomplete="username"
+					required
+					autocapitalize="none"
+					spellcheck="false"
+				/>
+			</label>
+			<label class="field">
+				<span>Password</span>
+				<input type="password" bind:value={password} autocomplete="current-password" required />
+			</label>
+			<button class="btn btn-primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button
+			>
+		</form>
+		<p class="help">
 			Forgot your password? Reset it from your boson sign-in page, or ask another admin. First admin: create
 			one with <code>auth user create --role admin</code>.
 		</p>
-	</form>
+	</div>
 </div>
 
 <style>
+	/* after the client's LoginScreen: centred wordmark, a single column, mono fields */
 	.wrap {
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
-		padding: var(--space-4);
-		background: radial-gradient(60rem 30rem at 85% -10%, var(--accent-soft), transparent 60%), var(--ink);
+		padding: var(--space-8) var(--space-4);
+		background: var(--bg);
 	}
-	.card {
+	.col {
 		width: min(400px, 100%);
 		display: grid;
-		gap: var(--space-4);
+		gap: var(--space-6);
+	}
+	.logo {
+		text-align: center;
+		margin-bottom: var(--space-4);
+	}
+	.mark {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-3);
+		font-family: var(--font-display);
+		font-size: var(--text-3xl);
+		font-weight: 700;
+		letter-spacing: -0.03em;
+		line-height: var(--leading-tight);
+		color: var(--accent-text);
+	}
+	.mark :global(svg) {
+		color: var(--accent);
+	}
+	.tagline {
+		margin-top: var(--space-2);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--tracking-label);
+		text-transform: uppercase;
+		color: var(--fg-quiet);
+	}
+	.card {
+		display: grid;
+		gap: var(--space-5);
 		padding: var(--space-6);
 		background: var(--surface);
-		border: 1px solid var(--line);
-		border-radius: var(--radius-m);
-	}
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		font-weight: 700;
-		font-size: var(--t-md);
-	}
-	.brand .muted {
-		font-weight: 400;
-		font-size: var(--t-sm);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
 	}
 	h1 {
-		font-size: var(--t-lg);
-		margin-top: var(--space-3);
+		font-size: var(--text-lg);
 	}
 	.lede {
-		color: var(--text-2);
-		font-size: var(--t-sm);
-		margin-top: calc(-1 * var(--space-2));
+		color: var(--fg-2);
+		font-size: var(--text-sm);
+		margin-top: calc(-1 * var(--space-3));
+	}
+	input {
+		min-height: 44px;
+		padding: var(--space-3) var(--space-4);
 	}
 	.btn {
+		width: 100%;
 		min-height: 40px;
-		margin-top: var(--space-2);
+		margin-top: var(--space-1);
 	}
 	.help {
-		font-size: var(--t-xs);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: 1.6;
+		color: var(--fg-quiet);
+		text-align: center;
+		padding: 0 var(--space-2);
 	}
 	@media (max-width: 480px) {
 		.card {

@@ -8,25 +8,30 @@
 </div>
 
 <style>
+	/* boson WarningBanner: a 3px rule on the leading edge over a faint tint */
 	.notice {
 		padding: var(--space-3) var(--space-4);
-		border-radius: var(--radius-s);
 		border: 1px solid;
-		font-size: var(--t-sm);
+		border-left-width: 3px;
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+		font-size: var(--text-sm);
+		line-height: 1.5;
+		color: var(--fg-2);
 	}
 	.bad {
-		color: var(--bad);
-		border-color: color-mix(in srgb, var(--bad) 40%, transparent);
-		background: var(--bad-soft);
+		color: var(--danger-text);
+		background: color-mix(in oklab, var(--danger), transparent 92%);
+		border-color: color-mix(in oklab, var(--danger), transparent 80%);
+		border-left-color: var(--danger);
 	}
 	.warn {
-		color: var(--warn);
-		border-color: color-mix(in srgb, var(--warn) 40%, transparent);
-		background: var(--warn-soft);
+		background: color-mix(in oklab, var(--warn), transparent 92%);
+		border-color: color-mix(in oklab, var(--warn), transparent 80%);
+		border-left-color: var(--warn);
 	}
 	.info {
-		color: var(--text-2);
-		border-color: var(--line-strong);
-		background: var(--surface-2);
+		background: color-mix(in oklab, var(--info), transparent 92%);
+		border-color: color-mix(in oklab, var(--info), transparent 80%);
+		border-left-color: var(--info);
 	}
 </style>

@@ -159,29 +159,43 @@
 		max-width: 420px;
 	}
 	.count {
-		font-size: var(--t-sm);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		font-variant-numeric: tabular-nums;
 	}
 	.name {
+		font-family: var(--font-mono);
 		font-weight: 600;
-		color: var(--text);
+		color: var(--fg);
 		text-decoration: none;
 	}
 	.name:hover {
-		color: var(--accent);
+		color: var(--accent-text);
 		text-decoration: underline;
 	}
 	tr.disabled .name {
-		color: var(--muted);
+		color: var(--fg-quiet);
 	}
 	.small {
-		font-size: var(--t-xs);
+		font-size: var(--text-xs);
 	}
 	.ok {
-		color: var(--ok);
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		color: var(--fg-2);
+	}
+	.ok::before {
+		content: '';
+		width: 6px;
+		height: 6px;
+		border-radius: 999px;
+		background: var(--success);
 	}
 	.empty {
-		color: var(--muted);
-		padding: var(--space-6) 0;
+		color: var(--fg-quiet);
+		padding: var(--space-8) var(--space-4);
+		text-align: center;
 	}
 	.pager {
 		display: flex;

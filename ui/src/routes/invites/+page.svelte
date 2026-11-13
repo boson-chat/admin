@@ -207,24 +207,38 @@
 	.layout {
 		display: grid;
 		grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
-		gap: var(--space-6);
+		gap: var(--space-8);
 		align-items: start;
-		margin-top: var(--space-5);
+		margin-top: var(--space-6);
 	}
 	.create {
 		display: grid;
-		gap: var(--space-4);
+		gap: var(--space-5);
+		padding: var(--space-6);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
 	}
 	.create .btn {
 		justify-self: start;
 	}
+	/* the one-time reveal: the accent is reserved for this moment */
 	.reveal {
 		display: grid;
 		gap: var(--space-3);
-		padding: var(--space-5);
-		border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
-		border-radius: var(--radius-m);
-		background: var(--accent-soft);
+		padding: var(--space-5) var(--space-6);
+		border: 1px solid color-mix(in oklab, var(--accent), transparent 55%);
+		border-left: 3px solid var(--accent);
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+		background: color-mix(in oklab, var(--accent), transparent 92%);
+		animation: reveal var(--motion-medium) var(--ease-out) both;
+	}
+	.reveal h2 {
+		color: var(--accent-text);
+	}
+	.reveal p {
+		color: var(--fg-2);
+		font-size: var(--text-sm);
 	}
 	.reveal > .btn {
 		justify-self: start;
@@ -234,21 +248,36 @@
 		align-items: center;
 		gap: var(--space-3);
 		flex-wrap: wrap;
+		margin: var(--space-1) 0;
 	}
 	.code {
-		font-size: var(--t-md);
-		padding: var(--space-2) var(--space-3);
-		background: var(--ink);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-s);
+		font-size: var(--text-xl);
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		padding: var(--space-3) var(--space-4);
+		background: var(--bg);
+		color: var(--fg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
 		user-select: all;
 		overflow-wrap: anywhere;
 	}
+	.reveal p.small {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+	}
 	.small {
-		font-size: var(--t-xs);
+		font-size: var(--text-xs);
 	}
 	tr.dim td {
-		color: var(--muted);
+		color: var(--fg-quiet);
+	}
+	@keyframes reveal {
+		from {
+			opacity: 0;
+			transform: translateY(-4px);
+		}
 	}
 	@media (max-width: 820px) {
 		.layout {
@@ -258,6 +287,19 @@
 	@media (max-width: 640px) {
 		.hide-s {
 			display: none;
+		}
+		.create {
+			padding: var(--space-5) var(--space-4);
+		}
+		.reveal {
+			padding: var(--space-5) var(--space-4);
+		}
+		.code {
+			font-size: var(--text-base);
+			word-break: break-all;
+		}
+		td .mono {
+			word-break: break-all;
 		}
 	}
 </style>
