@@ -10,6 +10,10 @@ const bff =
 
 export default defineConfig({
 	plugins: [sveltekit()],
+	build: {
+		// Never inline fonts as data: URIs; the BFF's CSP allows `font-src 'self'` only.
+		assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf)$/.test(file) ? false : undefined)
+	},
 	server: {
 		proxy: {
 			'/api': { target: bff, changeOrigin: true, headers: { origin: bff } }
