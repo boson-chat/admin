@@ -219,8 +219,8 @@
 
 <style>
 	.summary {
-		font-size: var(--t-md);
-		color: var(--text);
+		font-size: var(--text-lg);
+		color: var(--fg);
 	}
 	.actions {
 		display: flex;
@@ -229,70 +229,82 @@
 		flex-wrap: wrap;
 	}
 	.checked {
-		font-size: var(--t-xs);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
 		margin-right: var(--space-2);
 	}
 	.small {
-		font-size: var(--t-xs);
+		font-size: var(--text-xs);
 	}
 	.err {
-		color: var(--bad);
+		color: var(--danger-text);
+		font-family: var(--font-mono);
 		margin-top: 2px;
 	}
 	.group {
-		color: var(--text-2);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
 		font-weight: 600;
-		margin: var(--space-5) 0 var(--space-2);
+		letter-spacing: var(--tracking-label);
+		text-transform: uppercase;
+		color: var(--fg-quiet);
+		margin: var(--space-6) 0 var(--space-2);
 	}
+	/* stat tiles: hairline grid of raised cells, like the client's server list */
 	.stats {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-		border-top: 1px solid var(--line);
-		border-left: 1px solid var(--line);
+		/* tiles overlap by 1px so neighbours share one hairline */
+		padding: 1px 0 0 1px;
 	}
 	.stat {
 		display: grid;
 		align-content: start;
 		gap: var(--space-1);
 		padding: var(--space-4);
-		border-right: 1px solid var(--line);
-		border-bottom: 1px solid var(--line);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		margin: -1px 0 0 -1px;
 		min-height: 128px;
 	}
 	.label {
-		color: var(--muted);
-		font-size: var(--t-sm);
+		color: var(--fg-2);
+		font-size: var(--text-sm);
 	}
 	.value {
-		font-size: var(--t-xl);
-		font-weight: 650;
-		letter-spacing: -0.02em;
+		font-family: var(--font-mono);
+		font-size: var(--text-3xl);
+		font-weight: 600;
+		letter-spacing: -0.03em;
 		line-height: 1.1;
+		font-variant-numeric: tabular-nums;
 	}
 	.value small {
-		font-size: var(--t-sm);
+		font-size: var(--text-sm);
 		font-weight: 500;
-		color: var(--muted);
+		letter-spacing: 0;
+		color: var(--fg-quiet);
 		margin-left: 2px;
 	}
 	.value.nodata {
-		color: var(--muted);
+		color: var(--fg-3);
 	}
 	.parts {
 		list-style: none;
 		margin: var(--space-1) 0 0;
 		padding: 0;
-		font-size: var(--t-xs);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
 		display: grid;
 		gap: 2px;
 	}
 	.parts li {
 		display: flex;
 		justify-content: space-between;
-		color: var(--text-2);
+		color: var(--fg-2);
 	}
 	.parts li.bad {
-		color: var(--warn);
+		color: var(--warn-text);
 	}
 	@media (max-width: 640px) {
 		.hide-s {

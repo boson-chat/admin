@@ -1,24 +1,22 @@
-<svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
-	<ellipse
-		cx="16"
-		cy="16"
-		rx="13"
-		ry="5.5"
-		fill="none"
-		stroke="var(--accent)"
-		stroke-width="2"
-		transform="rotate(-30 16 16)"
-	/>
-	<ellipse
-		cx="16"
-		cy="16"
-		rx="13"
-		ry="5.5"
-		fill="none"
-		stroke="var(--accent)"
-		stroke-opacity="0.45"
-		stroke-width="1.5"
-		transform="rotate(30 16 16)"
-	/>
-	<circle cx="16" cy="16" r="4" fill="var(--accent)" />
+<script lang="ts">
+	// boson's orbital-electron mark (BosonGlyph in the boson design system),
+	// drawn in currentColor.
+	let { size = 18 }: { size?: number } = $props();
+</script>
+
+<svg
+	width={size}
+	height={size}
+	viewBox="0 0 24 24"
+	fill="none"
+	stroke="currentColor"
+	stroke-width="2"
+	stroke-linecap="round"
+	stroke-linejoin="round"
+	aria-hidden="true"
+>
+	<circle cx="12" cy="12" r="2" fill="currentColor" />
+	<ellipse cx="12" cy="12" rx="10" ry="4" />
+	<ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)" />
+	<ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)" />
 </svg>

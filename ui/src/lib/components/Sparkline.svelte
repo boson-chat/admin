@@ -45,7 +45,7 @@
 		vector-effect: non-scaling-stroke;
 	}
 	.area {
-		fill: var(--accent-soft);
+		fill: var(--accent-dim);
 		stroke: none;
 	}
 </style>

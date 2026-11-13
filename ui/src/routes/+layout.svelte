@@ -1,6 +1,6 @@
 <script lang="ts">
-	import '@fontsource-variable/atkinson-hyperlegible-next';
-	import '@fontsource-variable/atkinson-hyperlegible-mono';
+	import '@fontsource-variable/inter';
+	import '@fontsource-variable/jetbrains-mono';
 	import '../app.css';
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/state';
@@ -60,6 +60,14 @@
 		gap: var(--space-3);
 		padding: var(--space-4);
 		text-align: center;
+	}
+	.boot h1 {
+		font-size: var(--text-xl);
+	}
+	.boot p {
+		color: var(--fg-2);
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
 	}
 	.boot .btn {
 		justify-self: center;

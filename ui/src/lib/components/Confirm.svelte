@@ -38,7 +38,10 @@
 
 <dialog bind:this={dialog} aria-labelledby="dlg-title">
 	<form method="dialog">
-		<h2 id="dlg-title">{title}</h2>
+		<header>
+			<h2 id="dlg-title">{title}</h2>
+			<button class="close" value="cancel" aria-label="Close" disabled={busy}>×</button>
+		</header>
 		<div class="body">{@render children()}</div>
 		<div class="actions">
 			<button class="btn btn-ghost" value="cancel" disabled={busy}>Cancel</button>
@@ -53,26 +56,68 @@
 </dialog>
 
 <style>
+	/* boson Modal */
 	dialog {
-		width: min(440px, calc(100vw - 32px));
-		padding: var(--space-5);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-m);
-		background: var(--raised);
-		color: var(--text);
+		width: min(460px, calc(100vw - 32px));
+		padding: 0;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		background: var(--surface);
+		color: var(--fg);
 		box-shadow: var(--shadow);
 	}
+	dialog[open] {
+		animation: rise var(--motion-medium) var(--ease-in-out) both;
+	}
 	dialog::backdrop {
-		background: #05070c99;
+		background: var(--backdrop);
+	}
+	header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		padding: var(--space-4) var(--space-5);
+		border-bottom: 1px solid var(--border);
+	}
+	h2 {
+		font-size: var(--text-lg);
+		overflow-wrap: anywhere;
+	}
+	.close {
+		flex: none;
+		width: 28px;
+		height: 28px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		background: none;
+		border: 0;
+		border-radius: var(--radius-sm);
+		color: var(--fg-quiet);
+		font-size: var(--text-xl);
+		line-height: 1;
+		cursor: pointer;
+	}
+	.close:hover {
+		color: var(--fg);
+		background: var(--surface-hover);
 	}
 	.body {
-		margin: var(--space-3) 0 var(--space-5);
-		color: var(--text-2);
-		font-size: var(--t-sm);
+		padding: var(--space-5);
+		color: var(--fg-2);
+		font-size: var(--text-base);
 	}
 	.actions {
 		display: flex;
 		justify-content: flex-end;
 		gap: var(--space-2);
+		padding: 0 var(--space-5) var(--space-5);
+	}
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(8px) scale(0.985);
+		}
 	}
 </style>

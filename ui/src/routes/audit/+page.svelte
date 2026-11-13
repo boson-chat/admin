@@ -159,21 +159,33 @@
 		grid-template-columns: minmax(200px, 260px) minmax(200px, 280px) minmax(160px, 200px) auto;
 		gap: var(--space-4);
 		align-items: end;
+		padding: var(--space-4) var(--space-5);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
 	}
 	.btns {
 		display: flex;
 		gap: var(--space-2);
 	}
+	.btns .btn {
+		min-height: 38px;
+	}
 	.note {
-		font-size: var(--t-xs);
+		font-size: var(--text-xs);
+		font-family: var(--font-mono);
+		line-height: 1.6;
 		margin: var(--space-3) 0 var(--space-5);
 		max-width: 80ch;
 	}
 	.small {
-		font-size: var(--t-xs);
+		font-size: var(--text-xs);
 	}
 	.when {
 		white-space: nowrap;
+	}
+	.when .small {
+		font-family: var(--font-mono);
 	}
 	.ev {
 		display: inline-flex;
@@ -185,26 +197,27 @@
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: var(--line-strong);
+		background: var(--fg-3);
 		flex: none;
 	}
 	.ev[data-tone='bad'] {
-		color: var(--bad);
+		color: var(--danger-text);
 	}
 	.ev[data-tone='bad']::before {
-		background: var(--bad);
+		background: var(--danger);
 	}
 	.ev[data-tone='admin']::before {
 		background: var(--accent);
 	}
 	.details {
-		color: var(--text-2);
-		font-size: var(--t-xs);
+		color: var(--fg-2);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
 		max-width: 32ch;
 		overflow-wrap: anywhere;
 	}
 	.empty {
-		padding: var(--space-5) 0;
+		padding: var(--space-6) 0;
 	}
 	@media (max-width: 1000px) {
 		.filters {
@@ -217,6 +230,7 @@
 	@media (max-width: 640px) {
 		.filters {
 			grid-template-columns: 1fr;
+			padding: var(--space-4);
 		}
 		.hide-s {
 			display: none;
