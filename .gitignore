@@ -1,0 +1,27 @@
+# Go build output and binaries
+/bin/
+/dist/
+/admin
+*.exe
+*.test
+*.out
+coverage.*
+go.work
+go.work.sum
+
+# UI dependencies and build output (embedded into the Go binary at build time)
+node_modules/
+/ui/build/
+/ui/.svelte-kit/
+/ui/test-results/
+/ui/playwright-report/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
