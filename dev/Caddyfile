@@ -1,0 +1,14 @@
+# Dev-only: the panel behind Caddy with a local CA, as in the stack.
+{
+	admin off
+	auto_https disable_redirects
+}
+
+:80 {
+	respond "boson" 200
+}
+
+admin.localhost {
+	tls internal
+	reverse_proxy admin:8080
+}

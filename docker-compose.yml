@@ -1,0 +1,113 @@
+# Local development: the whole login → users flow against a real auth
+# service, plus voice and metrics so the stack overview has something to show.
+#
+#   make dev-env        # once: writes .env with fresh dev secrets
+#   make dev-up         # builds and starts everything
+#   make dev-admin      # creates an admin account in the auth service
+#
+# Panel: http://localhost:8090 (or https://admin.localhost:8443 via Caddy)
+# Auth API: http://localhost:8080   Mailpit: http://localhost:8025
+# VictoriaMetrics: http://localhost:8428
+#
+# Builds ../auth and ../quicvoice from their checkouts (sibling directories).
+name: boson-admin-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?run make dev-env}
+      POSTGRES_DB: auth
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "auth"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:8025:8025"
+
+  auth:
+    build: ../auth
+    environment:
+      ENV: development
+      PUBLIC_URL: http://localhost:8080
+      COOKIE_SECURE: "false"
+      DATABASE_URL: postgres://auth:${DB_PASSWORD}@postgres:5432/auth?sslmode=disable
+      AUTH_KEY_ENCRYPTION_KEY: ${AUTH_KEY_ENCRYPTION_KEY:?run make dev-env}
+      REGISTRATION: invite
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: none
+      # The panel forwards the admin's IP; trust it from the compose network.
+      TRUSTED_PROXIES: 172.16.0.0/12,192.168.0.0/16
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  admin:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    environment:
+      ENV: development
+      LOG_LEVEL: debug
+      PUBLIC_URL: http://localhost:8090
+      COOKIE_SECURE: "false"
+      SESSION_KEY: ${SESSION_KEY:?run make dev-env}
+      AUTH_URL: http://auth:8080
+      AUTH_INTERNAL_URL: http://auth:8081
+      HEALTH_TARGETS: >-
+        auth=http://auth:8081/healthz,auth=http://auth:8081/readyz,
+        quicvoiced=http://quicvoiced:8080/healthz,
+        caddy=http://caddy:80/
+      VERSION_TARGETS: auth=http://auth:8081/metrics,quicvoiced=http://quicvoiced:8080/version
+      # A public cert (valid) and the dev Caddy's internal-CA cert (untrusted).
+      TLS_CHECK_HOSTS: example.com:443,admin.localhost:443@caddy:443
+      METRICS_URL: ${METRICS_URL:-http://victoriametrics:8428}
+      GRAFANA_URL: ${GRAFANA_URL:-}
+    ports:
+      - "127.0.0.1:8090:8080"
+    depends_on: [auth]
+
+  # The stack's TLS front, here with Caddy's internal CA.
+  caddy:
+    image: caddy:2.10-alpine
+    volumes:
+      - ./dev/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:8443:443"
+    depends_on: [admin]
+
+  quicvoiced:
+    build: ../quicvoice
+    profiles: [voice]
+    environment:
+      ENV: development
+      AUTH_INSECURE: "true"
+      HTTP_ADDR: ":8080"
+      QUIC_ADDR: ":7700"
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.131.0
+    profiles: [metrics]
+    command:
+      - -promscrape.config=/etc/vm/scrape.yml
+      - -retentionPeriod=7d
+    volumes:
+      - ./dev/scrape.yml:/etc/vm/scrape.yml:ro
+      - vmdata:/victoria-metrics-data
+    ports:
+      - "127.0.0.1:8428:8428"
+
+volumes:
+  pgdata:
+  vmdata:
