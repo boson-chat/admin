@@ -56,6 +56,7 @@ type AuthClientImpl interface {
 	// Roles (auth >= 1.5.0).
 	ListPermissions(ctx context.Context, accessToken string) ([]Permission, error)
 	ListRoles(ctx context.Context, accessToken string) ([]Role, error)
+	GetRole(ctx context.Context, accessToken, id string) (*Role, error)
 	CreateRole(ctx context.Context, accessToken string, in RoleInput) (*Role, error)
 	UpdateRole(ctx context.Context, accessToken, id string, in RoleInput) (*Role, error)
 	DeleteRole(ctx context.Context, accessToken, id string) error

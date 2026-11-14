@@ -26,9 +26,12 @@ func (h *harness) loginAs(username, password string) (*http.Cookie, string) {
 	return sessionCookie(w), v.CSRFToken
 }
 
+// moderator signs in as a "Helper": admin.panel, users.view and
+// users.moderate. (auth's built-in Moderator has no admin.panel.)
 func (h *harness) moderator() (*http.Cookie, string) {
+	h.fake.Roles = append(h.fake.Roles, rolesFixture("rol_helper", "Helper", 300, admin.PermPanel, admin.PermUsersView, admin.PermUsersModerate))
 	h.fake.AddUser("usr_mod", "mod", "user", "mod password")
-	h.fake.SetRoles("usr_mod", authapitest.RoleModerator)
+	h.fake.SetRoles("usr_mod", "rol_helper")
 	return h.loginAs("mod", "mod password")
 }
 
@@ -61,13 +64,16 @@ func TestGatingTable(t *testing.T) {
 		}
 		w := h.do(method, p, body, withCookie(c), withHeader(CSRFHeader, csrf))
 		code := errCode(t, w.Body.String())
-		allowed := rt.Perm == "" || slices.Contains(modPerms, rt.Perm)
+		allowed := rt.Perm == ""
+		for _, p := range strings.Split(rt.Perm, "|") {
+			allowed = allowed || slices.Contains(modPerms, p)
+		}
 		switch {
 		case !allowed && (w.Code != 403 || code != "missing_permission"):
 			t.Errorf("%s: want 403 missing_permission, got %d %s", rt.Pattern, w.Code, w.Body)
 		case allowed && code == "missing_permission":
 			t.Errorf("%s: moderator refused: %s", rt.Pattern, w.Body)
-		case !allowed && !strings.Contains(w.Body.String(), rt.Perm):
+		case !allowed && !strings.Contains(w.Body.String(), strings.Split(rt.Perm, "|")[0]):
 			t.Errorf("%s: message doesn't name %s: %s", rt.Pattern, rt.Perm, w.Body)
 		}
 		if sc := sessionCookie(w); sc != nil && sc.MaxAge == -1 {
@@ -90,13 +96,19 @@ func TestSessionCarriesPermissions(t *testing.T) {
 	if !v.RolesSupported || !slices.Contains(v.Permissions, "users.view") || slices.Contains(v.Permissions, "users.manage") {
 		t.Fatalf("permissions: %+v", v)
 	}
-	if len(v.Roles) != 1 || v.Roles[0].Name != "Moderator" {
+	if len(v.Roles) != 1 || v.Roles[0].Name != "Helper" {
 		t.Fatalf("roles: %+v", v.Roles)
 	}
 }
 
 func TestLoginNeedsAdminPanel(t *testing.T) {
 	h := newHarness(t)
+	// auth's Moderator works on IRC and voice, not in the panel.
+	h.fake.AddUser("usr_m", "m", "user", "m password")
+	h.fake.SetRoles("usr_m", authapitest.RoleModerator)
+	if w := h.do("POST", "/api/login", map[string]string{"login": "m", "password": "m password"}, withHeader(LoginHeader, "x")); w.Code != 403 {
+		t.Fatalf("moderator: %d %s", w.Code, w.Body)
+	}
 	// A custom role without admin.panel doesn't open the panel…
 	h.fake.Roles = append(h.fake.Roles, rolesFixture("rol_dj", "DJ", 20, "voice.manage_any"))
 	h.fake.AddUser("usr_dj", "dj", "user", "dj password")
@@ -105,7 +117,7 @@ func TestLoginNeedsAdminPanel(t *testing.T) {
 	if w.Code != 403 || errCode(t, w.Body.String()) != "not_admin" || sessionCookie(w) != nil {
 		t.Fatalf("no admin.panel: %d %s", w.Code, w.Body)
 	}
-	if h.fake.LogoutCalls.Load() != 1 {
+	if h.fake.LogoutCalls.Load() != 2 {
 		t.Fatal("the refused session was left behind")
 	}
 	// …admin.panel alone does, and every page but the panel itself is closed.
@@ -177,7 +189,7 @@ func TestRoleEndpoints(t *testing.T) {
 	w = h.do("POST", "/api/roles", map[string]any{"name": "  DJ   crew ", "color": "#AA00FF", "permissions": []string{"irc.kill", "irc.kill"},
 		"irc": map[string]any{"whois_line": "is on the decks", "vhost": "{username}.dj.boson.chat", "oper": false}}, auth...)
 	if w.Code != 201 || !strings.Contains(w.Body.String(), `"name":"DJ crew"`) || !strings.Contains(w.Body.String(), `"color":"#aa00ff"`) ||
-		!strings.Contains(w.Body.String(), `"permissions":["irc.kill"]`) {
+		!strings.Contains(w.Body.String(), `"permissions":["irc.kill"]`) || !strings.Contains(w.Body.String(), `"oper":true`) {
 		t.Fatalf("create: %d %s", w.Code, w.Body)
 	}
 	var created struct {
@@ -188,8 +200,9 @@ func TestRoleEndpoints(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created.Role.ID
 
-	w = h.do("PATCH", "/api/roles/"+id, map[string]any{"color": nil, "hoist": true}, auth...)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"color":null`) || !strings.Contains(w.Body.String(), `"hoist":true`) {
+	w = h.do("PATCH", "/api/roles/"+id, map[string]any{"color": nil, "hoist": true, "irc": map[string]any{"whois_line": "", "vhost": nil, "oper": true}}, auth...)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"color":null`) || !strings.Contains(w.Body.String(), `"hoist":true`) ||
+		!strings.Contains(w.Body.String(), `"whois_line":null,"vhost":null`) {
 		t.Fatalf("patch: %d %s", w.Code, w.Body)
 	}
 	// Admins can't grant what they lack (the Admin role has no roles.owner).
@@ -207,7 +220,7 @@ func TestRoleEndpoints(t *testing.T) {
 		t.Fatalf("add member: %d %s", w.Code, w.Body)
 	}
 	w = h.do("GET", "/api/roles/"+id+"/members", nil, auth...)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"username":"bob"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"username":"bob"`) || !strings.Contains(w.Body.String(), `"assigned_at"`) {
 		t.Fatalf("members: %d %s", w.Code, w.Body)
 	}
 	w = h.do("GET", "/api/users/usr_bob", nil, auth...)
@@ -228,18 +241,26 @@ func TestRoleEndpoints(t *testing.T) {
 		t.Fatalf("set roles: %d %s", w.Code, w.Body)
 	}
 
-	order := []string{authapitest.RoleOwner, authapitest.RoleAdmin, id, authapitest.RoleModerator, authapitest.RoleMember}
+	// a subset, most senior first: the new role swaps places with Moderator
+	order := []string{id, authapitest.RoleModerator}
 	w = h.do("POST", "/api/roles/reorder", map[string]any{"order": order}, auth...)
-	if w.Code != 200 || strings.Join(h.fake.LastOrder, ",") != strings.Join(order, ",") || !strings.Contains(w.Body.String(), `"roles":[{"id":"rol_owner"`) {
+	if w.Code != 200 || strings.Join(h.fake.LastOrder, ",") != strings.Join(order, ",") ||
+		!strings.Contains(w.Body.String(), `"roles":[{"id":"rol_owner"`) || strings.Index(w.Body.String(), id) > strings.Index(w.Body.String(), `"rol_moderator"`) {
 		t.Fatalf("reorder: %d %s %v", w.Code, w.Body, h.fake.LastOrder)
+	}
+	if w := h.do("POST", "/api/roles/reorder", map[string]any{"order": []string{authapitest.RoleAdmin, id}}, auth...); w.Code != 403 {
+		t.Fatalf("moving Admin as an Admin: %d %s", w.Code, w.Body)
 	}
 	if w := h.do("POST", "/api/roles/reorder", map[string]any{"order": []string{id, id}}, auth...); w.Code != 400 {
 		t.Fatalf("duplicate order: %d", w.Code)
 	}
 
 	w = h.do("DELETE", "/api/roles/"+authapitest.RoleModerator, nil, auth...)
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "Built-in roles can't be deleted") {
+	if w.Code != 409 || errCode(t, w.Body.String()) != "builtin_role" || !strings.Contains(w.Body.String(), "Built-in roles can't be deleted") {
 		t.Fatalf("delete builtin: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("GET", "/api/roles/"+id, nil, auth...); w.Code != 200 || !strings.Contains(w.Body.String(), `"slug":"dj-crew"`) {
+		t.Fatalf("get: %d %s", w.Code, w.Body)
 	}
 	if w := h.do("DELETE", "/api/roles/"+id, nil, auth...); w.Code != 204 {
 		t.Fatalf("delete: %d %s", w.Code, w.Body)

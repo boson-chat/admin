@@ -26,6 +26,15 @@ func (h *Handlers) listRoles(w http.ResponseWriter, r *http.Request, s *session.
 	writeJSON(w, http.StatusOK, map[string]any{"roles": list})
 }
 
+func (h *Handlers) getRole(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	role, err := h.Admin.GetRole(r.Context(), s, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"role": role})
+}
+
 func (h *Handlers) createRole(w http.ResponseWriter, r *http.Request, s *session.Session) {
 	var in authapi.RoleInput
 	if err := decode(w, r, &in); err != nil {

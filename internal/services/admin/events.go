@@ -12,6 +12,7 @@ var AuditEvents = []string{
 	"signing_key_created", "settings_updated", "admin_password_reset_sent", "admin_verification_sent",
 	"sso_identity_linked", "sso_identity_unlinked", "sso_login_failed",
 	"sso_provider_created", "sso_provider_updated", "sso_provider_deleted",
+	"role_created", "role_updated", "role_deleted", "user_roles_changed",
 }
 
 // expandEvents turns a filter ("login", "admin_*", "admin_*,settings_updated")

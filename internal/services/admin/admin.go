@@ -104,6 +104,7 @@ type AdminServiceImpl interface {
 
 	ListPermissions(ctx context.Context, s *session.Session) (*PermissionList, error)
 	ListRoles(ctx context.Context, s *session.Session) ([]authapi.Role, error)
+	GetRole(ctx context.Context, s *session.Session, id string) (*authapi.Role, error)
 	CreateRole(ctx context.Context, s *session.Session, in authapi.RoleInput) (*authapi.Role, error)
 	UpdateRole(ctx context.Context, s *session.Session, id string, in authapi.RoleInput) (*authapi.Role, error)
 	DeleteRole(ctx context.Context, s *session.Session, id string) error

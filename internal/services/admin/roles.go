@@ -46,23 +46,46 @@ func (s *AdminService) ListRoles(ctx context.Context, sess *session.Session) ([]
 var (
 	colorRe = regexp.MustCompile(`^#[0-9a-f]{6}$`)
 	permRe  = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
-	// A vhost template: hostname labels made of letters, digits, dashes and
-	// {username} placeholders, at least two labels.
-	vhostRe = regexp.MustCompile(`^([a-zA-Z0-9-]|\{username\})+(\.([a-zA-Z0-9-]|\{username\})+)+$`)
+	// auth's role name rule: ASCII letters, digits, space, - and _.
+	nameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]{1,32}$`)
+	// Ergo's default vhost rule, which every rendering must pass.
+	vhostCharsRe = regexp.MustCompile(`^[0-9A-Za-z.\-_/]+$`)
 )
 
 const (
-	maxRoleName  = 32
 	maxWhoisLine = 120
-	maxVhost     = 63
+	// Ergo's vhost max-length; checked with a 30-character username.
+	maxVhost            = 64
+	longestUsername     = 30
+	usernamePlaceholder = "{username}"
 )
+
+// VhostProblem explains why a vhost template isn't one auth accepts, or "".
+// Mirrors auth: static characters [0-9A-Za-z.-_/] plus {username}, at most
+// 64 bytes with a 30-character username, no leading or trailing . or /, no
+// .. or //.
+func VhostProblem(t string) string {
+	sample := strings.ReplaceAll(t, usernamePlaceholder, strings.Repeat("u", longestUsername))
+	static := strings.ReplaceAll(t, usernamePlaceholder, "u")
+	switch {
+	case !vhostCharsRe.MatchString(static):
+		return "a vhost uses letters, digits, . - _ / and {username} only"
+	case len(sample) > maxVhost:
+		return "the vhost is too long: at most 64 characters with a 30-character username"
+	case strings.HasPrefix(static, ".") || strings.HasPrefix(static, "/") || strings.HasSuffix(static, ".") || strings.HasSuffix(static, "/"):
+		return "a vhost can't start or end with . or /"
+	case strings.Contains(static, "..") || strings.Contains(static, "//"):
+		return "a vhost can't contain .. or //"
+	}
+	return ""
+}
 
 // validateRole normalises and checks a create (Name required) or patch.
 func validateRole(in *authapi.RoleInput, create bool) error {
 	if in.Name != nil {
 		*in.Name = strings.Join(strings.Fields(*in.Name), " ")
-		if n := len([]rune(*in.Name)); n == 0 || n > maxRoleName {
-			return apperr.Invalid("a role name is 1–32 characters")
+		if !nameRe.MatchString(*in.Name) {
+			return apperr.Invalid("a role name is 1–32 letters, digits, spaces, - or _")
 		}
 	} else if create {
 		return apperr.Invalid("a role needs a name")
@@ -90,21 +113,28 @@ func validateRole(in *authapi.RoleInput, create bool) error {
 		*in.Permissions = seen
 	}
 	if irc := in.IRC; irc != nil {
-		irc.WhoisLine = strings.TrimSpace(irc.WhoisLine)
-		if len([]rune(irc.WhoisLine)) > maxWhoisLine {
-			return apperr.Invalid("the WHOIS line is at most 120 characters")
-		}
-		if strings.IndexFunc(irc.WhoisLine, unicode.IsControl) >= 0 {
-			return apperr.Invalid("the WHOIS line can't contain control characters or line breaks")
-		}
-		irc.Vhost = strings.ToLower(strings.TrimSpace(irc.Vhost))
-		irc.Vhost = strings.ReplaceAll(irc.Vhost, "{USERNAME}", "{username}")
-		if irc.Vhost != "" {
-			if !vhostRe.MatchString(irc.Vhost) {
-				return apperr.Invalid("a vhost is a hostname like {username}.staff.example.com: letters, digits, dashes, dots and {username}")
+		// Empty clears (sent as null): the default WHOIS line, no vhost.
+		if irc.WhoisLine != nil {
+			w := strings.TrimSpace(*irc.WhoisLine)
+			switch {
+			case w == "":
+				irc.WhoisLine = nil
+			case len([]rune(w)) > maxWhoisLine:
+				return apperr.Invalid("the WHOIS line is at most 120 characters")
+			case strings.IndexFunc(w, unicode.IsControl) >= 0:
+				return apperr.Invalid("the WHOIS line can't contain control characters or line breaks")
+			default:
+				irc.WhoisLine = &w
 			}
-			if len(strings.ReplaceAll(irc.Vhost, "{username}", "")) > maxVhost {
-				return apperr.Invalid("the vhost is too long (63 characters at most, besides {username})")
+		}
+		if irc.Vhost != nil {
+			v := strings.TrimSpace(*irc.Vhost)
+			if v == "" {
+				irc.Vhost = nil
+			} else if p := VhostProblem(v); p != "" {
+				return apperr.Invalid(p)
+			} else {
+				irc.Vhost = &v
 			}
 		}
 	}
@@ -113,18 +143,11 @@ func validateRole(in *authapi.RoleInput, create bool) error {
 
 // roleFriendly rewrites the auth service's role errors for the panel.
 var roleFriendly = map[string]string{
-	"role_builtin":         "Built-in roles can't be deleted.",
-	"builtin_role":         "Built-in roles can't be deleted.",
-	"role_name_taken":      "Another role already has that name.",
-	"name_taken":           "Another role already has that name.",
-	"role_hierarchy":       "You can only change roles below your own highest role.",
-	"permission_not_held":  "You can't grant a permission you don't have yourself.",
-	"cannot_grant":         "You can't grant a permission you don't have yourself.",
-	"unknown_permission":   "One of those permissions doesn't exist on this auth service.",
-	"invalid_vhost":        "The IRC server rejected that vhost template.",
-	"owner_required":       "Only someone with the “Manage the Owner role” permission can do that.",
-	"last_owner":           "This would leave the network without an Owner.",
-	"member_role_implicit": "Everyone has the Member role; it can't be assigned or removed.",
+	"builtin_role":        "Built-in roles can't be deleted.",
+	"role_name_taken":     "Another role already has that name (or one that only differs in case, spaces or dashes).",
+	"role_hierarchy":      "You can only change roles, and people, below your own highest role.",
+	"permission_not_held": "You can't grant a permission you don't have yourself.",
+	"last_owner":          "This would leave the network without an Owner.",
 }
 
 func rolesFriendly(err error) error {
@@ -134,6 +157,12 @@ func rolesFriendly(err error) error {
 		}
 	}
 	return err
+}
+
+func (s *AdminService) GetRole(ctx context.Context, sess *session.Session, id string) (*authapi.Role, error) {
+	var out *authapi.Role
+	err := s.call(ctx, sess, func(at string) (err error) { out, err = s.Client.GetRole(ctx, at, id); return })
+	return out, err
 }
 
 func (s *AdminService) CreateRole(ctx context.Context, sess *session.Session, in authapi.RoleInput) (*authapi.Role, error) {

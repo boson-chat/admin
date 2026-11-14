@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -74,33 +75,47 @@ func TestValidateRole(t *testing.T) {
 		{},                 // create without a name
 		{Name: str("   ")}, // blank
 		{Name: str(strings.Repeat("x", 33))},
+		{Name: str("DJ!")}, // auth: letters, digits, space, - and _
 		{Name: str("x"), Color: str("red")},
 		{Name: str("x"), Color: str("#12345")},
 		{Name: str("x"), Permissions: &[]string{"Users View"}},
-		{Name: str("x"), IRC: &authapi.RoleIRC{WhoisLine: "two\nlines"}},
-		{Name: str("x"), IRC: &authapi.RoleIRC{WhoisLine: strings.Repeat("w", 121)}},
-		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: "nodots"}},
-		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: "{user}.staff.example.com"}},
-		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: "a..b"}},
-		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: "has space.example.com"}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{WhoisLine: str("two\nlines")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{WhoisLine: str(strings.Repeat("w", 121))}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str("{user}.staff.example.com")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str("a..b")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str("staff//{username}")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str(".{username}.example.com")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str("{username}.example.com/")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str("has space.example.com")}},
+		{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str("{username}." + strings.Repeat("a", 34))}}, // 30+1+34 = 65 bytes
 	}
 	for i, in := range bad {
 		if err := validateRole(&in, true); err == nil {
 			t.Errorf("case %d accepted: %+v", i, in)
 		}
 	}
+	for _, v := range []string{"{username}.staff.boson.chat", "staff/{username}", "users.boson.chat", "{username}." + strings.Repeat("a", 33), "Night_Shift.example.com"} {
+		in := authapi.RoleInput{Name: str("x"), IRC: &authapi.RoleIRC{Vhost: str(v)}}
+		if err := validateRole(&in, true); err != nil {
+			t.Errorf("vhost %q refused: %v", v, err)
+		}
+	}
 	in := authapi.RoleInput{Name: str(" Night  shift "), Color: str(" #AABBCC "), Permissions: &[]string{"users.view", "admin.panel", "users.view"},
-		IRC: &authapi.RoleIRC{WhoisLine: " is on nights ", Vhost: "{USERNAME}.Night.Example.com"}}
+		IRC: &authapi.RoleIRC{WhoisLine: str(" is on nights "), Vhost: str(" {username}.night.example.com ")}}
 	if err := validateRole(&in, true); err != nil {
 		t.Fatal(err)
 	}
 	if *in.Name != "Night shift" || *in.Color != "#aabbcc" || strings.Join(*in.Permissions, ",") != "admin.panel,users.view" ||
-		in.IRC.WhoisLine != "is on nights" || in.IRC.Vhost != "{username}.night.example.com" {
+		*in.IRC.WhoisLine != "is on nights" || *in.IRC.Vhost != "{username}.night.example.com" {
 		t.Fatalf("normalised: %+v %+v", in, in.IRC)
 	}
-	empty := authapi.RoleInput{Color: str("")}
-	if err := validateRole(&empty, false); err != nil || !empty.ClearColor {
-		t.Fatalf("empty colour should clear: %v %+v", err, empty)
+	empty := authapi.RoleInput{Color: str(""), IRC: &authapi.RoleIRC{WhoisLine: str(" "), Vhost: str("")}}
+	if err := validateRole(&empty, false); err != nil || !empty.ClearColor || empty.IRC.WhoisLine != nil || empty.IRC.Vhost != nil {
+		t.Fatalf("empty values should clear: %v %+v %+v", err, empty, empty.IRC)
+	}
+	b, _ := json.Marshal(empty)
+	if string(b) != `{"color":null,"irc":{"whois_line":null,"vhost":null,"oper":false}}` {
+		t.Fatalf("wire: %s", b)
 	}
 }
 

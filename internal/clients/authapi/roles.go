@@ -38,21 +38,26 @@ type Permission struct {
 }
 
 // RoleIRC is how a role shows up on IRC: each role is an Ergo oper class.
+// On writes nil WhoisLine / Vhost are sent as null, which clears them.
 type RoleIRC struct {
-	// WhoisLine is the oper class's /whois line (RPL_WHOISOPERATOR).
-	WhoisLine string `json:"whois_line"`
-	// Vhost is a template such as "{username}.staff.boson.chat"; empty = none.
-	Vhost string `json:"vhost"`
-	// Oper: holders are opered up (get the role's irc.* capabilities) on login.
+	// WhoisLine is the oper class's /whois line (RPL_WHOISOPERATOR);
+	// nil = auth's default, "is a <name>".
+	WhoisLine *string `json:"whois_line"`
+	// Vhost is a template such as "{username}.staff.boson.chat"; nil = none.
+	Vhost *string `json:"vhost"`
+	// Oper: holders are opered up on login. Effective in responses: true
+	// whenever the role has an irc.* permission.
 	Oper bool `json:"oper"`
 }
 
 // Role is a network-wide role.
 type Role struct {
-	ID    string  `json:"id"`
-	Name  string  `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Slug is the Ergo oper class name (lower-cased name, spaces as dashes).
+	Slug  string  `json:"slug,omitempty"`
 	Color *string `json:"color"`
-	// Position: higher is more senior.
+	// Position: higher is more senior (Owner 1000, Member 0).
 	Position int `json:"position"`
 	// Builtin is owner | admin | moderator | member, or nil for custom roles.
 	Builtin     *string    `json:"builtin"`
@@ -135,10 +140,20 @@ func (in *RoleInput) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Member is one holder of a role. Assigned* are nil for Member (everyone).
+type Member struct {
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	DisplayName string     `json:"display_name"`
+	Disabled    bool       `json:"disabled"`
+	AssignedAt  *time.Time `json:"assigned_at"`
+	AssignedBy  *string    `json:"assigned_by"`
+}
+
 // MemberPage is GET /v1/admin/roles/{id}/members.
 type MemberPage struct {
-	Users      []User `json:"users"`
-	NextCursor string `json:"next_cursor,omitempty"`
+	Users      []Member `json:"users"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
 func rolePath(id string) string { return "/v1/admin/roles/" + url.PathEscape(id) }
@@ -193,6 +208,16 @@ func (c *AuthClient) DeleteRole(ctx context.Context, at, id string) error {
 	return feature(c.do(ctx, "admin.roles.delete", http.MethodDelete, rolePath(id), at, nil, nil), rolesWhat, RequiresRoles)
 }
 
+func (c *AuthClient) GetRole(ctx context.Context, at, id string) (*Role, error) {
+	var out roleEnvelope
+	if err := c.do(ctx, "admin.roles.get", http.MethodGet, rolePath(id), at, nil, &out); err != nil {
+		return nil, feature(err, rolesWhat, RequiresRoles)
+	}
+	return &out.Role, nil
+}
+
+// ReorderRoles sends a subset of roles (never Owner or Member), most
+// senior first; they swap their positions among themselves.
 func (c *AuthClient) ReorderRoles(ctx context.Context, at string, order []string) ([]Role, error) {
 	var out struct {
 		Roles []Role `json:"roles"`
@@ -213,7 +238,7 @@ func (c *AuthClient) RoleMembers(ctx context.Context, at, id, cursor string, lim
 		q.Set("limit", strconv.Itoa(limit))
 	}
 	var out struct {
-		Users      []User          `json:"users"`
+		Users      []Member        `json:"users"`
 		NextCursor json.RawMessage `json:"next_cursor"`
 	}
 	if err := c.do(ctx, "admin.roles.members", http.MethodGet, rolePath(id)+"/members?"+q.Encode(), at, nil, &out); err != nil {
@@ -221,7 +246,7 @@ func (c *AuthClient) RoleMembers(ctx context.Context, at, id, cursor string, lim
 	}
 	p := &MemberPage{Users: out.Users}
 	if p.Users == nil {
-		p.Users = []User{}
+		p.Users = []Member{}
 	}
 	_ = json.Unmarshal(out.NextCursor, &p.NextCursor) // null → ""
 	return p, nil

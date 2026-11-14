@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,34 +30,43 @@ const (
 	PermDirectoryManage = "directory.manage"
 )
 
-// Catalog is the permission list the panel knows. It labels permissions
-// when the auth service predates roles, and on auth < 1.5.0 it is what
-// role=admin is granted (everything).
+// Catalog is auth 1.5.0's permission list (GET /v1/admin/permissions).
+// The panel renders the live list; this copy is only for auth < 1.5.0,
+// where role=admin is granted all of it.
 var Catalog = []authapi.Permission{
-	{ID: PermPanel, Group: authapi.GroupAdmin, Label: "Open the admin panel", Description: "Sign in to this panel. Every other admin permission needs it."},
-	{ID: PermUsersView, Group: authapi.GroupAdmin, Label: "View users", Description: "See accounts, their sessions, linked sign-ins and recent activity."},
-	{ID: PermUsersManage, Group: authapi.GroupAdmin, Label: "Manage users", Description: "Create accounts and send password resets and verification emails."},
-	{ID: PermUsersModerate, Group: authapi.GroupAdmin, Label: "Moderate users", Description: "Disable and enable accounts and revoke their sessions."},
-	{ID: PermInvitesManage, Group: authapi.GroupAdmin, Label: "Manage invites", Description: "Create, list and revoke registration invites."},
-	{ID: PermSettingsManage, Group: authapi.GroupAdmin, Label: "Manage network settings", Description: "Change registration and who may create channels and voice rooms."},
-	{ID: PermSSOManage, Group: authapi.GroupAdmin, Label: "Manage sign-in providers", Description: "Add, edit and remove OpenID Connect and SAML providers."},
-	{ID: PermServicesView, Group: authapi.GroupAdmin, Label: "View services", Description: "See the stack's health, containers and their logs."},
-	{ID: PermServicesManage, Group: authapi.GroupAdmin, Label: "Control services", Description: "Restart, stop and start the stack's containers."},
-	{ID: PermAuditView, Group: authapi.GroupAdmin, Label: "View the audit log", Description: "Read every sign-in and admin action."},
-	{ID: PermRolesManage, Group: authapi.GroupAdmin, Label: "Manage roles", Description: "Create, edit, reorder and assign roles below their own highest role."},
-	{ID: PermRolesOwner, Group: authapi.GroupAdmin, Label: "Manage the Owner role", Description: "Assign and edit the Owner role. Give it to as few people as possible."},
-	{ID: PermDirectoryManage, Group: authapi.GroupAdmin, Label: "Manage the directory listing", Description: "List, edit and unlist the network in the boson.chat directory."},
-	{ID: "channel.create", Group: authapi.GroupNetwork, Label: "Create text channels", Description: "Start a channel and become its founder, whatever the network setting says."},
-	{ID: "voice.create", Group: authapi.GroupNetwork, Label: "Create voice rooms", Description: "Add a voice room to a channel they are in."},
-	{ID: "voice.manage_any", Group: authapi.GroupNetwork, Label: "Moderate any voice room", Description: "Mute, move and remove people in every voice room."},
-	{ID: "voice.bypass_locks", Group: authapi.GroupNetwork, Label: "Join locked voice rooms", Description: "Enter voice rooms that are locked or full."},
-	{ID: "irc.kill", Group: authapi.GroupIRC, Label: "Kill", Description: "Disconnect anyone from IRC (/KILL)."},
-	{ID: "irc.ban", Group: authapi.GroupIRC, Label: "Network bans", Description: "Set and remove network-wide bans (/DLINE, /KLINE)."},
-	{ID: "irc.samode", Group: authapi.GroupIRC, Label: "Override channel modes", Description: "Change modes on any channel (/SAMODE)."},
-	{ID: "irc.sajoin", Group: authapi.GroupIRC, Label: "Force joins", Description: "Join themselves or others to any channel (/SAJOIN)."},
-	{ID: "irc.vhosts", Group: authapi.GroupIRC, Label: "Manage vhosts", Description: "Set and approve virtual hosts for other users."},
-	{ID: "irc.nofakelag", Group: authapi.GroupIRC, Label: "No flood limits", Description: "Skip Ergo's fake lag, for bots and bridges."},
-	{ID: "irc.history", Group: authapi.GroupIRC, Label: "Delete history", Description: "Delete messages from channel history."},
+	{ID: PermPanel, Group: authapi.GroupAdmin, Label: "Open the admin panel", Description: "Sign in to the admin panel and see roles and settings."},
+	{ID: PermUsersView, Group: authapi.GroupAdmin, Label: "View users", Description: "List and search users, see their sessions and roles."},
+	{ID: PermUsersManage, Group: authapi.GroupAdmin, Label: "Manage users", Description: "Create and edit users, disable and enable them, send password resets and verification emails."},
+	{ID: PermUsersModerate, Group: authapi.GroupAdmin, Label: "Moderate users", Description: "Disable and enable users and revoke their sessions."},
+	{ID: PermInvitesManage, Group: authapi.GroupAdmin, Label: "Manage invites", Description: "Create, list and revoke invite codes."},
+	{ID: PermSettingsManage, Group: authapi.GroupAdmin, Label: "Manage network settings", Description: "Change registration, email verification and channel creation settings."},
+	{ID: PermSSOManage, Group: authapi.GroupAdmin, Label: "Manage SSO", Description: "Add, edit and remove OIDC and SAML identity providers."},
+	{ID: PermServicesView, Group: authapi.GroupAdmin, Label: "View services", Description: "See the status of network services (admin panel)."},
+	{ID: PermServicesManage, Group: authapi.GroupAdmin, Label: "Manage services", Description: "Control network services (admin panel)."},
+	{ID: PermAuditView, Group: authapi.GroupAdmin, Label: "View audit log", Description: "Read the audit log."},
+	{ID: PermRolesManage, Group: authapi.GroupAdmin, Label: "Manage roles", Description: "Create, edit, delete and assign roles below your own."},
+	{ID: PermRolesOwner, Group: authapi.GroupAdmin, Label: "Manage the Owner role", Description: "Edit the Owner role and grant or remove it (ownership transfer)."},
+	{ID: PermDirectoryManage, Group: authapi.GroupAdmin, Label: "Manage the directory", Description: "Edit the public channel directory (admin panel)."},
+	{ID: "channel.create", Group: authapi.GroupNetwork, Label: "Create channels", Description: "Register IRC text channels."},
+	{ID: "voice.create", Group: authapi.GroupNetwork, Label: "Create voice channels", Description: "Create voice channels."},
+	{ID: "voice.manage_any", Group: authapi.GroupNetwork, Label: "Manage any voice channel", Description: "Moderate, edit and delete any voice channel."},
+	{ID: "voice.bypass_locks", Group: authapi.GroupNetwork, Label: "Bypass voice locks", Description: "Join locked or full voice channels."},
+	{ID: "irc.kill", Group: authapi.GroupIRC, Label: "IRC: Kill", Description: "Disconnect users (KILL, NickServ LOGOUT of other users' sessions)."},
+	{ID: "irc.ban", Group: authapi.GroupIRC, Label: "IRC: Ban", Description: "Ban IPs, CIDRs and masks and suspend accounts (UBAN, DLINE, KLINE)."},
+	{ID: "irc.nofakelag", Group: authapi.GroupIRC, Label: "IRC: No fakelag", Description: "Exempt from fakelag message-rate limits."},
+	{ID: "irc.relaymsg", Group: authapi.GroupIRC, Label: "IRC: Relay messages", Description: "Use RELAYMSG in any channel."},
+	{ID: "irc.vhosts", Group: authapi.GroupIRC, Label: "IRC: Vhosts", Description: "Set and remove other users' vhosts (HostServ)."},
+	{ID: "irc.sajoin", Group: authapi.GroupIRC, Label: "IRC: SAJOIN", Description: "Join arbitrary channels, including private ones, and force-join users."},
+	{ID: "irc.samode", Group: authapi.GroupIRC, Label: "IRC: SAMODE", Description: "Change arbitrary channel and user modes (also needed to kick without op)."},
+	{ID: "irc.snomasks", Group: authapi.GroupIRC, Label: "IRC: Snomasks", Description: "Subscribe to arbitrary server notice masks."},
+	{ID: "irc.roleplay", Group: authapi.GroupIRC, Label: "IRC: Roleplay", Description: "Use the (deprecated) roleplay commands in any channel."},
+	{ID: "irc.rehash", Group: authapi.GroupIRC, Label: "IRC: Rehash", Description: "Reload the IRC server configuration at runtime."},
+	{ID: "irc.accreg", Group: authapi.GroupIRC, Label: "IRC: Account registrations", Description: "Modify or unregister arbitrary accounts (NickServ)."},
+	{ID: "irc.chanreg", Group: authapi.GroupIRC, Label: "IRC: Channel registrations", Description: "Modify or unregister arbitrary channel registrations (ChanServ)."},
+	{ID: "irc.history", Group: authapi.GroupIRC, Label: "IRC: History", Description: "Modify or delete history messages."},
+	{ID: "irc.defcon", Group: authapi.GroupIRC, Label: "IRC: DEFCON", Description: "Use DEFCON to restrict server capabilities."},
+	{ID: "irc.massmessage", Group: authapi.GroupIRC, Label: "IRC: Mass message", Description: "Message every user on the server."},
+	{ID: "irc.metadata", Group: authapi.GroupIRC, Label: "IRC: Metadata", Description: "Modify arbitrary metadata on channels and users."},
 }
 
 // Access is what the signed-in account may do in the panel.
@@ -78,6 +88,16 @@ func (a *Access) Can(perms ...string) bool {
 		}
 	}
 	return true
+}
+
+// CanAny reports whether the account has at least one of perms.
+func (a *Access) CanAny(perms ...string) bool {
+	for _, p := range perms {
+		if a.set[p] {
+			return true
+		}
+	}
+	return false
 }
 
 func accessFor(u *authapi.User) *Access {
@@ -106,16 +126,22 @@ func accessFor(u *authapi.User) *Access {
 // ErrNoPanel ends the panel session: the account can't open the panel.
 var ErrNoPanel = apperr.ErrNotAdmin
 
-// MissingPermission is a 403 that leaves the panel session alone.
+// MissingPermission is a 403 that leaves the panel session alone. perm
+// may list alternatives as "a|b".
 func MissingPermission(perm string) error {
-	label := perm
-	for _, p := range Catalog {
-		if p.ID == perm {
-			label = p.Label
-			break
+	alts := strings.Split(perm, "|")
+	labels := make([]string, 0, len(alts))
+	for _, id := range alts {
+		label := id
+		for _, p := range Catalog {
+			if p.ID == id {
+				label = p.Label
+				break
+			}
 		}
+		labels = append(labels, "“"+label+"” ("+id+")")
 	}
-	return apperr.New(http.StatusForbidden, "missing_permission", "you need the “"+label+"” permission ("+perm+") for this")
+	return apperr.New(http.StatusForbidden, "missing_permission", "you need the "+strings.Join(labels, " or the ")+" permission for this")
 }
 
 // AccessTTL is how long a permission check is reused for one panel session.
