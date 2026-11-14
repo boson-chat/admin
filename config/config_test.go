@@ -129,3 +129,32 @@ func TestPublicProbes(t *testing.T) {
 		}
 	}
 }
+
+func TestDockerAndBoson(t *testing.T) {
+	c := valid()
+	c.UpstreamConfig.IRCCheckServerName = "irc.example.org"
+	c.DockerConfig = DockerConfig{ProxyURL: "http://docker-proxy:2375/", Protected: "admin, traefik"}
+	c.BosonConfig.DirectoryURL = "https://api.boson.chat/"
+	c.ApplyDefaults()
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.DockerConfig.ProxyURL != "http://docker-proxy:2375" || c.BosonConfig.DirectoryHostname != "irc.example.org" {
+		t.Fatalf("defaults: %+v %+v", c.DockerConfig, c.BosonConfig)
+	}
+	if p := c.DockerConfig.ProtectedServices(); len(p) != 2 || p[1] != "traefik" {
+		t.Fatalf("protected: %v", p)
+	}
+	for _, bad := range []string{"unix:///var/run/docker.sock", "http://localhost/var/run/docker.sock", "tcp://docker:2375"} {
+		c := valid()
+		c.DockerConfig.ProxyURL = bad
+		if err := c.Validate(); err == nil {
+			t.Fatalf("accepted DOCKER_PROXY_URL=%s", bad)
+		}
+	}
+	c = valid()
+	c.BosonConfig.DirectoryRegistration = true
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "DIRECTORY_API_URL") {
+		t.Fatalf("registration without a URL: %v", err)
+	}
+}

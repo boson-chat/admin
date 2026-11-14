@@ -86,9 +86,41 @@ services:
         irc=ws://localhost:8097/webirc
       METRICS_URL: ${METRICS_URL:-http://victoriametrics:8428}
       GRAFANA_URL: ${GRAFANA_URL:-}
+      # Services control: `docker compose --profile docker up -d` and set
+      # DOCKER_PROXY_URL=http://docker-proxy:2375 in .env.
+      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-}
+      DOCKER_PROJECT: boson-admin-dev
+      DOCKER_PROTECTED_SERVICES: admin,caddy
+      # Profiles from a local boson API (empty = off); the public directory.
+      BOSON_API_URL: ${BOSON_API_URL:-}
+      DIRECTORY_API_URL: ${DIRECTORY_API_URL:-https://api.boson.chat}
+      DIRECTORY_REGISTRATION: ${DIRECTORY_REGISTRATION:-false}
     ports:
       - "127.0.0.1:8090:8080"
+    networks: [default, docker-proxy]
     depends_on: [auth, ergo]
+
+  # A Docker socket proxy that allows only what services control needs:
+  # list/inspect containers, logs, stats, start/stop/restart. The panel
+  # never sees the socket. Same allowlist as the stack (README).
+  docker-proxy:
+    image: wollomatic/socket-proxy:1.13.2
+    profiles: [docker]
+    # Docker Desktop's socket is root-owned; on Linux use "65534:<docker gid>".
+    user: ${DOCKER_PROXY_USER:-0:0}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=admin
+      - '-allowGET=(/v1\.[0-9]+)?/(_ping|version|containers/json|containers/[a-zA-Z0-9_.-]+/(json|logs|stats))'
+      - '-allowHEAD=(/v1\.[0-9]+)?/_ping'
+      - '-allowPOST=(/v1\.[0-9]+)?/containers/[a-zA-Z0-9_.-]+/(start|stop|restart)'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-proxy]
 
   # The stack's TLS front, here with Caddy's internal CA.
   caddy:
@@ -134,3 +166,9 @@ services:
 volumes:
   pgdata:
   vmdata:
+
+networks:
+  default:
+  # Only the panel can reach the socket proxy.
+  docker-proxy:
+    internal: true

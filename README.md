@@ -37,18 +37,39 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   Each row shows two latencies: **internal** (the panel's own check over the
   container network) and **from you** (timed by your browser against the
   service's public endpoint from `PUBLIC_PROBE_TARGETS`; see below).
-- **Users:** search by username or email, paginate, open a user to change their
-  role, disable or enable them (disabling signs them out everywhere), list and
-  revoke their sessions, and see their recent activity.
+- **Services:** every container of the compose project with its state, uptime,
+  image version, restarts, CPU and memory; restart, stop and start (with a
+  confirmation, and the service name typed for the panel itself and the
+  edge); a log viewer per service (tail 100–5,000 lines, follow, filter,
+  stderr only, download). Through a locked-down Docker socket proxy; see
+  "Services control" below.
+- **Network settings:** registration (open, invite only, closed), required
+  email verification, and who may create text channels and voice rooms.
+- **Directory:** whether the network is listed in the boson.chat directory,
+  and (once api.boson.chat supports it) submitting it with a DNS TXT proof.
+  See "Directory" below.
+- **Users:** search by username or email, paginate, create a user (with a
+  password or an emailed set-password link), open a user to change their
+  role, disable or enable them (disabling signs them out everywhere), send a
+  password reset or a new verification email, see their linked SSO sign-ins,
+  their boson profile (avatar, display name, handle) and the servers they
+  list in the directory, list and revoke their sessions, and see their recent
+  activity.
 - **Invites:** create (uses, expiry, note), with the code shown once; list with
   status (active, used up, expired, revoked); revoke. Warns when registration
   is open or closed rather than invite-only.
 - **Audit log:** filter by event (or group: admin actions, sign-ins,
-  password events), actor, and time range; usernames are resolved for the actor
-  and for the account an admin action affected.
-- **Sign-in providers:** a placeholder for OIDC (auth phase 2) and SAML
-  (phase 3). It lists providers the auth service already advertises in
-  `/v1/config`.
+  SSO, password events), who did it, the affected account, and a time window;
+  scrolls through the whole history page by page. Usernames are resolved for
+  the actor and for the account an admin action affected.
+- **Sign-in providers:** add, edit, test, switch on/off and remove OpenID
+  Connect and SAML providers, with the callback / ACS / SP metadata URLs to
+  copy and setup steps for Google, Authentik, Zitadel, Keycloak, Okta and
+  Microsoft Entra ID. Client secrets are write-only.
+
+Features whose upstream endpoint doesn't exist yet (an older auth release,
+a boson API without the admin profile read) show what they need ("needs
+auth ≥ v1.3.0") instead of an error; see "Upstream work".
 
 IRC isn't managed from the panel, but it is monitored: with `IRC_CHECK` set
 the panel connects to the IRC server (Ergo in the stack) every overview poll
@@ -95,6 +116,10 @@ docker compose exec auth ./auth user set-role admin admin
 Open http://localhost:8090 (or https://admin.localhost:8443 through Caddy with
 its local CA). The dev auth service runs with `REGISTRATION=invite`; Mailpit
 is on http://localhost:8025 and VictoriaMetrics on http://localhost:8428.
+
+Services control in dev: put `DOCKER_PROXY_URL=http://docker-proxy:2375` in
+`.env` and `docker compose --profile docker up -d` (the proxy runs as root
+there for Docker Desktop's socket; on Linux set `DOCKER_PROXY_USER=65534:<docker gid>`).
 
 The end-to-end check signs in through the panel and exercises users,
 disable/enable, invites, the audit log and the overview:
@@ -143,6 +168,16 @@ Everything is an environment variable. Durations use Go syntax (`15m`, `12h`).
 | `PUBLIC_PROBE_TARGETS` | – | `name=url,…` public endpoints your browser times (`https://`, `http://`, `wss://`, `ws://`). Names match services (`auth`, `api`, `quicvoiced`, `irc`); `admin` overrides the panel's own `/healthz`. Origins are added to the CSP `connect-src` |
 | `EDGE_NAME` | `Traefik` | what the stack view calls the reverse proxy in front of everything |
 | `UPSTREAM_TIMEOUT` | `5s` | per upstream request (health and TLS checks use at most 3 s / 5 s) |
+| `DOCKER_PROXY_URL` | – | the Docker socket proxy, e.g. `http://docker-proxy:2375`. Empty = services control off. A `unix:` URL or a `docker.sock` path is refused |
+| `DOCKER_PROJECT` | `boson` | compose project whose containers are shown and controlled; nothing outside it is touched |
+| `DOCKER_PROTECTED_SERVICES` | `admin,traefik` | compose services whose name must be typed to stop or restart them (the panel's own container always is) |
+| `DOCKER_TIMEOUT` | `20s` | per Docker call (stats take about a second) |
+| `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
+| `BOSON_CDN_URL` | `https://cdn.boson.chat` | where avatars and server icons are served from; added to the CSP `img-src` |
+| `DIRECTORY_API_URL` | `https://api.boson.chat` | the public directory. Empty = the directory page is off |
+| `DIRECTORY_REGISTRATION` | `false` | use the self-hosted registration API (not live on api.boson.chat yet) |
+| `DIRECTORY_KEY` | `SESSION_KEY` | secret the directory management key is derived from. Set it if you rotate `SESSION_KEY`, or the panel loses edit access to its listing |
+| `DIRECTORY_HOSTNAME` | `IRC_CHECK_SERVER_NAME` | the IRC hostname to list |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | – | enable OTLP/HTTP metrics push in addition to `/metrics` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | only `http/protobuf` is supported |
 | `OTEL_METRICS_EXPORTER` | – | `none` turns OTLP push off |
@@ -192,6 +227,17 @@ the stack's Traefik setup:
     depends_on: [auth]
 ```
 
+With services control (see below) the panel also joins the proxy's network:
+
+```yaml
+  admin:
+    environment:
+      DOCKER_PROXY_URL: http://docker-proxy:2375
+      DOCKER_PROJECT: ${COMPOSE_PROJECT_NAME:-boson}
+      BOSON_API_URL: http://api:3000
+    networks: [default, docker-proxy]
+```
+
 - `ADMIN_HOST=admin.<domain>` needs a DNS record like the other hostnames.
 - Don't route port 8081; VictoriaMetrics can scrape `admin:8081/metrics`.
 - So that sessions and the audit log record the admin's real IP, add the panel's
@@ -199,6 +245,153 @@ the stack's Traefik setup:
   `X-Forwarded-For`). Otherwise every panel sign-in shows the panel's IP and
   shares one per-IP rate-limit bucket.
 - Run one replica (see "Sessions" below), or use sticky sessions.
+
+## Services control
+
+The panel never mounts the Docker socket. It talks HTTP to
+[wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy), which
+holds the socket and forwards only an allowlist of method + path regexes:
+
+| Method | Allowed paths |
+|---|---|
+| `GET` | `/_ping`, `/version`, `/containers/json`, `/containers/{id}/json`, `/containers/{id}/logs`, `/containers/{id}/stats` |
+| `HEAD` | `/_ping` |
+| `POST` | `/containers/{id}/start`, `/containers/{id}/stop`, `/containers/{id}/restart` |
+
+Everything else (exec, create, kill, delete, attach, archive, images,
+volumes, events, …) gets 403 from the proxy. Only the host named `admin` may
+connect, on an internal network nobody else joins. Add to the stack:
+
+```yaml
+  docker-proxy:
+    <<: *restart
+    profiles: [admin]
+    image: wollomatic/socket-proxy:1.13.2
+    # nobody + the host's docker group (getent group docker | cut -d: -f3)
+    user: "65534:${DOCKER_GID:?set DOCKER_GID in .env}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=admin
+      - -watchdoginterval=600
+      - -stoponwatchdog
+      - -shutdowngracetime=5
+      - '-allowGET=(/v1\.[0-9]+)?/(_ping|version|containers/json|containers/[a-zA-Z0-9_.-]+/(json|logs|stats))'
+      - '-allowHEAD=(/v1\.[0-9]+)?/_ping'
+      - '-allowPOST=(/v1\.[0-9]+)?/containers/[a-zA-Z0-9_.-]+/(start|stop|restart)'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-proxy]
+
+networks:
+  docker-proxy:
+    internal: true
+```
+
+The proxy can't filter by label, so its scope is every container on the
+host for those verbs. The panel narrows it: it lists with a
+`com.docker.compose.project` filter and re-checks the label itself, resolves
+every action by container name inside the project (anything else is "not
+found"), skips one-off `run` containers, and re-checks the admin with the auth
+service before every Docker call (a demoted admin's still-valid cookie can't
+restart anything). Stopping or restarting a protected service
+(`DOCKER_PROTECTED_SERVICES`, and the panel's own container, found by its
+hostname) needs the service name typed, enforced by the BFF, not only the UI.
+An action on the panel's own container runs half a second after the
+response. Every action is logged (`actor`, `action`, `container`, `service`)
+and counted in `admin_service_actions_total`.
+
+Logs: the newest N lines (≤ 5,000 on screen, ≤ 50,000 in a download), then
+polled every 2 s with Docker's `since` while "Follow" is on (no long-lived
+streams through the edge).
+
+Checked against the real proxy: `DOCKER_PROXY_TEST_URL=http://127.0.0.1:2375
+DOCKER_PROXY_TEST_PROJECT=… DOCKER_PROXY_TEST_CONTAINER=… go test -run
+TestAgainstProxy ./internal/clients/dockerapi/` (a container that writes to
+stdout and stderr).
+
+## Directory
+
+The boson.chat directory (`GET https://api.boson.chat/servers`) lists IRC
+networks that proved control of their hostname with a TXT record
+`_boson.<hostname>` = `boson-verify=<token>` (checked against Cloudflare,
+Google and Quad9; re-checked daily by the backend's `cron --mode=verify`).
+Today a listing can only be created by a signed-in boson.chat user
+(`POST /servers` with a boson.chat access token). A self-hosted network has
+its own auth service, so its admins have no boson.chat token, and there is no
+OAuth or device flow to get one.
+
+The panel therefore uses a proposed registration API where the network
+proves itself twice instead of through a user account: a **management key**
+(HMAC-SHA256 of `DIRECTORY_KEY`/`SESSION_KEY` and the hostname, sent as
+`Authorization: Network <key>`; the directory stores only its hash, so only
+this panel can edit the listing and the panel stores nothing) and the
+**DNS TXT record**. Until the backend has it, leave
+`DIRECTORY_REGISTRATION=false`: the page still shows whether the hostname is
+listed (from the public search) and explains the steps. Details in
+"Upstream work".
+
+## Upstream work
+
+What the panel assumes and what is missing (as of auth v1.2.1 and the boson
+backend on `main`). The panel detects a missing endpoint (Go's plain-text 404
+or a 405) and shows "needs … ≥ version" instead of failing. The versions are
+constants in `internal/clients/authapi/v2.go`.
+
+**auth (≥ v1.3.0 assumed)**
+
+| Endpoint | Used for |
+|---|---|
+| `GET/PATCH /v1/admin/settings` → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` (flat or under `settings`) | Network settings. `registration`: `open`/`invite`/`closed`; `channel_creation`: `registered`/`admins`; `voice_channel_creation`: `admins`/`founders`/`registered` |
+| `GET/POST /v1/admin/sso/providers` (`{providers}` / `{provider}`), `GET/PATCH/DELETE …/{id}`, `POST …/{id}/test` → `{ok, details}` | Sign-in providers. `client_secret` is write-only; reads return `has_client_secret`. Created with `enabled: false` |
+| `POST /v1/admin/users` `{username, email, role, password? \| send_invite_email?}` → `{user, invite_sent?}` | Create user |
+| `POST /v1/admin/users/{id}/password-reset`, `POST …/verification` | Emails (204) |
+| `identities[]` in `GET /v1/admin/users/{id}` (next to `user` or inside it): `{id, provider_slug, provider_name?, kind?, subject, email?, created_at?, last_login_at?}` | Linked sign-ins. Absent = not reported |
+| `GET /v1/admin/audit?event=&actor=&target=&since=&until=&cursor=&limit=` → `{entries[{…, actor_username, target_user_id, target_username}], next_cursor}` | Audit paging. `next_cursor` must always be present (`null` at the end): that is how the panel tells a filtering release from an old one. `event` takes a trailing `*`; `actor`/`target` take an ID or a username |
+| Audit events `admin_settings_changed`, `admin_sso_provider_{created,updated,deleted}`, `admin_password_reset_sent`, `admin_verification_sent`, `sso_login`, `sso_linked` | Names in the log (unknown events still show) |
+
+**boson API: `GET /v1/admin/profiles/{auth_user_id}`** (new). The backend
+already verifies auth access tokens; the panel calls it with the signed-in
+admin's own token. The backend must:
+
+1. Gate on the token's `role` claim being `admin` (403 otherwise). Nothing
+   checks `role` today.
+2. Map `auth_user_id` (`usr_…`) to `users.id` via `auth_identities`
+   (`auth_user_id → user_id`) without creating a row.
+3. Answer `{"profile": {user_id, auth_user_id, handle, display_name,
+   avatar_url, is_discoverable, handle_changed_at, created_at}, "servers":
+   [{id, hostname, port, tls, name, verification_status, health_status,
+   user_count, icon_url, registered_at}]}` where servers are
+   `servers WHERE registered_by = users.id` in any status. No
+   `encrypted_user_secret*`, no nick or bouncer data.
+4. Answer 404 `{"error":"profile_not_found"}` (JSON) when the person has no
+   profile yet; the panel shows "no boson profile yet". A plain-text 404
+   means "endpoint missing".
+
+**boson API: self-hosted directory registration** (new; behind
+`DIRECTORY_REGISTRATION`). All calls carry `Authorization: Network <key>`
+(43-char base64url); the backend stores `sha256(key)` in a new
+`servers.management_key_hash` column and leaves `registered_by` NULL, so the
+existing verify cron covers these rows unchanged.
+
+| Endpoint | |
+|---|---|
+| `POST /directory/networks` `{hostname, port, tls, name, description?, tags?, languages?, is_nsfw?, website_url?}` | 201 `{network, verification: {record_name, record_value, expires_at}}`. Same key + hostname again = 200 with the existing row. 409 `hostname_taken` if another key or a user owns the hostname. Reject IPs. Rate limit per IP (e.g. 5/h) |
+| `GET /directory/networks/lookup?hostname=` | 200 `{network, verification?}` (verification only while pending) or 404 `{"error":"not_found"}` for this key |
+| `PATCH /directory/networks/{id}` | name, description, tags, languages, is_nsfw, website_url |
+| `POST /directory/networks/{id}/verify` | strict check, same body and 409 as `/servers/{id}/verify`; 1 per 30 s |
+| `POST /directory/networks/{id}/regenerate-token` | new token, back to pending |
+| `DELETE /directory/networks/{id}` | unlist |
+
+`website_url` (and an optional `auth_url` so boson clients can offer the
+network's own sign-in) are new optional columns. Two cron details noted while
+reading the backend: `verification_last_checked_at` is overwritten on every
+check, so the 14-day lapse grace never triggers with a daily run, and the cron
+verifies pending rows whose 72 h token has expired.
 
 ## How it works
 
@@ -237,8 +430,12 @@ the stack's Traefik setup:
   SvelteKit's inline bootstrap, computed from the embedded `index.html` at
   startup; `connect-src` is `'self'` plus exactly the origins of
   `PUBLIC_PROBE_TARGETS`; `frame-ancestors 'none'`, `base-uri 'none'`,
-  `object-src 'none'`. There are no other third-party requests (fonts are
-  bundled).
+  `object-src 'none'`. `img-src` adds only `BOSON_CDN_URL`'s origin when
+  profiles or the directory are on (avatars, server icons). There are no
+  other third-party requests (fonts are bundled).
+- Destructive actions confirm in a dialog; removing a sign-in provider or a
+  directory listing and stopping/restarting a protected service need its
+  name typed.
 
 ### API
 
@@ -257,9 +454,18 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/users/{id}/audit?limit=` | entries the user performed |
 | `DELETE /api/sessions/{id}` | revoke (not the panel's own session) |
 | `GET /api/invites`, `POST /api/invites` `{max_uses, ttl, note}`, `DELETE /api/invites/{id}` | the code is only in the create response |
-| `GET /api/audit?event=&user_id=&since=&limit=` | `event` exact or prefix with `*`; `since` RFC 3339 or a duration (`24h`) |
+| `GET /api/audit?event=&actor=&target=&since=&until=&cursor=&limit=` | `event` exact or prefix with `*`; `since`/`until` RFC 3339 or a duration back from now (`24h`); `user_id` still works for `actor`. `{entries, next_cursor, server_filtered, events}` |
 | `GET /api/overview` | services (incl. `irc`), certificates, metrics, `edge`, `irc`, `public_probes` |
-| `GET /api/sso` | placeholder: providers from `/v1/config` and the roadmap |
+| `GET /api/sso` | removed; see `/api/sso/providers` |
+| `GET/PATCH /api/settings` | `{settings}`; 501 `upstream_unsupported` on older auth |
+| `GET/POST /api/sso/providers`, `GET/PATCH/DELETE /api/sso/providers/{id}`, `POST …/{id}/test` | |
+| `POST /api/users` | create; `{user, invite_sent}` |
+| `POST /api/users/{id}/password-reset`, `/verification` | 204 |
+| `GET /api/users/{id}/profile` | always 200: `{configured, profile?, servers?, unsupported?, error?}` |
+| `GET /api/services`, `GET /api/services/{name}` | containers of `DOCKER_PROJECT` |
+| `POST /api/services/{name}/{start\|stop\|restart}` `{confirm}` | 428 `confirmation_required` for a protected service without its name; 202 for the panel itself |
+| `GET /api/services/{name}/logs?tail=&since=&download=1` | `{lines, last_at}` or a text/plain attachment |
+| `GET /api/directory?hostname=`, `POST /api/directory`, `PATCH /api/directory/{id}?hostname=`, `POST …/{id}/verify`, `POST …/{id}/regenerate-token`, `DELETE …/{id}` | |
 
 ### Metrics
 
@@ -273,6 +479,9 @@ On `INTERNAL_ADDR` `/metrics` (and OTLP if configured), plus Go runtime metrics:
 | `admin_upstream_duration_seconds` | `upstream` |
 | `admin_logins_total` | `outcome` (`success`, `invalid_credentials`, `not_admin`, `rate_limited`, `error`) |
 | `admin_token_refreshes_total` | `outcome` (`success`, `shared`, `expired`, `error`) |
+| `admin_service_actions_total` | `action` (`start`, `stop`, `restart`), `outcome` (`success`, `refused`, `error`) |
+
+`admin_upstream_*` covers `auth`, `docker`, `boson_api` and `directory`.
 
 ## Layout
 
@@ -284,7 +493,9 @@ http/handlers                  /api handlers, session/CSRF wrapper, SPA server
 http/middleware                client IP, logging/metrics, security headers
 internal/services/admin        sign-in, token refresh (single-flight), admin operations
 internal/services/overview     health, versions, certificates, PromQL stats
-internal/clients/{authapi,health,tlsprobe,ircprobe,promql}   upstream clients behind interfaces
+internal/services/containers   services control (Docker through the socket proxy)
+internal/services/directory    boson.chat directory status and registration
+internal/clients/{authapi,health,tlsprobe,ircprobe,promql,dockerapi,bosonapi}   upstream clients behind interfaces
 internal/session               sealed session cookie
 metrics/                       OpenTelemetry instruments + Prometheus exporter
 ui/                            SvelteKit app (adapter-static), embedded via ui/embed.go
