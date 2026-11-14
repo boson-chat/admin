@@ -1,6 +1,11 @@
 import { goto } from '$app/navigation';
 import { session } from './session.svelte';
 
+/** The upstream doesn't have this feature yet (an older auth or API release). */
+export function isUnsupported(e: unknown): e is ApiError {
+	return e instanceof ApiError && e.code === 'upstream_unsupported';
+}
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,

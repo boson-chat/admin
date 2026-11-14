@@ -8,6 +8,7 @@
 	import type { DropdownOption } from '$lib/dropdown';
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
+	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
 
 	let invites = $state<Invite[] | null>(null);
@@ -185,11 +186,11 @@
 <section class="section" aria-labelledby="list-h">
 	<div class="section-head"><h2 id="list-h">All invites</h2></div>
 	{#if error}
-		<Notice>{error}</Notice>
+		<State kind="error">{error}</State>
 	{:else if invites === null}
-		<p class="muted">Loading…</p>
+		<State kind="loading" title="Loading invites…" />
 	{:else if invites.length === 0}
-		<p class="muted">No invites yet. Create one above to let someone register.</p>
+		<State kind="empty" title="No invites yet">Create one above to let someone register.</State>
 	{:else}
 		<div class="table-wrap">
 			<table>

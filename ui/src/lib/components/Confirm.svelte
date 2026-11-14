@@ -5,6 +5,7 @@
 		title,
 		action,
 		danger = false,
+		typed,
 		onconfirm,
 		oncancel,
 		children,
@@ -13,6 +14,8 @@
 		title: string;
 		action: string;
 		danger?: boolean;
+		/** When set, the admin must type this exactly before confirming. */
+		typed?: string;
 		onconfirm: () => Promise<void> | void;
 		/** Called when the dialog closes without confirming (Cancel, ×, Escape). */
 		oncancel?: () => void;
@@ -24,17 +27,23 @@
 	let dialog: HTMLDialogElement;
 	let busy = $state(false);
 	let confirmed = false;
+	let entered = $state('');
+	let ready = $derived(!typed || entered.trim() === typed);
 
 	function open() {
 		confirmed = false;
+		entered = '';
 		dialog.showModal();
 	}
 	async function confirm() {
+		if (!ready) return;
 		busy = true;
 		try {
 			await onconfirm();
 			confirmed = true;
 			dialog.close();
+		} catch {
+			// onconfirm reported the failure; keep the dialog open to retry.
 		} finally {
 			busy = false;
 		}
@@ -52,14 +61,34 @@
 			<h2 id="dlg-{uid}">{title}</h2>
 			<button class="close" value="cancel" aria-label="Close" disabled={busy}>×</button>
 		</header>
-		<div class="body">{@render children()}</div>
+		<div class="body">
+			{@render children()}
+			{#if typed}
+				<label class="field typed">
+					<span>Type <code>{typed}</code> to confirm</span>
+					<input
+						type="text"
+						bind:value={entered}
+						autocomplete="off"
+						spellcheck="false"
+						autocapitalize="off"
+						onkeydown={(e) => {
+							if (e.key === 'Enter') {
+								e.preventDefault();
+								confirm();
+							}
+						}}
+					/>
+				</label>
+			{/if}
+		</div>
 		<div class="actions">
 			<button class="btn btn-ghost" value="cancel" disabled={busy}>Cancel</button>
 			<button
 				class="btn {danger ? 'btn-danger' : 'btn-primary'}"
 				type="button"
 				onclick={confirm}
-				disabled={busy}>{busy ? 'Working…' : action}</button
+				disabled={busy || !ready}>{busy ? 'Working…' : action}</button
 			>
 		</div>
 	</form>
@@ -117,6 +146,13 @@
 		padding: var(--space-5);
 		color: var(--fg-2);
 		font-size: var(--text-base);
+	}
+	.typed {
+		margin-top: var(--space-4);
+	}
+	.typed > span {
+		text-transform: none;
+		letter-spacing: 0;
 	}
 	.actions {
 		display: flex;

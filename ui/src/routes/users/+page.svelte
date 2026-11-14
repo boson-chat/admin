@@ -8,6 +8,9 @@
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
+	import CreateUser from '$lib/components/CreateUser.svelte';
+
+	let creator: CreateUser;
 
 	const sizes: DropdownOption[] = [
 		{ value: '25', label: '25 per page' },
@@ -68,7 +71,9 @@
 		<h1>Users</h1>
 		<p>Everyone with a boson account. Their username is also their IRC nick.</p>
 	</div>
+	<button class="btn btn-primary" onclick={() => creator.open()}>Create user</button>
 </div>
+<CreateUser bind:this={creator} />
 
 <div class="toolbar">
 	<label class="search">

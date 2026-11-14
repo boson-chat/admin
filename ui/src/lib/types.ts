@@ -7,12 +7,30 @@ export interface User {
 	role: 'user' | 'admin';
 	created_at: string;
 	disabled_at?: string;
+	/** Linked SSO sign-ins; absent on auth releases that don't report them. */
+	identities?: Identity[];
+}
+
+export interface Identity {
+	id: string;
+	provider_id?: string;
+	provider_slug?: string;
+	provider_name?: string;
+	kind?: string;
+	subject: string;
+	email?: string;
+	created_at?: string;
+	last_login_at?: string;
 }
 
 export interface Features {
 	version: string;
 	grafana_url?: string;
 	metrics: boolean;
+	services: boolean;
+	profiles: boolean;
+	directory: boolean;
+	directory_registration: boolean;
 }
 
 export interface SessionInfo {
@@ -54,8 +72,178 @@ export interface AuditEntry {
 	meta: Record<string, unknown> | null;
 	at: string;
 	username?: string;
+	actor_username?: string;
 	target_user_id?: string;
 	target_username?: string;
+}
+
+export interface AuditPage {
+	entries: AuditEntry[];
+	events: string[];
+	next_cursor?: string;
+	server_filtered: boolean;
+	requires?: string;
+}
+
+export type Registration = 'open' | 'invite' | 'closed';
+export type TextCreators = 'registered' | 'admins';
+export type VoiceCreators = 'admins' | 'founders' | 'registered';
+
+export interface NetworkSettings {
+	registration: Registration;
+	require_email_verification: boolean;
+	channel_creation: TextCreators;
+	voice_channel_creation: VoiceCreators;
+	updated_at?: string;
+	updated_by?: string;
+	updated_by_username?: string;
+}
+
+export interface OIDCConfig {
+	issuer: string;
+	client_id: string;
+	client_secret?: string;
+	has_client_secret?: boolean;
+	scopes?: string[];
+	username_claim?: string;
+	email_claim?: string;
+}
+
+export interface SAMLConfig {
+	idp_metadata_url?: string;
+	idp_metadata_xml?: string;
+	entity_id?: string;
+	attribute_map: { email?: string; username?: string; display_name?: string };
+}
+
+export type ProviderKind = 'oidc' | 'saml';
+
+export interface SSOProvider {
+	id: string;
+	slug: string;
+	kind: ProviderKind;
+	display_name: string;
+	enabled: boolean;
+	allow_signup: boolean;
+	trust_email: boolean;
+	config: { oidc?: OIDCConfig; saml?: SAMLConfig };
+	callback_url?: string;
+	sp_metadata_url?: string;
+	acs_url?: string;
+	sp_entity_id?: string;
+	created_at?: string;
+	updated_at?: string;
+}
+
+export interface ServiceInfo {
+	name: string;
+	service: string;
+	image: string;
+	version?: string;
+	state: 'running' | 'exited' | 'restarting' | 'paused' | 'created' | 'dead' | 'removing' | string;
+	status: string;
+	health?: 'healthy' | 'unhealthy' | 'starting' | string;
+	started_at?: string;
+	finished_at?: string;
+	exit_code: number;
+	oom_killed?: boolean;
+	restart_count: number;
+	cpu_percent?: number;
+	memory_bytes?: number;
+	memory_limit?: number;
+	protected: boolean;
+	self: boolean;
+}
+
+export interface ServiceList {
+	configured: boolean;
+	project?: string;
+	services: ServiceInfo[];
+	error?: string;
+	checked_at: string;
+}
+
+export interface LogLine {
+	at: string;
+	stream: 'stdout' | 'stderr';
+	text: string;
+}
+
+export interface BosonProfile {
+	user_id: string;
+	auth_user_id: string;
+	handle: string;
+	display_name?: string;
+	avatar_url?: string;
+	is_discoverable: boolean;
+	handle_changed_at?: string;
+	created_at?: string;
+}
+
+export interface DirectoryServer {
+	id: string;
+	hostname: string;
+	port: number;
+	tls: boolean;
+	name: string;
+	description?: string;
+	tags?: string[];
+	languages?: string[];
+	is_nsfw: boolean;
+	verification_status: 'pending' | 'verified' | 'lapsed' | string;
+	verification_last_checked_at?: string;
+	health_status?: 'up' | 'down' | 'unknown' | string;
+	user_count?: number;
+	icon_url?: string;
+	registered_at?: string;
+	website_url?: string;
+	auth_url?: string;
+}
+
+export interface ProfileResponse {
+	configured: boolean;
+	unsupported?: string;
+	error?: string;
+	profile?: BosonProfile | null;
+	servers?: DirectoryServer[];
+}
+
+export interface Verification {
+	record_name: string;
+	record_value: string;
+	expires_at?: string;
+}
+
+export interface Listing {
+	network: DirectoryServer;
+	verification?: Verification;
+}
+
+export interface DirectoryStatus {
+	api_url: string;
+	registration: boolean;
+	hostname: string;
+	port: number;
+	public?: DirectoryServer;
+	public_error?: string;
+	listing?: Listing;
+	listing_error?: string;
+	unsupported?: string;
+}
+
+export interface VerifyResult {
+	success: boolean;
+	report: {
+		success: boolean;
+		results: Record<
+			string,
+			{
+				outcome: 'match' | 'missing_record' | 'timeout' | 'error' | string;
+				detail?: string;
+				records?: string[];
+			}
+		>;
+	};
 }
 
 export interface HealthCheck {

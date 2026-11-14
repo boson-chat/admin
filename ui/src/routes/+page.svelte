@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { session } from '$lib/session.svelte';
 	import { errorText } from '$lib/toasts.svelte';
 	import { date, num, relative } from '$lib/format';
 	import type { Certificate, Overview, Stat } from '$lib/types';
 	import SignalPath from '$lib/components/SignalPath.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
 	import Notice from '$lib/components/Notice.svelte';
+	import State from '$lib/components/State.svelte';
 	import { due, measure, type BrowserLatency } from '$lib/probe';
 
 	let data = $state<Overview | null>(null);
@@ -57,6 +59,10 @@
 			clearInterval(tick);
 		};
 	});
+
+	let failing = $derived(
+		(data?.services ?? []).filter((x) => x.status === 'down' || x.status === 'degraded').map((x) => x.name)
+	);
 
 	let summary = $derived.by(() => {
 		if (!data) return '';
@@ -127,6 +133,9 @@
 		<button class="btn btn-small" onclick={() => load(true)} disabled={loading}
 			>{loading ? 'Checking…' : 'Check now'}</button
 		>
+		<a class="btn btn-small" href="/services"
+			>{session.info?.features.services ? 'Restart, stop, logs' : 'Services'}</a
+		>
 		{#if grafana()}
 			<a class="btn btn-small" href={grafana()} target="_blank" rel="noopener noreferrer">Open Grafana</a>
 		{/if}
@@ -148,6 +157,17 @@
 			probes={data.public_probes ?? []}
 			{browser}
 		/>
+		{#if failing.length}
+			<p class="fix">
+				{failing.join(', ')}
+				{failing.length === 1 ? 'is' : 'are'} failing.
+				{#if session.info?.features.services}
+					<a href="/services">Restart {failing.length === 1 ? 'it' : 'them'} or read the logs</a>
+				{:else}
+					<a href="/services">Services</a> can restart it once the Docker socket proxy is set up.
+				{/if}
+			</p>
+		{/if}
 	</section>
 
 	<section class="section" aria-labelledby="cert-h">
@@ -242,10 +262,16 @@
 		{/if}
 	</section>
 {:else if !error}
-	<p class="muted" aria-busy="true">Checking services…</p>
+	<State kind="loading" title="Checking services…" />
 {/if}
 
 <style>
+	.fix {
+		margin-top: var(--space-3);
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		color: var(--danger-text);
+	}
 	.summary {
 		font-size: var(--text-lg);
 		color: var(--fg);

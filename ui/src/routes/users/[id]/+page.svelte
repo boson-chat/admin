@@ -4,18 +4,21 @@
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { browser, datetime, eventName, eventTone } from '$lib/format';
-	import type { AuditEntry, User, UserSession } from '$lib/types';
+	import type { AuditEntry, ProfileResponse, User, UserSession } from '$lib/types';
+	import Avatar from '$lib/components/Avatar.svelte';
+	import State from '$lib/components/State.svelte';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import type { DropdownOption } from '$lib/dropdown';
 	import Dropdown from '$lib/components/Dropdown.svelte';
-	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 
 	let id = $derived(page.params.id ?? '');
 	let user = $state<User | null>(null);
 	let sessions = $state<UserSession[] | null>(null);
 	let activity = $state<AuditEntry[] | null>(null);
+	let profile = $state<ProfileResponse | null>(null);
 	let error = $state('');
+	let mailing = $state<'' | 'reset' | 'verification'>('');
 
 	let self = $derived(session.info?.user.id === id);
 
@@ -56,15 +59,47 @@
 		}
 	}
 
+	async function loadProfile() {
+		try {
+			profile = await api<ProfileResponse>('GET', `/users/${encodeURIComponent(id)}/profile`);
+		} catch (e) {
+			profile = { configured: true, error: errorText(e) };
+		}
+	}
+
 	$effect(() => {
 		void id;
 		user = null;
 		sessions = null;
 		activity = null;
+		profile = null;
 		loadUser();
 		loadSessions();
 		loadActivity();
+		loadProfile();
 	});
+
+	async function sendMail(kind: 'reset' | 'verification') {
+		mailing = kind;
+		try {
+			await api(
+				'POST',
+				`/users/${encodeURIComponent(id)}/${kind === 'reset' ? 'password-reset' : 'verification'}`
+			);
+			toasts.push(
+				kind === 'reset'
+					? `Sent ${user?.username} a password reset link.`
+					: `Sent ${user?.username} a new verification email.`
+			);
+			loadActivity();
+		} catch (e) {
+			toasts.push(errorText(e), 'bad');
+		} finally {
+			mailing = '';
+		}
+	}
+
+	const statusTag: Record<string, string> = { verified: 'tag-ok', pending: 'tag-warn', lapsed: 'tag-bad' };
 
 	async function setRole(role: 'admin' | 'user') {
 		try {
@@ -110,21 +145,51 @@
 <p class="crumb"><a href="/users">Users</a></p>
 
 {#if error}
-	<Notice>{error}</Notice>
+	<State kind="error">
+		{error}
+		{#snippet action()}<a class="btn btn-small" href="/users">All users</a>{/snippet}
+	</State>
 {:else if !user}
-	<p class="muted" aria-busy="true">Loading…</p>
+	<State kind="loading" />
 {:else}
 	<div class="page-head">
-		<div>
-			<h1>
-				{user.username}
-				{#if user.role === 'admin'}<span class="tag tag-accent">Admin</span>{/if}
-				{#if user.disabled_at}<span class="tag tag-bad">Disabled</span>{/if}
-				{#if self}<span class="tag">You</span>{/if}
-			</h1>
-			{#if user.display_name && user.display_name !== user.username}<p>{user.display_name}</p>{/if}
+		<div class="who">
+			<Avatar
+				src={profile?.profile?.avatar_url}
+				name={profile?.profile?.display_name || user.display_name || user.username}
+				size={56}
+			/>
+			<div>
+				<h1>
+					{user.username}
+					{#if user.role === 'admin'}<span class="tag tag-accent">Admin</span>{/if}
+					{#if user.disabled_at}<span class="tag tag-bad">Disabled</span>{/if}
+					{#if self}<span class="tag">You</span>{/if}
+				</h1>
+				{#if user.display_name && user.display_name !== user.username}<p>{user.display_name}</p>{/if}
+			</div>
 		</div>
 		<div class="actions">
+			{#if user.email}
+				{#if !user.email_verified}
+					<button class="btn btn-small" onclick={() => sendMail('verification')} disabled={!!mailing}
+						>{mailing === 'verification' ? 'Sending…' : 'Resend verification'}</button
+					>
+				{/if}
+				<Confirm
+					title="Send {user.username} a password reset?"
+					action="Send reset link"
+					onconfirm={() => sendMail('reset')}
+				>
+					{#snippet trigger(open)}
+						<button class="btn btn-small" onclick={open} disabled={!!mailing}
+							>{mailing === 'reset' ? 'Sending…' : 'Send password reset'}</button
+						>
+					{/snippet}
+					They get an email at <strong>{user.email}</strong> with a link to choose a new password. Their current
+					password keeps working until they do.
+				</Confirm>
+			{/if}
 			{#if user.disabled_at}
 				<Confirm title="Enable {user.username}?" action="Enable account" onconfirm={() => setDisabled(false)}>
 					{#snippet trigger(open)}<button class="btn btn-small" onclick={open}>Enable account</button
@@ -206,13 +271,125 @@
 		</div>
 	</dl>
 
+	<section class="section" aria-labelledby="prof-h">
+		<div class="section-head">
+			<h2 id="prof-h">Boson profile</h2>
+			<p>What other people see in the boson app.</p>
+		</div>
+		{#if profile === null}
+			<State kind="loading" title="Loading profile…" />
+		{:else if !profile.configured}
+			<State kind="off" title="Profiles aren’t connected">
+				Set <code>BOSON_API_URL</code> to the stack’s boson API (for example <code>http://api:3000</code>) to
+				show avatars, handles and the servers people list in the directory.
+			</State>
+		{:else if profile.unsupported}
+			<State kind="unsupported" title="Needs a newer boson API">{profile.unsupported}.</State>
+		{:else if profile.error}
+			<State kind="error" title="The profile didn’t load">
+				{profile.error}
+				{#snippet action()}<button class="btn btn-small" onclick={loadProfile}>Try again</button>{/snippet}
+			</State>
+		{:else if !profile.profile}
+			<State kind="empty" title="No boson profile yet">
+				{user.username} hasn’t opened the boson app with this account, so there’s no handle or avatar.
+			</State>
+		{:else}
+			{@const p = profile.profile}
+			<div class="profile">
+				<Avatar src={p.avatar_url} name={p.display_name || p.handle} size={72} />
+				<dl class="pfacts">
+					<div>
+						<dt>Display name</dt>
+						<dd>{p.display_name || '—'}</dd>
+					</div>
+					<div>
+						<dt>Handle</dt>
+						<dd>@{p.handle}</dd>
+					</div>
+					<div>
+						<dt>Discoverable</dt>
+						<dd>{p.is_discoverable ? 'Yes, others can find them' : 'No, hidden from lookups'}</dd>
+					</div>
+					{#if p.created_at}
+						<div>
+							<dt>Profile created</dt>
+							<dd>{datetime(p.created_at)}</dd>
+						</div>
+					{/if}
+				</dl>
+			</div>
+			<h3 class="sub">Servers they list in the directory</h3>
+			{#if !profile.servers?.length}
+				<p class="muted small">None.</p>
+			{:else}
+				<ul class="servers">
+					{#each profile.servers as srv (srv.id)}
+						<li>
+							<span class="sname">{srv.name}</span>
+							<span class="mono muted">{srv.hostname}:{srv.port}{srv.tls ? '' : ' (plain)'}</span>
+							<span class="tag {statusTag[srv.verification_status] ?? ''}">{srv.verification_status}</span>
+							{#if srv.health_status && srv.health_status !== 'unknown'}
+								<span class="health" data-h={srv.health_status}>{srv.health_status}</span>
+							{/if}
+							{#if srv.user_count !== undefined}<span class="muted small">{srv.user_count} users</span>{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		{/if}
+	</section>
+
+	<section class="section" aria-labelledby="id-h">
+		<div class="section-head">
+			<h2 id="id-h">Linked sign-ins</h2>
+			<p><a href="/sso">Sign-in providers</a></p>
+		</div>
+		{#if user.identities === undefined}
+			<State kind="unsupported" title="Not reported by this auth service">
+				Linked SSO accounts are listed once the auth service is updated (auth ≥ v1.3.0).
+			</State>
+		{:else if user.identities.length === 0}
+			<p class="muted small">None. {user.username} signs in with a password only.</p>
+		{:else}
+			<div class="table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th>Provider</th>
+							<th class="hide-s">Account at the provider</th>
+							<th>Last used</th>
+							<th class="hide-s">Linked</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each user.identities as ident (ident.id)}
+							<tr>
+								<td>
+									{ident.provider_name || ident.provider_slug || 'Provider'}
+									{#if ident.kind}<span class="tag">{ident.kind.toUpperCase()}</span>{/if}
+								</td>
+								<td class="hide-s mono">
+									{ident.email || ident.subject}
+									{#if ident.email}<div class="muted small">{ident.subject}</div>{/if}
+								</td>
+								<td><Time at={ident.last_login_at} empty="Never" /></td>
+								<td class="hide-s"><Time at={ident.created_at} /></td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+	</section>
+
 	<section class="section" aria-labelledby="ses-h">
 		<div class="section-head">
 			<h2 id="ses-h">Active sessions</h2>
 			<p>Each device or app signed in to this account.</p>
 		</div>
 		{#if sessions === null}
-			<p class="muted">Loading…</p>
+			<State kind="loading" />
 		{:else if sessions.length === 0}
 			<p class="muted">No active sessions.</p>
 		{:else}
@@ -264,10 +441,10 @@
 	<section class="section" aria-labelledby="act-h">
 		<div class="section-head">
 			<h2 id="act-h">Recent activity</h2>
-			<p><a href="/audit?user_id={encodeURIComponent(user.id)}">Full audit log for this account</a></p>
+			<p><a href="/audit?actor={encodeURIComponent(user.id)}">Full audit log for this account</a></p>
 		</div>
 		{#if activity === null}
-			<p class="muted">Loading…</p>
+			<State kind="loading" />
 		{:else if activity.length === 0}
 			<p class="muted">Nothing recorded yet.</p>
 		{:else}
@@ -302,6 +479,77 @@
 	}
 	.crumb a:hover {
 		text-decoration: underline;
+	}
+	.who {
+		display: flex;
+		gap: var(--space-4);
+		align-items: center;
+		min-width: 0;
+	}
+	.profile {
+		display: flex;
+		gap: var(--space-5);
+		align-items: flex-start;
+		padding: var(--space-5);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+	}
+	.pfacts {
+		flex: 1;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		gap: var(--space-4) var(--space-6);
+		margin: 0;
+	}
+	.sub {
+		margin: var(--space-6) 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+	.servers {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+	}
+	.servers li {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2) var(--space-4);
+		align-items: center;
+		padding: var(--space-3) var(--space-4);
+		border-bottom: 1px solid var(--border-soft);
+		font-size: var(--text-sm);
+	}
+	.servers li:last-child {
+		border-bottom: 0;
+	}
+	.sname {
+		font-family: var(--font-mono);
+		font-weight: 600;
+	}
+	.health {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-2);
+	}
+	.health::before {
+		content: '';
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--fg-3);
+	}
+	.health[data-h='up']::before {
+		background: var(--success);
+	}
+	.health[data-h='down']::before {
+		background: var(--danger);
 	}
 	h1 {
 		display: flex;
@@ -394,6 +642,9 @@
 		font-family: var(--font-mono);
 	}
 	@media (max-width: 640px) {
+		.profile {
+			flex-direction: column;
+		}
 		.hide-s {
 			display: none;
 		}
