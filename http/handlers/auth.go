@@ -26,7 +26,7 @@ type sessionView struct {
 }
 
 func (h *Handlers) view(d session.Data, a *admin.Access) sessionView {
-	v := sessionView{CSRFToken: d.CSRF, ExpiresAt: h.Sessions.Expiry(d), Features: h.Features,
+	v := sessionView{CSRFToken: d.CSRF, ExpiresAt: h.Sessions.Expiry(d), Features: h.features(),
 		Permissions: []string{}, Roles: []authapi.RoleRef{}}
 	if a == nil {
 		v.User = &authapi.User{ID: d.UserID, Username: d.Username, Role: d.Role}

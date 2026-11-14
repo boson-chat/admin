@@ -169,7 +169,12 @@ make build       # UI + Go binary in bin/admin
 
 ## Configuration
 
-Everything is an environment variable. Durations use Go syntax (`15m`, `12h`).
+The panel's own settings are environment variables. Durations use Go syntax
+(`15m`, `12h`). Three of them are only defaults when the stack config file
+is set up (below): `DIRECTORY_REGISTRATION`, `DIRECTORY_HOSTNAME` and
+`TLS_CHECK_HOSTS`. Everything else (URLs of the services, Docker, metrics,
+health targets, IRC check, secrets) is a deployment setting: change it in the
+stack's `.env` and recreate the service.
 
 | Variable | Default | |
 |---|---|---|
@@ -189,7 +194,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`, `12h`).
 | `GRAFANA_URL` | – | Grafana base URL for links |
 | `HEALTH_TARGETS` | auth `/healthz` + `/readyz` from `AUTH_INTERNAL_URL` | `name=url,…`. Repeat a name to group checks under one service. 2xx/3xx = healthy; redirects aren't followed |
 | `VERSION_TARGETS` | auth from `AUTH_INTERNAL_URL/metrics` | `name=url,…`: plain text (quicvoiced `/version`), JSON `{"version"}`, or a Prometheus `/metrics` URL (reads `target_info{service_version}`) |
-| `TLS_CHECK_HOSTS` | – | `host:port[@dial-host:dial-port],…`. The name is sent as SNI and verified; the optional dial address lets you check a public name over the internal network. Results are cached 5 minutes |
+| `TLS_CHECK_HOSTS` | – | *default*: `admin.tls_check_hosts` in the config file wins. `host:port[@dial-host:dial-port],…`. The name is sent as SNI and verified; the optional dial address lets you check a public name over the internal network. Results are cached 5 minutes |
 | `IRC_CHECK` | – | IRC server to probe: `ircs://host[:6697]` (TLS) or `irc://host[:6667]`, e.g. `ircs://ergo:6697`. Empty = IRC "not configured" |
 | `IRC_CHECK_SERVER_NAME` | `IRC_CHECK`'s host | TLS SNI for the probe, e.g. the public `IRC_HOST` when dialling the container |
 | `PUBLIC_PROBE_TARGETS` | – | `name=url,…` public endpoints your browser times (`https://`, `http://`, `wss://`, `ws://`). Names match services (`auth`, `api`, `quicvoiced`, `irc`); `admin` overrides the panel's own `/healthz`. Origins are added to the CSP `connect-src` |
@@ -202,11 +207,14 @@ Everything is an environment variable. Durations use Go syntax (`15m`, `12h`).
 | `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
 | `BOSON_CDN_URL` | `https://cdn.boson.chat` | where avatars and server icons are served from; added to the CSP `img-src` |
 | `DIRECTORY_API_URL` | `https://directory.boson.chat` | the boson directory this network is listed in ([boson-chat/directory](https://github.com/boson-chat/directory), `/v1` API). Empty = the directory page is off |
-| `DIRECTORY_REGISTRATION` | `true` | register and edit this network's listing there (network key + DNS proof). `false` = the page only reports whether it is listed |
+| `DIRECTORY_REGISTRATION` | `true` | *default*: `admin.directory_registration` in the config file wins. Register and edit this network's listing there (network key + DNS proof). `false` = the page only reports whether it is listed |
 | `DIRECTORY_LOCAL_URL` | – | the stack's own directory (`directory` profile), e.g. `http://directory:8080`: its settings, the "Include the boson main directory" switch, its peers, and the listings each user owns. Empty = off |
 | `DIRECTORY_INTERNAL_TOKEN` | – | operator token for `DIRECTORY_LOCAL_URL` (the directory's `DIRECTORY_INTERNAL_TOKEN`); required with it |
 | `DIRECTORY_KEY` | `SESSION_KEY` | secret the directory management key is derived from. Set it if you rotate `SESSION_KEY`, or the panel loses edit access to its listing |
-| `DIRECTORY_HOSTNAME` | `IRC_CHECK_SERVER_NAME` | the IRC hostname to list |
+| `DIRECTORY_HOSTNAME` | `IRC_CHECK_SERVER_NAME` | *default*: `admin.directory_hostname` in the config file wins. The IRC hostname to list |
+| `BOSON_CONFIG` | – | the stack config file, e.g. `/config/boson.yaml` (see below). Its directory must be writable: saves are atomic renames. Empty = everything from the env, as before |
+| `CONFIG_STATUS_TARGETS` | – | `name=url,…` of each service's `GET /internal/config/status`; names are compose services (the Restart button uses them), e.g. `auth=http://auth:8081/internal/config/status,ergo=http://ergo:8098/internal/config/status` |
+| `BOSON_CONFIG_POLL` | `10s` | how often the file is re-read when no change event arrives |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | – | enable OTLP/HTTP metrics push in addition to `/metrics` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | only `http/protobuf` is supported |
 | `OTEL_METRICS_EXPORTER` | – | `none` turns OTLP push off |
@@ -216,6 +224,55 @@ endpoints (`auth:8081/metrics`, `quicvoiced:8080/metrics`), or ingests OTLP
 with Prometheus naming, so the series are named as in the
 [quicvoice](https://github.com/boson-chat/quicvoice#metrics) and
 [auth](https://github.com/boson-chat/auth#metrics) READMEs.
+
+### The stack config file
+
+With `BOSON_CONFIG` the panel reads and writes the stack's one config file,
+`config/boson.yaml` (schema v1; the stack repo's `docs/config.md`): the
+**Stack config** page edits the panel's own section (`admin:` directory
+registration, the hostname to list, certificates to watch), voice rooms and
+limits, IRC options, the auth service's email and CORS settings and the
+network name; **Network settings** and the stack directory's settings on
+**Directory** save to it too instead of to auth's and the directory's
+databases. A value in the file wins over the env, which stays the default;
+**Reset to default** removes the key.
+
+- **Edits keep the file readable.** The panel edits it through the yaml.v3
+  Node API: comments, key order and keys it doesn't know survive, and it notes
+  `# last saved in the admin panel by <user> at <time>` on the `version:` line.
+  Writes are atomic (temp file in the same directory, fsync, rename, fsync of
+  the directory) and keep the file's mode (0644 for a new one; no secrets go
+  in it).
+- **Hand edits are picked up live:** fsnotify on the directory (a save by
+  rename replaces the inode) plus a poll every `BOSON_CONFIG_POLL`. A file
+  that doesn't parse is never used or overwritten: the last good version stays
+  in effect, the log says `config file has an error`, and every page shows a
+  banner with the line until someone fixes it. A value that parses but isn't
+  valid (say `directory_hostname: 203.0.113.9`) keeps that key's last good
+  value and is listed with its line.
+- **Several admins and tabs:** saves are serialised and re-read the file
+  first, so concurrent edits of different keys all land (last write wins for
+  the same key). `PATCH /api/config` takes an optional `If-Match: <ETag>`
+  (`412 config_changed` when the file moved on); the Stack config page sends it.
+- **Who may change what:** reading needs `admin.panel` (nothing secret is in
+  the file); each key needs its own permission: `network.*`, `auth.*` and
+  `voice.*` → `settings.manage`; `directory.*`, `admin.directory_registration`
+  and `admin.directory_hostname` → `directory.manage`; `irc.*` and
+  `admin.tls_check_hosts` → `services.manage` (certificates and IRC listeners
+  are operations, like restarting a service). `irc.plaintext_port` is left to
+  hand edits: compose publishes the container's port.
+- **Did it apply?** The panel asks each `CONFIG_STATUS_TARGETS` service for
+  `/internal/config/status` (and serves its own on `INTERNAL_ADDR`) and shows
+  applied / loading / needs a restart for `<keys>` / rejected the file, with
+  a Restart button (through the Docker socket proxy, typed confirmation for
+  `admin` and `traefik`).
+- Every save is logged (`config file change`, actor, keys, old → new) and
+  counted in `admin_settings_changes_total`.
+
+For migrating an existing install, `admin export-config` prints the `admin:`
+section from the env vars that are set, and `admin config merge [--overwrite]
+FILE` merges YAML from stdin (each service's `export-config`) into the file,
+keeping keys it already has; the stack's `scripts/migrate-config.sh` runs both.
 
 ## Adding it to the stack
 
@@ -526,11 +583,11 @@ the page and the buttons.
 
 | Permission | Pages and endpoints |
 |---|---|
-| `admin.panel` | sign in, `/api/session`, reading `/api/permissions`, `/api/roles`, `/api/roles/{id}` and its members |
+| `admin.panel` | sign in, `/api/session`, reading the config file (`GET /api/config`, `/raw`, `/status`), reading `/api/permissions`, `/api/roles`, `/api/roles/{id}` and its members |
 | `services.view` | Stack (`/api/overview`), Services list and logs (`GET /api/services…`) |
-| `services.manage` | restart / stop / start (`POST /api/services/{name}/{action}`) |
-| `settings.manage` | Network settings (`GET/PATCH /api/settings`) |
-| `directory.manage` | Directory (`/api/directory…`) |
+| `services.manage` | restart / stop / start (`POST /api/services/{name}/{action}`); config file keys `irc.*`, `admin.tls_check_hosts` |
+| `settings.manage` | Network settings (`GET/PATCH /api/settings`); config file keys `network.*`, `auth.*`, `voice.*` |
+| `directory.manage` | Directory (`/api/directory…`); config file keys `directory.*`, `admin.directory_*` |
 | `audit.view` | Audit log (`/api/audit`) |
 | `users.view` | Users, a user's page, sessions, activity, profile |
 | `users.manage` | create users, password reset / verification emails |
@@ -587,7 +644,10 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/audit?event=&actor=&target=&since=&until=&cursor=&limit=` | `event` exact or prefix with `*`; `since`/`until` RFC 3339 or a duration back from now (`24h`); `user_id` still works for `actor`. `{entries, next_cursor, server_filtered, events}` |
 | `GET /api/overview` | services (incl. `irc`), certificates, metrics, `edge`, `irc`, `public_probes` |
 | `GET /api/sso` | removed; see `/api/sso/providers` |
-| `GET/PATCH /api/settings` | `{settings}`; 501 `upstream_unsupported` on older auth |
+| `GET/PATCH /api/settings` | `{settings}`; 501 `upstream_unsupported` on older auth. With `BOSON_CONFIG` the PATCH writes `auth:` in the config file and both answer `{settings, config: {managed, sources: {key: file\|default}}}` |
+| `GET /api/config` | `{enabled, path, etag, exists, modified_at, saved_by, saved_at, error?: {message, line, column}, issues, keys: [{key, kind, perm, services, env, restart, set, value, default, line, editable}]}`; `ETag` header |
+| `PATCH /api/config` `{set: {key: value}, unset: [key]}` (`If-Match` optional) | the same view; 400 invalid value, 403 `missing_permission` per key, 412 `config_changed`, 409 `config_file_invalid` (the file on disk doesn't parse), 503 `config_file_off` |
+| `GET /api/config/raw` · `GET /api/config/status` | the file as on disk · `{services: [{name, state: applied\|pending\|restart_required\|error\|unreachable\|unsupported, restart_required, error, sections}]}` |
 | `GET/POST /api/sso/providers`, `GET/PATCH/DELETE /api/sso/providers/{id}`, `POST …/{id}/test` | |
 | `POST /api/users` | create; `{user, invite_sent}` |
 | `POST /api/users/{id}/password-reset`, `/verification` | 204 |
@@ -602,7 +662,7 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/directory?hostname=`, `POST /api/directory`, `PATCH /api/directory/{id}?hostname=`, `POST …/{id}/verify`, `POST …/{id}/regenerate-token`, `DELETE …/{id}` | |
 | `GET /api/directory/federation` | `{url, main_peer?, peers, settings?, settings_unsupported?, settings_error?, unsupported?, error?}`; 503 `directory_local_off` without `DIRECTORY_LOCAL_URL` |
 | `PUT /api/directory/federation/include-main` `{enabled}` | the same; through the directory's settings (≥ 1.4.0), else by toggling the built-in peer (409 `main_peer_missing` when an old directory has none); 409 `is_main_directory` on the main directory |
-| `PATCH /api/directory/settings` `{name?, operator?, contact?, sync_every?}` | federation JSON; unsupported before directory 1.4.0 |
+| `PATCH /api/directory/settings` `{name?, operator?, contact?, sync_every?}` | federation JSON; unsupported before directory 1.4.0. With `BOSON_CONFIG` it (and include-main) writes `directory:` in the config file |
 | `GET /api/directory/peers/check?url=` | `{url, well_known: {name, api, …}}` (a bare host gets `https://`) |
 | `POST /api/directory/peers` `{url}` · `PATCH /api/directory/peers/{id}` `{enabled}` · `DELETE /api/directory/peers/{id}` | federation JSON (201 for add) |
 | `POST /api/directory/peers/{id}/sync` | `{federation, result: {created, updated, deleted, verified, error?}}` |
@@ -621,6 +681,7 @@ On `INTERNAL_ADDR` `/metrics` (and OTLP if configured), plus Go runtime metrics:
 | `admin_logins_total` | `outcome` (`success`, `invalid_credentials`, `not_admin` (no `admin.panel`), `rate_limited`, `error`) |
 | `admin_token_refreshes_total` | `outcome` (`success`, `shared`, `expired`, `error`) |
 | `admin_service_actions_total` | `action` (`start`, `stop`, `restart`), `outcome` (`success`, `refused`, `error`) |
+| `admin_settings_changes_total` | `section` (`admin`, `auth`, `voice`, …), `outcome` (`success`, `invalid`, `conflict`, `invalid_file`, `error`) |
 
 `admin_upstream_*` covers `auth`, `docker`, `boson_api`, `directory` and `directory_local`.
 

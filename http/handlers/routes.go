@@ -52,6 +52,13 @@ func (h *Handlers) routes() []route {
 		{"GET /api/settings", admin.PermSettingsManage, false, h.getSettings},
 		{"PATCH /api/settings", admin.PermSettingsManage, false, h.updateSettings},
 
+		// The stack config file: reading needs admin.panel only (no
+		// secrets in it); each key's write needs its own permission.
+		{"GET /api/config", "", false, h.getConfig},
+		{"GET /api/config/raw", "", false, h.getConfigRaw},
+		{"GET /api/config/status", "", false, h.getConfigStatus},
+		{"PATCH /api/config", configWrite, true, h.patchConfig},
+
 		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
 		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
 		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},

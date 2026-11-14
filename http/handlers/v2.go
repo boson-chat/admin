@@ -11,6 +11,7 @@ import (
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/stackconfig"
 	"github.com/boson-chat/admin/internal/session"
 )
 
@@ -22,13 +23,31 @@ func (h *Handlers) getSettings(w http.ResponseWriter, r *http.Request, s *sessio
 		writeError(w, r, err)
 		return
 	}
+	if h.Config.Enabled() {
+		writeJSON(w, http.StatusOK, h.fileSettings(st))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": st})
 }
 
+// updateSettings writes auth's section of the stack config file when there
+// is one (auth then refuses its own PATCH), else PATCHes auth as before.
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request, s *session.Session) {
 	var p authapi.SettingsPatch
 	if err := decode(w, r, &p); err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if h.Config.Enabled() {
+		if p == (authapi.SettingsPatch{}) {
+			writeError(w, r, apperr.Invalid("nothing to update"))
+			return
+		}
+		if _, err := h.Config.Update(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), settingsChange(p), h.can(r, s)); err != nil {
+			writeError(w, r, configErr(err))
+			return
+		}
+		h.getSettings(w, r, s)
 		return
 	}
 	st, err := h.Admin.UpdateSettings(r.Context(), s, p)
@@ -399,7 +418,7 @@ func (h *Handlers) directoryFederation(w http.ResponseWriter, r *http.Request, s
 	if !h.localDirectoryOr503(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, h.LocalDirectory.Federation(r.Context()))
+	writeJSON(w, http.StatusOK, h.fileFederation(h.LocalDirectory.Federation(r.Context())))
 }
 
 func (h *Handlers) directoryIncludeMain(w http.ResponseWriter, r *http.Request, s *session.Session) {
@@ -417,6 +436,15 @@ func (h *Handlers) directoryIncludeMain(w http.ResponseWriter, r *http.Request, 
 		writeError(w, r, apperr.Invalid("enabled (true or false) is required"))
 		return
 	}
+	if h.Config.Enabled() {
+		c := stackconfig.Change{Set: map[string]any{"directory.include_main": *in.Enabled}}
+		if _, err := h.Config.Update(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), c, h.can(r, s)); err != nil {
+			writeError(w, r, configErr(err))
+			return
+		}
+		h.directoryFederation(w, r, s)
+		return
+	}
 	f, err := h.LocalDirectory.SetIncludeMain(r.Context(), s.Snapshot().Username, *in.Enabled)
 	if err != nil {
 		writeError(w, r, err)
@@ -426,8 +454,8 @@ func (h *Handlers) directoryIncludeMain(w http.ResponseWriter, r *http.Request, 
 }
 
 // directorySettings changes the stack directory's runtime settings
-// (name, operator, contact, sync interval): stored in its database, so
-// nobody edits .env.
+// (name, operator, contact, sync interval): in the stack config file when
+// there is one, else in the directory's database. Nobody edits .env.
 func (h *Handlers) directorySettings(w http.ResponseWriter, r *http.Request, s *session.Session) {
 	if !h.localDirectoryOr503(w, r) {
 		return
@@ -435,6 +463,19 @@ func (h *Handlers) directorySettings(w http.ResponseWriter, r *http.Request, s *
 	var in directory.SettingsUpdate
 	if err := decode(w, r, &in); err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if h.Config.Enabled() {
+		c := directoryChange(in)
+		if len(c.Set) == 0 {
+			writeError(w, r, apperr.Invalid("nothing to update"))
+			return
+		}
+		if _, err := h.Config.Update(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), c, h.can(r, s)); err != nil {
+			writeError(w, r, configErr(err))
+			return
+		}
+		h.directoryFederation(w, r, s)
 		return
 	}
 	f, err := h.LocalDirectory.UpdateSettings(r.Context(), s.Snapshot().Username, in)

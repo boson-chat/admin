@@ -14,8 +14,9 @@
 //   - the DNS TXT record _boson.<hostname> = "boson-verify=<token>", the same
 //     check the directory runs for every listing (and re-runs daily).
 //
-// DIRECTORY_REGISTRATION=false turns registration off; the page then only
-// reports whether the network is listed.
+// Registration off (admin.directory_registration: false in the stack config
+// file, else DIRECTORY_REGISTRATION=false) leaves the page only reporting
+// whether the network is listed.
 package directory
 
 import (
@@ -39,6 +40,10 @@ type Options struct {
 	APIURL string
 	// Registration turns network registration (the owner API) on.
 	Registration bool
+	// Live, when set, gives the current registration switch and hostname
+	// (admin.directory_registration / admin.directory_hostname in the
+	// stack config file, else the env) and wins over Registration/Hostname.
+	Live func() (registration bool, hostname string)
 	// Secret derives the management keys (DIRECTORY_KEY, else SESSION_KEY).
 	Secret []byte
 	// Defaults for the form (the public IRC host).
@@ -81,6 +86,22 @@ func NewDirectoryService(o Options) DirectoryServiceImpl {
 	return &DirectoryService{o: o}
 }
 
+func (d *DirectoryService) registration() bool {
+	if d.o.Live != nil {
+		on, _ := d.o.Live()
+		return on
+	}
+	return d.o.Registration
+}
+
+func (d *DirectoryService) hostname() string {
+	if d.o.Live != nil {
+		_, h := d.o.Live()
+		return h
+	}
+	return d.o.Hostname
+}
+
 // Key is the management key for hostname.
 func (d *DirectoryService) Key(hostname string) string {
 	m := hmac.New(sha256.New, d.o.Secret)
@@ -97,14 +118,15 @@ func errMsg(err error) string {
 
 func (d *DirectoryService) Status(ctx context.Context, hostname string) *Status {
 	if hostname == "" {
-		hostname = d.o.Hostname
+		hostname = d.hostname()
 	}
 	hostname = strings.ToLower(strings.TrimSpace(hostname))
-	st := &Status{APIURL: d.o.APIURL, Registration: d.o.Registration, Hostname: hostname, Port: d.o.Port}
+	reg := d.registration()
+	st := &Status{APIURL: d.o.APIURL, Registration: reg, Hostname: hostname, Port: d.o.Port}
 	if hostname == "" {
 		return st
 	}
-	if d.o.Registration {
+	if reg {
 		l, err := d.o.Client.Lookup(ctx, d.Key(hostname), hostname)
 		switch {
 		case apperr.IsUnsupported(err):
@@ -193,7 +215,7 @@ func clean(s *bosonapi.Submission, create bool) error {
 }
 
 var errOff = apperr.New(http.StatusConflict, "directory_registration_off",
-	"directory registration is off; set DIRECTORY_REGISTRATION=true to list this network")
+	"directory registration is off; switch it on in the panel (Directory page) to list this network")
 
 func (d *DirectoryService) log(ctx context.Context, actor, action, hostname string, err error) {
 	ev := logger.FromCtx(ctx).Info()
@@ -204,7 +226,7 @@ func (d *DirectoryService) log(ctx context.Context, actor, action, hostname stri
 }
 
 func (d *DirectoryService) Submit(ctx context.Context, actor string, s bosonapi.Submission) (*bosonapi.Listing, error) {
-	if !d.o.Registration {
+	if !d.registration() {
 		return nil, errOff
 	}
 	if err := clean(&s, true); err != nil {
@@ -220,7 +242,7 @@ func (d *DirectoryService) Submit(ctx context.Context, actor string, s bosonapi.
 }
 
 func (d *DirectoryService) Update(ctx context.Context, actor, hostname, id string, s bosonapi.Submission) (*bosonapi.Listing, error) {
-	if !d.o.Registration {
+	if !d.registration() {
 		return nil, errOff
 	}
 	if err := clean(&s, false); err != nil {
@@ -232,7 +254,7 @@ func (d *DirectoryService) Update(ctx context.Context, actor, hostname, id strin
 }
 
 func (d *DirectoryService) Verify(ctx context.Context, actor, hostname, id string) (*bosonapi.VerifyResult, error) {
-	if !d.o.Registration {
+	if !d.registration() {
 		return nil, errOff
 	}
 	r, err := d.o.Client.Verify(ctx, d.Key(hostname), id)
@@ -241,7 +263,7 @@ func (d *DirectoryService) Verify(ctx context.Context, actor, hostname, id strin
 }
 
 func (d *DirectoryService) Regenerate(ctx context.Context, actor, hostname, id string) (*bosonapi.Listing, error) {
-	if !d.o.Registration {
+	if !d.registration() {
 		return nil, errOff
 	}
 	l, err := d.o.Client.RegenerateToken(ctx, d.Key(hostname), id)
@@ -250,7 +272,7 @@ func (d *DirectoryService) Regenerate(ctx context.Context, actor, hostname, id s
 }
 
 func (d *DirectoryService) Unlist(ctx context.Context, actor, hostname, id string) error {
-	if !d.o.Registration {
+	if !d.registration() {
 		return errOff
 	}
 	err := d.o.Client.Unlist(ctx, d.Key(hostname), id)

@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/overview"
+	"github.com/boson-chat/admin/internal/services/stackconfig"
 	"github.com/boson-chat/admin/internal/session"
 )
 
@@ -50,6 +51,9 @@ type Features struct {
 	DirectoryLocal bool `json:"directory_local"`
 	// IRCHost is the public IRC hostname (for previews of how roles look on IRC).
 	IRCHost string `json:"irc_host,omitempty"`
+	// ConfigFile: the stack config file (BOSON_CONFIG) holds the runtime
+	// settings; the panel writes it.
+	ConfigFile bool `json:"config_file"`
 }
 
 // Handlers is the DI container for the HTTP layer.
@@ -62,14 +66,32 @@ type Handlers struct {
 	// LocalDirectory: the stack's own directory (operator API).
 	LocalDirectory directory.LocalServiceImpl
 	Profiles       bosonapi.ProfileClientImpl
-	Sessions       *session.Codec
+	// Config is the stack config file (never nil; Enabled() without BOSON_CONFIG).
+	Config   *stackconfig.Service
+	Sessions *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features
 }
 
+// features is what's configured now: the directory switch and hostname
+// can change at runtime (the stack config file).
+func (h *Handlers) features() Features {
+	f := h.Features
+	if h.Config != nil {
+		a := h.Config.Admin()
+		f.IRCHost = a.DirectoryHostname
+		f.DirectoryRegistration = f.Directory && a.DirectoryRegistration
+		f.ConfigFile = h.Config.Enabled()
+	}
+	return f
+}
+
 // Register mounts the API on mux.
 func (h *Handlers) Register(mux *http.ServeMux) {
+	if h.Config == nil {
+		h.Config = stackconfig.New(stackconfig.Options{})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

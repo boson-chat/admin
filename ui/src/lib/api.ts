@@ -22,8 +22,13 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
  * Calls the panel's BFF. The session lives in an HttpOnly cookie; state-
  * changing calls echo the CSRF token the BFF handed out with the session.
  */
-export async function api<T>(method: Method, path: string, body?: unknown): Promise<T> {
-	const headers: Record<string, string> = { Accept: 'application/json' };
+export async function api<T>(
+	method: Method,
+	path: string,
+	body?: unknown,
+	extraHeaders?: Record<string, string>
+): Promise<T> {
+	const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders };
 	if (body !== undefined) headers['Content-Type'] = 'application/json';
 	if (method !== 'GET') {
 		headers['X-Requested-With'] = 'boson-admin';

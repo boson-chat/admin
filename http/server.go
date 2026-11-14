@@ -3,6 +3,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,11 +23,13 @@ import (
 	"github.com/boson-chat/admin/internal/clients/ircprobe"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/clients/tlsprobe"
+	"github.com/boson-chat/admin/internal/configfile"
 	"github.com/boson-chat/admin/internal/logger"
 	"github.com/boson-chat/admin/internal/services/admin"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/overview"
+	"github.com/boson-chat/admin/internal/services/stackconfig"
 	"github.com/boson-chat/admin/internal/session"
 	"github.com/boson-chat/admin/metrics"
 )
@@ -63,9 +66,35 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	refresher := admin.NewRefresher(authClient, 2*time.Minute, up.Timeout*2, nil)
 	adminSvc := admin.NewAdminService(authClient, refresher, m, nil)
 
+	// The stack config file (BOSON_CONFIG): runtime settings, env = defaults.
+	var store *configfile.Store
+	if path := cfg.StackConfig.Path; path != "" {
+		store = configfile.Open(path, configfile.Options{Header: stackconfig.FileHeader})
+		if _, p := store.Current(); p != nil {
+			logger.FromCtx(ctx).Error().Str("file", path).Str("error", p.Error()).Msg("config file has an error: using the env defaults until it's fixed")
+		}
+		store.OnChange(func(snap *configfile.Snapshot) {
+			logger.FromCtx(ctx).Info().Str("file", path).Time("file_mtime", snap.ModTime).Msg("config reloaded")
+		})
+		go store.Watch(ctx, cfg.StackConfig.Poll, func(err error) {
+			logger.FromCtx(ctx).Warn().Err(err).Str("file", path).Msg("watching the config file")
+		})
+	}
+	statusTargets, _ := cfg.StackConfig.Statuses()
+	stack := stackconfig.New(stackconfig.Options{
+		Store: store,
+		Defaults: stackconfig.Defaults{
+			DirectoryRegistration: cfg.BosonConfig.DirectoryRegistration,
+			DirectoryHostname:     cfg.BosonConfig.DirectoryHostname,
+			TLSCheckHosts:         config.SplitList(up.TLSCheckHosts),
+		},
+		Targets: statusTargets,
+		Client:  &nethttp.Client{Timeout: min(up.Timeout, 3*time.Second)},
+		Metrics: m,
+	})
+
 	targets, _ := up.Health()
 	versions, _ := up.Versions()
-	certs, _ := up.TLSTargets()
 	irc, _ := up.IRC()
 	probes, _ := up.PublicProbes()
 	connect := make([]string, 0, len(probes))
@@ -82,7 +111,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		Prom:     prom,
 		Targets:  targets,
 		Versions: versions,
-		Certs:    certs,
+		CertsFn:  func() []config.TLSTarget { return stack.Admin().TLSTargets },
 		Grafana:  up.GrafanaURL,
 		Version:  cfg.AppConfig.Version,
 		IRCProbe: ircprobe.NewIRCProber(min(up.Timeout, 5*time.Second)),
@@ -116,7 +145,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	}
 
 	h := &handlers.Handlers{
-		Admin: adminSvc, Overview: overviewSvc, Sessions: codec, Origin: origin,
+		Admin: adminSvc, Overview: overviewSvc, Sessions: codec, Origin: origin, Config: stack,
 		Features: handlers.Features{Version: cfg.AppConfig.Version, GrafanaURL: up.GrafanaURL, Metrics: prom != nil},
 	}
 	upstream := func(name string) func(op string, status int, err error, d time.Duration) {
@@ -147,8 +176,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 			Client: bosonapi.NewDirectoryClient(bc.DirectoryURL, max(up.Timeout, 20*time.Second), upstream("directory")),
 			APIURL: bc.DirectoryURL, Registration: bc.DirectoryRegistration, Secret: secret,
 			Hostname: bc.DirectoryHostname,
+			Live: func() (bool, string) {
+				a := stack.Admin()
+				return a.DirectoryRegistration, a.DirectoryHostname
+			},
 		})
-		h.Features.Directory, h.Features.DirectoryRegistration = true, bc.DirectoryRegistration
+		h.Features.Directory = true // DirectoryRegistration: Handlers.features()
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}
 	if bc.DirectoryLocalURL != "" {
@@ -158,7 +191,6 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		})
 		h.Features.DirectoryLocal = true
 	}
-	h.Features.IRCHost = bc.DirectoryHostname // IRC_CHECK_SERVER_NAME unless set
 	mux := nethttp.NewServeMux()
 	h.Register(mux)
 	mux.Handle("/", spa)
@@ -170,6 +202,11 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 
 	imux := nethttp.NewServeMux()
 	imux.HandleFunc("GET /healthz", func(w nethttp.ResponseWriter, _ *nethttp.Request) { _, _ = w.Write([]byte("ok")) })
+	// The stack contract's config status (the panel itself).
+	imux.HandleFunc("GET /internal/config/status", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(stack.Own())
+	})
 	imux.HandleFunc("GET /version", func(w nethttp.ResponseWriter, _ *nethttp.Request) { _, _ = w.Write([]byte(cfg.AppConfig.Version)) })
 	if o.MetricsHandler != nil {
 		imux.Handle("GET /metrics", o.MetricsHandler)

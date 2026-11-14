@@ -25,6 +25,34 @@
 	let unsupported = $state('');
 	let saving = $state(false);
 
+	// With the stack config file, these settings are saved to its auth
+	// section; each one set there can go back to the default.
+	type FileInfo = { managed: boolean; sources: Record<string, 'file' | 'default'> };
+	let file = $state<FileInfo | null>(null);
+	let resetting = $state('');
+	const names: Record<string, string> = {
+		registration: 'Registration',
+		require_email_verification: 'Verified email',
+		guest_access: 'Guest access',
+		channel_creation: 'Text channel creation',
+		voice_channel_creation: 'Voice room creation',
+		channel_auto_register: 'Automatic channel registration',
+		channel_expiry_days: 'Channel expiry'
+	};
+	let inFile = $derived(file ? Object.keys(names).filter((k) => file?.sources[k] === 'file') : []);
+	async function resetKey(k: string) {
+		resetting = k;
+		try {
+			await api('PATCH', '/config', { unset: ['auth.' + k] });
+			toasts.push(`${names[k]} is back to its default.`);
+			await load();
+		} catch (e) {
+			toasts.push(errorText(e), 'bad');
+		} finally {
+			resetting = '';
+		}
+	}
+
 	// Channel lifecycle (auth ≥ 1.7). Older auth doesn't send the fields:
 	// the controls are disabled and never sent.
 	let autoRegister = $state(true);
@@ -102,7 +130,9 @@
 	async function load() {
 		error = '';
 		try {
-			saved = (await api<{ settings: NetworkSettings }>('GET', '/settings')).settings;
+			const r = await api<{ settings: NetworkSettings; config?: FileInfo }>('GET', '/settings');
+			saved = r.settings;
+			file = r.config ?? null;
 			reset(saved);
 			unsupported = '';
 		} catch (e) {
@@ -139,7 +169,9 @@
 		if (!dirty || customError) return;
 		saving = true;
 		try {
-			saved = (await api<{ settings: NetworkSettings }>('PATCH', '/settings', changes)).settings;
+			const r = await api<{ settings: NetworkSettings; config?: FileInfo }>('PATCH', '/settings', changes);
+			saved = r.settings;
+			file = r.config ?? null;
 			reset(saved);
 			toasts.push('Network settings saved.');
 		} catch (err) {
@@ -178,6 +210,34 @@
 {:else if !draft}
 	<State kind="loading" title="Loading settings…" />
 {:else}
+	{#if file?.managed}
+		<div class="file-note">
+			<Notice tone="info">
+				Saved to the stack config file (<code>auth:</code> in <a href="/config">config/boson.yaml</a>). The
+				auth service picks changes up within seconds.
+				{#if inFile.length}
+					Set in the file, so they win over the environment:
+					<span class="in-file">
+						{#each inFile as k (k)}
+							<span class="pair"
+								>{names[k]}
+								<button
+									class="btn btn-small btn-ghost"
+									type="button"
+									disabled={resetting === k}
+									onclick={() => resetKey(k)}
+									aria-label="Reset {names[k]} to its default"
+									>{resetting === k ? 'Resetting…' : 'Reset'}</button
+								></span
+							>
+						{/each}
+					</span>
+				{:else}
+					Everything here is at its default.
+				{/if}
+			</Notice>
+		</div>
+	{/if}
 	<form class="settings" onsubmit={save}>
 		<section aria-labelledby="join-h">
 			<h2 id="join-h" class="sr-only">Joining</h2>
@@ -325,6 +385,8 @@
 							>{saved.updated_by_username || saved.updated_by}</a
 						>{:else}someone{/if}
 					<span class="sr-only">({datetime(saved.updated_at)})</span>
+				{:else if file?.managed}
+					{inFile.length ? 'Saved in the stack config file.' : 'Using the defaults.'}
 				{:else}
 					Using the auth service’s defaults.
 				{/if}
@@ -342,6 +404,22 @@
 {/if}
 
 <style>
+	.file-note {
+		max-width: 760px;
+		margin-bottom: var(--space-8);
+	}
+	.in-file {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1) var(--space-3);
+		margin-top: var(--space-2);
+	}
+	.pair {
+		display: inline-flex;
+		gap: var(--space-1);
+		align-items: center;
+		color: var(--fg);
+	}
 	.settings {
 		display: grid;
 		gap: var(--space-10);

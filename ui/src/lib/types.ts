@@ -98,6 +98,8 @@ export interface Features {
 	directory_local?: boolean;
 	/** The public IRC hostname, when known. */
 	irc_host?: string;
+	/** The stack config file (BOSON_CONFIG) holds the runtime settings; the panel writes it. */
+	config_file?: boolean;
 }
 
 export interface SessionInfo {
@@ -466,4 +468,91 @@ export interface PublicProbe {
 	name: string;
 	url: string;
 	kind: 'http' | 'ws';
+}
+
+// ---- the stack config file (config/boson.yaml) ----
+
+export type ConfigKind = 'bool' | 'string' | 'int' | 'enum' | 'list' | 'rooms' | 'duration';
+
+export interface VoiceRoom {
+	id: string;
+	name: string;
+}
+
+export type ConfigValue = boolean | number | string | string[] | VoiceRoom[];
+
+export interface ConfigKey {
+	key: string;
+	kind: ConfigKind;
+	enum?: string[];
+	min?: number;
+	max?: number;
+	max_items?: number;
+	/** The permission that edits it. */
+	perm: string;
+	/** Compose services that read it ("*" = all). */
+	services: string[];
+	/** The env var that stays its default. */
+	env?: string;
+	/** Only applies after the service restarts. */
+	restart?: boolean;
+	/** The file has the key; otherwise the service uses its env / built-in default. */
+	set: boolean;
+	value?: ConfigValue;
+	/** The env default (the panel's own keys only). */
+	default?: ConfigValue;
+	line?: number;
+	editable: boolean;
+}
+
+export interface ConfigProblem {
+	message: string;
+	line?: number;
+	column?: number;
+}
+
+export interface ConfigIssue extends ConfigProblem {
+	key: string;
+}
+
+export interface ConfigView {
+	enabled: boolean;
+	path?: string;
+	etag?: string;
+	exists: boolean;
+	modified_at?: string;
+	loaded_at?: string;
+	saved_by?: string;
+	saved_at?: string;
+	/** The file on disk doesn't parse: everyone keeps the last good version. */
+	error?: ConfigProblem;
+	/** Values that parse but aren't valid. */
+	issues: ConfigIssue[];
+	keys: ConfigKey[];
+}
+
+export interface ConfigRaw {
+	path: string;
+	exists: boolean;
+	content: string;
+	etag: string;
+	error?: ConfigProblem;
+}
+
+export type ConfigState =
+	'applied' | 'pending' | 'restart_required' | 'error' | 'unreachable' | 'unsupported';
+
+export interface ConfigServiceStatus {
+	name: string;
+	state: ConfigState;
+	loaded_at?: string;
+	file_mtime?: string;
+	error?: string;
+	restart_required: string[];
+	sections: string[];
+}
+
+export interface ConfigChange {
+	set?: Record<string, ConfigValue>;
+	unset?: string[];
 }

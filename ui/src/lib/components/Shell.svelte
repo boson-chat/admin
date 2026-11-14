@@ -10,6 +10,8 @@
 	import RoleChip from './RoleChip.svelte';
 	import type { DropdownOption } from '$lib/dropdown';
 	import { permFor } from '$lib/perms';
+	import { stackConfig } from '$lib/stackconfig.svelte';
+	import Notice from './Notice.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -20,6 +22,7 @@
 				{ href: '/', label: 'Stack' },
 				{ href: '/services', label: 'Services' },
 				{ href: '/settings', label: 'Network settings' },
+				{ href: '/config', label: 'Stack config' },
 				{ href: '/directory', label: 'Directory' },
 				{ href: '/audit', label: 'Audit log' }
 			]
@@ -98,6 +101,25 @@
 		void page.url.pathname;
 		menuOpen = false;
 	});
+
+	// A config file broken by a hand edit: say so on every page, re-checked
+	// on navigation (at most every 15 s) and every minute.
+	let configChecked = 0;
+	function checkConfig(force = false) {
+		if (!session.info?.features.config_file) return;
+		if (!force && Date.now() - configChecked < 15000) return;
+		configChecked = Date.now();
+		void stackConfig.load();
+	}
+	$effect(() => {
+		void page.url.pathname;
+		checkConfig();
+	});
+	$effect(() => {
+		const t = setInterval(() => checkConfig(true), 60000);
+		return () => clearInterval(t);
+	});
+	let configError = $derived(session.info?.features.config_file ? stackConfig.view?.error : undefined);
 </script>
 
 <a class="skip" href="#main">Skip to content</a>
@@ -166,11 +188,26 @@
 		</nav>
 	</header>
 	<main id="main" tabindex="-1">
+		{#if configError && page.url.pathname !== '/config'}
+			<div class="cfg-banner">
+				<Notice tone="bad">
+					<strong
+						>config/boson.yaml has an error{configError.line ? ` on line ${configError.line}` : ''}:</strong
+					>
+					{configError.message}. Services keep their last good settings until it’s fixed.
+					<a href="/config#raw-h">Show the file</a>
+				</Notice>
+			</div>
+		{/if}
 		{@render children()}
 	</main>
 </div>
 
 <style>
+	.cfg-banner {
+		margin-bottom: var(--space-6);
+		max-width: 760px;
+	}
 	.skip {
 		position: absolute;
 		left: -9999px;
