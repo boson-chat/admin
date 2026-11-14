@@ -89,6 +89,15 @@ const eventNames: Record<string, string> = {
 	admin_session_revoked: 'Revoked a user session',
 	admin_invite_created: 'Created an invite',
 	admin_invite_revoked: 'Revoked an invite',
+	settings_updated: 'Changed network settings',
+	sso_provider_created: 'Added a sign-in provider',
+	sso_provider_updated: 'Changed a sign-in provider',
+	sso_provider_deleted: 'Removed a sign-in provider',
+	admin_password_reset_sent: 'Sent a password reset',
+	admin_verification_sent: 'Resent a verification email',
+	sso_identity_linked: 'Linked an SSO sign-in',
+	sso_identity_unlinked: 'Unlinked an SSO sign-in',
+	sso_login_failed: 'Failed SSO sign-in',
 	signing_key_created: 'Created a signing key'
 };
 export function eventName(e: string): string {
@@ -97,7 +106,42 @@ export function eventName(e: string): string {
 
 /** Tone of an audit event for its marker. */
 export function eventTone(e: string): 'bad' | 'admin' | 'plain' {
-	if (e === 'login_failed' || e === 'refresh_token_reuse') return 'bad';
-	if (e.startsWith('admin_') || e === 'signing_key_created') return 'admin';
+	if (e === 'login_failed' || e === 'refresh_token_reuse' || e === 'sso_login_failed') return 'bad';
+	if (
+		e.startsWith('admin_') ||
+		e.startsWith('sso_provider_') ||
+		e === 'settings_updated' ||
+		e === 'signing_key_created'
+	)
+		return 'admin';
 	return 'plain';
+}
+
+/** 1.4 GiB, 312 MiB. */
+export function bytes(n: number | null | undefined): string {
+	if (n === null || n === undefined) return '—';
+	const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+	let i = 0;
+	let v = n;
+	while (v >= 1024 && i < u.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
+}
+
+/** Elapsed time since iso, compact: 3d 4h, 2h 5m, 40s. */
+export function since(iso: string | null | undefined, now = Date.now()): string {
+	if (!iso) return '';
+	let s = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 1000));
+	const d = Math.floor(s / 86400);
+	s -= d * 86400;
+	const h = Math.floor(s / 3600);
+	s -= h * 3600;
+	const m = Math.floor(s / 60);
+	s -= m * 60;
+	if (d) return h ? `${d}d ${h}h` : `${d}d`;
+	if (h) return m ? `${h}h ${m}m` : `${h}h`;
+	if (m) return `${m}m`;
+	return `${s}s`;
 }

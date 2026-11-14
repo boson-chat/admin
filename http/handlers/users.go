@@ -106,12 +106,12 @@ func (h *Handlers) revokeSession(w http.ResponseWriter, r *http.Request, s *sess
 }
 
 func (h *Handlers) userAudit(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	entries, err := h.Admin.ListAudit(r.Context(), s, admin.AuditFilter{
-		UserID: r.PathValue("id"), Limit: intQuery(r, "limit", 25, 1, admin.MaxAuditFetch),
+	res, err := h.Admin.ListAudit(r.Context(), s, admin.AuditFilter{
+		Actor: r.PathValue("id"), Limit: intQuery(r, "limit", 25, 1, admin.MaxAuditFetch),
 	})
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": res.Entries})
 }

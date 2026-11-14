@@ -16,6 +16,11 @@ type User struct {
 	Role          string     `json:"role"`
 	CreatedAt     time.Time  `json:"created_at"`
 	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
+	// Identities are linked SSO sign-ins. nil = the auth release doesn't
+	// report them (older than RequiresIdentities); empty = none linked.
+	Identities *[]Identity `json:"identities,omitempty"`
+	// HasPassword: false for SSO-only accounts (auth >= 1.4.0 reports it).
+	HasPassword *bool `json:"has_password,omitempty"`
 }
 
 // Tokens is the login / refresh response.
@@ -62,7 +67,7 @@ type CreateInvite struct {
 }
 
 // AuditEntry is one audit_log row. UserID is the actor (the target of an
-// admin action is in Meta["user_id"]).
+// admin action is in Meta["user_id"], or TargetUserID on newer releases).
 type AuditEntry struct {
 	ID     string          `json:"id"`
 	UserID *string         `json:"user_id"`
@@ -70,6 +75,10 @@ type AuditEntry struct {
 	IP     string          `json:"ip"`
 	Meta   json.RawMessage `json:"meta"`
 	At     time.Time       `json:"at"`
+	// Set by auth releases with server-side audit filters.
+	ActorUsername  string `json:"actor_username,omitempty"`
+	TargetUserID   string `json:"target_user_id,omitempty"`
+	TargetUsername string `json:"target_username,omitempty"`
 }
 
 // SSOProvider is one configured provider from /v1/config.

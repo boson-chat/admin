@@ -35,6 +35,7 @@ type Metrics struct {
 	upstreamDuration metric.Float64Histogram
 	logins           metric.Int64Counter
 	refreshes        metric.Int64Counter
+	serviceActions   metric.Int64Counter
 }
 
 // New creates the instruments on mp.
@@ -65,6 +66,7 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		upstreamDuration: hist("admin.upstream.duration", "Upstream request duration by upstream."),
 		logins:           counter("admin.logins", "{login}", "Panel sign-ins by outcome."),
 		refreshes:        counter("admin.token.refreshes", "{refresh}", "Access-token refreshes by outcome."),
+		serviceActions:   counter("admin.service.actions", "{action}", "Container start/stop/restart requests by action and outcome."),
 	}
 	if err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -107,4 +109,10 @@ func (m *Metrics) Login(ctx context.Context, outcome string) {
 
 func (m *Metrics) Refresh(ctx context.Context, outcome string) {
 	m.refreshes.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// ServiceAction records a container start/stop/restart. outcome is
+// success, refused (typed confirmation missing) or error.
+func (m *Metrics) ServiceAction(ctx context.Context, action, outcome string) {
+	m.serviceActions.Add(ctx, 1, metric.WithAttributes(attribute.String("action", action), attribute.String("outcome", outcome)))
 }

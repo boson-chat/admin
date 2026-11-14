@@ -219,34 +219,71 @@ func TestRefreshSurvivesCallerCancel(t *testing.T) {
 func ptr(s string) *string { return &s }
 
 func TestAuditFilterAndNames(t *testing.T) {
-	f, svc, now := setup(t)
-	s := login(t, svc)
-	meta, _ := json.Marshal(map[string]any{"user_id": "usr_bob"})
-	f.Audit = []authapi.AuditEntry{
-		{ID: "a1", UserID: ptr("usr_admin"), Event: "admin_user_disabled", Meta: meta, At: now.Add(-time.Minute)},
-		{ID: "a2", UserID: ptr("usr_bob"), Event: "login", At: now.Add(-2 * time.Minute)},
-		{ID: "a3", UserID: ptr("usr_bob"), Event: "login_failed", At: now.Add(-48 * time.Hour)},
-		{ID: "a4", Event: "signing_key_created", At: now.Add(-time.Hour)},
+	for _, legacy := range []bool{true, false} {
+		f, svc, now := setup(t)
+		f.Legacy = legacy
+		s := login(t, svc)
+		meta, _ := json.Marshal(map[string]any{"user_id": "usr_bob"})
+		f.Audit = []authapi.AuditEntry{
+			{ID: "a1", UserID: ptr("usr_admin"), Event: "admin_user_disabled", Meta: meta, At: now.Add(-time.Minute), TargetUserID: tern(legacy, "", "usr_bob")},
+			{ID: "a2", UserID: ptr("usr_bob"), Event: "login", At: now.Add(-2 * time.Minute)},
+			{ID: "a3", UserID: ptr("usr_bob"), Event: "login_failed", At: now.Add(-48 * time.Hour)},
+			{ID: "a4", Event: "signing_key_created", At: now.Add(-time.Hour)},
+		}
+		list := func(af AuditFilter) []AuditEntry {
+			t.Helper()
+			r, err := svc.ListAudit(context.Background(), s, af)
+			if err != nil {
+				t.Fatalf("legacy=%v %+v: %v", legacy, af, err)
+			}
+			if r.ServerFiltered == legacy {
+				t.Fatalf("legacy=%v: server_filtered=%v", legacy, r.ServerFiltered)
+			}
+			return r.Entries
+		}
+		got := list(AuditFilter{Event: "admin_*"})
+		if len(got) != 1 || got[0].ID != "a1" {
+			t.Fatalf("legacy=%v prefix filter: %+v", legacy, got)
+		}
+		if got[0].Username != "root" || got[0].TargetUserID != "usr_bob" || got[0].TargetUsername != "bob" {
+			t.Fatalf("legacy=%v names not resolved: %+v", legacy, got[0])
+		}
+		if got := list(AuditFilter{Since: now.Add(-24 * time.Hour)}); len(got) != 3 {
+			t.Fatalf("legacy=%v since filter: %d entries", legacy, len(got))
+		}
+		if got := list(AuditFilter{Until: now.Add(-90 * time.Second)}); len(got) != 3 {
+			t.Fatalf("legacy=%v until filter: %d entries", legacy, len(got))
+		}
+		if got := list(AuditFilter{Event: "login"}); len(got) != 1 || got[0].ID != "a2" {
+			t.Fatalf("legacy=%v exact filter: %+v", legacy, got)
+		}
+		if got := list(AuditFilter{Actor: "bob"}); len(got) != 2 {
+			t.Fatalf("legacy=%v actor by username: %+v", legacy, got)
+		}
+		if got := list(AuditFilter{Target: "bob"}); legacy && (len(got) != 1 || got[0].ID != "a1") {
+			t.Fatalf("legacy target by username: %+v", got)
+		}
+		if got := list(AuditFilter{Target: "usr_bob"}); len(got) != 1 {
+			t.Fatalf("legacy=%v target by id: %+v", legacy, got)
+		}
+		r, _ := svc.ListAudit(context.Background(), s, AuditFilter{Limit: 2})
+		if len(r.Entries) != 2 || (r.NextCursor == "") != legacy {
+			t.Fatalf("legacy=%v limit: %+v", legacy, r)
+		}
+		if !legacy {
+			r, _ = svc.ListAudit(context.Background(), s, AuditFilter{Limit: 2, Cursor: r.NextCursor})
+			if len(r.Entries) != 2 || r.Entries[0].ID != "a3" || r.NextCursor != "" {
+				t.Fatalf("second page: %+v", r)
+			}
+		}
 	}
-	got, err := svc.ListAudit(context.Background(), s, AuditFilter{Event: "admin_*"})
-	if err != nil || len(got) != 1 || got[0].ID != "a1" {
-		t.Fatalf("prefix filter: %v %+v", err, got)
+}
+
+func tern(c bool, a, b string) string {
+	if c {
+		return a
 	}
-	if got[0].Username != "root" || got[0].TargetUserID != "usr_bob" || got[0].TargetUsername != "bob" {
-		t.Fatalf("names not resolved: %+v", got[0])
-	}
-	got, _ = svc.ListAudit(context.Background(), s, AuditFilter{Since: now.Add(-24 * time.Hour)})
-	if len(got) != 3 {
-		t.Fatalf("since filter: %d entries", len(got))
-	}
-	got, _ = svc.ListAudit(context.Background(), s, AuditFilter{Event: "login"})
-	if len(got) != 1 || got[0].ID != "a2" {
-		t.Fatalf("exact filter: %+v", got)
-	}
-	got, _ = svc.ListAudit(context.Background(), s, AuditFilter{Limit: 2})
-	if len(got) != 2 {
-		t.Fatalf("limit: %d", len(got))
-	}
+	return b
 }
 
 func TestCreateInviteValidation(t *testing.T) {

@@ -103,7 +103,7 @@ func SecurityHeaders(csp string) func(http.Handler) http.Handler {
 			h.Set("Referrer-Policy", "same-origin")
 			h.Set("Cross-Origin-Opener-Policy", "same-origin")
 			h.Set("Cross-Origin-Resource-Policy", "same-origin")
-			h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()")
+			h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				h.Set("Cache-Control", "no-store")
 			}

@@ -11,11 +11,14 @@
 
 	let { children }: { children: Snippet } = $props();
 
-	const nav = [
+	const nav: { group: string; items: { href: string; label: string; soon?: boolean }[] }[] = [
 		{
 			group: 'Server',
 			items: [
 				{ href: '/', label: 'Stack' },
+				{ href: '/services', label: 'Services' },
+				{ href: '/settings', label: 'Network settings' },
+				{ href: '/directory', label: 'Directory' },
 				{ href: '/audit', label: 'Audit log' }
 			]
 		},
@@ -24,7 +27,7 @@
 			items: [
 				{ href: '/users', label: 'Users' },
 				{ href: '/invites', label: 'Invites' },
-				{ href: '/sso', label: 'Sign-in providers', soon: true }
+				{ href: '/sso', label: 'Sign-in providers' }
 			]
 		}
 	];

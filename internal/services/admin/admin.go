@@ -28,22 +28,36 @@ const (
 	maxNameLookups = 50
 )
 
-// AuditFilter selects audit entries. UserID is applied by the auth service
-// (it matches the actor); Event and Since are applied here.
+// AuditFilter selects audit entries. Auth releases with server-side
+// filters apply all of it; older ones only the actor (by ID) and the panel
+// filters the newest MaxAuditFetch entries itself.
 type AuditFilter struct {
-	UserID string
+	// Actor is who performed the action: a user ID or username.
+	Actor string
+	// Target is the account an admin action affected (user ID or username).
+	Target string
 	// Event is an exact event name, or a prefix ending in "*" (e.g. "admin_*").
-	Event string
-	Since time.Time
-	Limit int
+	Event  string
+	Since  time.Time
+	Until  time.Time
+	Cursor string
+	Limit  int
 }
 
 // AuditEntry is an audit row with usernames resolved where possible.
 type AuditEntry struct {
 	authapi.AuditEntry
-	Username       string `json:"username,omitempty"`
-	TargetUserID   string `json:"target_user_id,omitempty"`
-	TargetUsername string `json:"target_username,omitempty"`
+	Username string `json:"username,omitempty"`
+}
+
+// AuditResult is one page of the audit log.
+type AuditResult struct {
+	Entries    []AuditEntry `json:"entries"`
+	NextCursor string       `json:"next_cursor,omitempty"`
+	// ServerFiltered is false on auth releases without audit filters: the
+	// page is the newest entries filtered here, with no further pages.
+	ServerFiltered bool   `json:"server_filtered"`
+	Requires       string `json:"requires,omitempty"`
 }
 
 type AdminServiceImpl interface {
@@ -64,7 +78,24 @@ type AdminServiceImpl interface {
 	ListInvites(ctx context.Context, s *session.Session) ([]authapi.Invite, error)
 	CreateInvite(ctx context.Context, s *session.Session, in authapi.CreateInvite) (*authapi.Invite, error)
 	RevokeInvite(ctx context.Context, s *session.Session, id string) error
-	ListAudit(ctx context.Context, s *session.Session, f AuditFilter) ([]AuditEntry, error)
+	ListAudit(ctx context.Context, s *session.Session, f AuditFilter) (*AuditResult, error)
+
+	GetSettings(ctx context.Context, s *session.Session) (*Settings, error)
+	UpdateSettings(ctx context.Context, s *session.Session, p authapi.SettingsPatch) (*Settings, error)
+
+	ListSSOProviders(ctx context.Context, s *session.Session) ([]authapi.SSOProviderConfig, error)
+	GetSSOProvider(ctx context.Context, s *session.Session, id string) (*authapi.SSOProviderConfig, error)
+	CreateSSOProvider(ctx context.Context, s *session.Session, in authapi.SSOProviderInput) (*authapi.SSOProviderConfig, error)
+	UpdateSSOProvider(ctx context.Context, s *session.Session, id string, in authapi.SSOProviderInput) (*authapi.SSOProviderConfig, error)
+	DeleteSSOProvider(ctx context.Context, s *session.Session, id string) error
+	TestSSOProvider(ctx context.Context, s *session.Session, id string) (*authapi.SSOTestResult, error)
+
+	CreateUser(ctx context.Context, s *session.Session, in authapi.CreateUser) (*authapi.CreatedUser, error)
+	SendPasswordReset(ctx context.Context, s *session.Session, id string) error
+	ResendVerification(ctx context.Context, s *session.Session, id string) error
+	// AccessToken returns a fresh access token for calls to other boson
+	// services that accept auth tokens (the boson API's admin profile read).
+	AccessToken(ctx context.Context, s *session.Session) (string, error)
 }
 
 type AdminService struct {
@@ -279,56 +310,102 @@ func (s *AdminService) RevokeInvite(ctx context.Context, sess *session.Session, 
 	return s.call(ctx, sess, func(at string) error { return s.Client.RevokeInvite(ctx, at, id) })
 }
 
-func (s *AdminService) ListAudit(ctx context.Context, sess *session.Session, f AuditFilter) ([]AuditEntry, error) {
+func (s *AdminService) ListAudit(ctx context.Context, sess *session.Session, f AuditFilter) (*AuditResult, error) {
 	limit := f.Limit
 	if limit <= 0 || limit > MaxAuditFetch {
 		limit = 100
 	}
-	fetch := limit
-	if f.Event != "" || !f.Since.IsZero() {
-		fetch = MaxAuditFetch // filtered here, so fetch the most the API allows
+	events := expandEvents(f.Event)
+	if f.Event != "" && len(events) == 0 {
+		return &AuditResult{Entries: []AuditEntry{}, ServerFiltered: true}, nil // a prefix nothing matches
 	}
-	var raw []authapi.AuditEntry
-	err := s.call(ctx, sess, func(at string) (err error) { raw, err = s.Client.ListAudit(ctx, at, f.UserID, fetch); return })
+	q := authapi.AuditQuery{Event: strings.Join(events, ","), Actor: strings.TrimSpace(f.Actor), Target: strings.TrimSpace(f.Target),
+		Since: f.Since, Until: f.Until, Cursor: f.Cursor, Limit: limit}
+	var page *authapi.AuditPage
+	err := s.call(ctx, sess, func(at string) (err error) { page, err = s.Client.QueryAudit(ctx, at, q); return })
 	if err != nil {
 		return nil, err
 	}
-	out := make([]AuditEntry, 0, min(len(raw), limit))
-	for _, e := range raw {
+	if page.Supported {
+		out := make([]AuditEntry, 0, len(page.Entries))
+		for _, e := range page.Entries {
+			if e.TargetUserID == "" {
+				e.TargetUserID = metaString(e.Meta, "user_id")
+			}
+			out = append(out, AuditEntry{AuditEntry: e, Username: e.ActorUsername})
+		}
+		s.resolveNames(ctx, sess, out)
+		return &AuditResult{Entries: out, NextCursor: page.NextCursor, ServerFiltered: true}, nil
+	}
+	// Older auth: it returned the newest entries (by actor ID at most);
+	// refetch the most it allows when filtering here.
+	if f.Cursor != "" {
+		return &AuditResult{Entries: []AuditEntry{}, Requires: authapi.RequiresAuditFilters}, nil
+	}
+	if q.Event != "" || q.Target != "" || !q.Since.IsZero() || !q.Until.IsZero() || (q.Actor != "" && !strings.HasPrefix(q.Actor, "usr_")) {
+		if limit < MaxAuditFetch {
+			q.Limit = MaxAuditFetch
+			err := s.call(ctx, sess, func(at string) (err error) { page, err = s.Client.QueryAudit(ctx, at, q); return })
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	out := make([]AuditEntry, 0, min(len(page.Entries), limit))
+	for _, e := range page.Entries {
 		if len(out) == limit {
 			break
 		}
-		if !f.Since.IsZero() && e.At.Before(f.Since) {
+		if !q.Since.IsZero() && e.At.Before(q.Since) || !q.Until.IsZero() && !e.At.Before(q.Until) || !eventMatches(q.Event, e.Event) {
 			continue
 		}
-		if !eventMatches(f.Event, e.Event) {
-			continue
-		}
-		entry := AuditEntry{AuditEntry: e, TargetUserID: metaString(e.Meta, "user_id")}
-		out = append(out, entry)
+		e.TargetUserID = metaString(e.Meta, "user_id")
+		out = append(out, AuditEntry{AuditEntry: e})
 	}
 	s.resolveNames(ctx, sess, out)
-	return out, nil
+	// Username filters need the names, so they're applied last.
+	if q.Actor != "" && !strings.HasPrefix(q.Actor, "usr_") {
+		out = filterEntries(out, func(e AuditEntry) bool { return strings.EqualFold(e.Username, q.Actor) })
+	}
+	if q.Target != "" {
+		out = filterEntries(out, func(e AuditEntry) bool {
+			return e.TargetUserID == q.Target || (e.TargetUsername != "" && strings.EqualFold(e.TargetUsername, q.Target))
+		})
+	}
+	return &AuditResult{Entries: out, ServerFiltered: false, Requires: authapi.RequiresAuditFilters}, nil
 }
 
+func filterEntries(in []AuditEntry, keep func(AuditEntry) bool) []AuditEntry {
+	out := in[:0]
+	for _, e := range in {
+		if keep(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// eventMatches applies an expanded comma list (see expandEvents) locally.
 func eventMatches(filter, event string) bool {
 	if filter == "" {
 		return true
 	}
-	if p, ok := strings.CutSuffix(filter, "*"); ok {
-		return strings.HasPrefix(event, p)
+	for _, f := range strings.Split(filter, ",") {
+		if f == event {
+			return true
+		}
 	}
-	return event == filter
+	return false
 }
 
 // resolveNames fills usernames for actors and targets, best effort.
 func (s *AdminService) resolveNames(ctx context.Context, sess *session.Session, entries []AuditEntry) {
 	ids := map[string]string{}
 	for _, e := range entries {
-		if e.UserID != nil && *e.UserID != "" {
+		if e.UserID != nil && *e.UserID != "" && e.Username == "" {
 			ids[*e.UserID] = ""
 		}
-		if e.TargetUserID != "" {
+		if e.TargetUserID != "" && e.TargetUsername == "" {
 			ids[e.TargetUserID] = ""
 		}
 		if len(ids) >= maxNameLookups {
@@ -361,9 +438,11 @@ func (s *AdminService) resolveNames(ctx context.Context, sess *session.Session, 
 	}
 	wg.Wait()
 	for i := range entries {
-		if entries[i].UserID != nil {
+		if entries[i].UserID != nil && entries[i].Username == "" {
 			entries[i].Username = ids[*entries[i].UserID]
 		}
-		entries[i].TargetUsername = ids[entries[i].TargetUserID]
+		if entries[i].TargetUsername == "" {
+			entries[i].TargetUsername = ids[entries[i].TargetUserID]
+		}
 	}
 }
