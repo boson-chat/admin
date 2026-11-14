@@ -111,7 +111,14 @@ func TestLoginFlow(t *testing.T) {
 	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie attrs %+v", c)
 	}
-	if strings.Contains(c.Value, "at-") || strings.Contains(c.Value, "rt-") {
+	// The cookie is sealed: the tokens the fake issued must not show in it.
+	// (Checking for the bare "at-"/"rt-" prefixes flaked, since random
+	// base64url ciphertext can contain them.)
+	d, err := h.codec.Open(c.Value)
+	if err != nil || d.AccessToken == "" || d.RefreshToken == "" {
+		t.Fatalf("open cookie: %v %+v", err, d)
+	}
+	if strings.Contains(c.Value, d.AccessToken) || strings.Contains(c.Value, d.RefreshToken) {
 		t.Fatal("tokens visible in cookie")
 	}
 	w := h.do("GET", "/api/session", nil, withCookie(c))

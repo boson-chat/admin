@@ -30,6 +30,20 @@
 			goto(landing, { replaceState: true });
 	});
 
+	// A file dropped outside an image slot must not make the browser open it
+	// (and leave the panel). Slots handle their own drops before this runs;
+	// other drags (text into an input) keep their default behaviour.
+	const carriesFiles = (e: DragEvent) =>
+		!!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+	function guardDragover(e: DragEvent) {
+		if (!carriesFiles(e) || e.defaultPrevented) return;
+		e.preventDefault();
+		e.dataTransfer!.dropEffect = 'none';
+	}
+	function guardDrop(e: DragEvent) {
+		if (carriesFiles(e)) e.preventDefault();
+	}
+
 	$effect(() => {
 		if (session.loaded) return;
 		api<SessionInfo>('GET', '/session')
@@ -50,6 +64,8 @@
 		}
 	});
 </script>
+
+<svelte:window ondragover={guardDragover} ondrop={guardDrop} />
 
 {#if bootError}
 	<div class="boot">
