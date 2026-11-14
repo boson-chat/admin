@@ -64,7 +64,8 @@ const (
 
 // NetworkSettings is GET /v1/admin/settings.
 //
-// ChannelAutoRegister and ChannelExpiryDays arrive with auth 1.7.0; they
+// ChannelAutoRegister and ChannelExpiryDays arrive with auth 1.7.0,
+// GuestAccess (IRC lets people connect without an account) with 1.8.0; they
 // stay nil (and are left out of the panel's own JSON) on older releases.
 type NetworkSettings struct {
 	Registration             string     `json:"registration"`
@@ -73,6 +74,7 @@ type NetworkSettings struct {
 	VoiceChannelCreation     string     `json:"voice_channel_creation"`
 	ChannelAutoRegister      *bool      `json:"channel_auto_register,omitempty"`
 	ChannelExpiryDays        *int       `json:"channel_expiry_days,omitempty"`
+	GuestAccess              *bool      `json:"guest_access,omitempty"`
 	UpdatedAt                *time.Time `json:"updated_at,omitempty"`
 	UpdatedBy                *string    `json:"updated_by,omitempty"`
 }
@@ -85,6 +87,7 @@ type SettingsPatch struct {
 	VoiceChannelCreation     *string `json:"voice_channel_creation,omitempty"`
 	ChannelAutoRegister      *bool   `json:"channel_auto_register,omitempty"`
 	ChannelExpiryDays        *int    `json:"channel_expiry_days,omitempty"`
+	GuestAccess              *bool   `json:"guest_access,omitempty"`
 }
 
 // settingsEnvelope accepts both {"registration":…} and {"settings":{…}}.

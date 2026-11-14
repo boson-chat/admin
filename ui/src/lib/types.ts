@@ -170,6 +170,8 @@ export interface NetworkSettings {
 	channel_auto_register?: boolean;
 	/** auth ≥ 1.7: unregister channels idle this many days; 0 = never. Absent on older auth. */
 	channel_expiry_days?: number;
+	/** auth ≥ 1.8: IRC lets people connect without an account. Absent on older auth (guests allowed). */
+	guest_access?: boolean;
 	updated_at?: string;
 	updated_by?: string;
 	updated_by_username?: string;
