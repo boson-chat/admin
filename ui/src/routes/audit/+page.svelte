@@ -5,6 +5,8 @@
 	import { errorText } from '$lib/toasts.svelte';
 	import { datetime, eventName, eventTone } from '$lib/format';
 	import type { AuditEntry } from '$lib/types';
+	import type { DropdownOption } from '$lib/dropdown';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 
@@ -18,17 +20,44 @@
 	let userId = $state(page.url.searchParams.get('user_id') ?? '');
 	let since = $state(page.url.searchParams.get('since') ?? '');
 
-	const ranges = [
-		{ v: '1h', label: 'Last hour' },
-		{ v: '24h', label: 'Last 24 hours' },
-		{ v: '168h', label: 'Last 7 days' },
-		{ v: '720h', label: 'Last 30 days' },
-		{ v: '', label: 'Any time' }
+	const limits: DropdownOption[] = [
+		{ value: '50', label: '50 entries' },
+		{ value: '100', label: '100 entries' },
+		{ value: '200', label: '200 entries', description: 'The most the auth service returns at once' }
 	];
+	function limitParam(v: string | null) {
+		return limits.some((l) => l.value === v) ? (v as string) : '200';
+	}
+
+	let limit = $state(limitParam(page.url.searchParams.get('limit')));
+
+	const ranges: DropdownOption[] = [
+		{ value: '1h', label: 'Last hour' },
+		{ value: '24h', label: 'Last 24 hours' },
+		{ value: '168h', label: 'Last 7 days' },
+		{ value: '720h', label: 'Last 30 days' },
+		{ value: '', label: 'Any time' }
+	];
+	let eventOptions = $derived<DropdownOption[]>([
+		{ value: '', label: 'All events', group: 'Groups' },
+		{
+			value: 'admin_*',
+			label: 'Admin actions',
+			description: 'Role changes, disables, invites',
+			group: 'Groups'
+		},
+		{ value: 'login*', label: 'Sign-ins and failures', group: 'Groups' },
+		{ value: 'password_*', label: 'Password changes and resets', group: 'Groups' },
+		...events.map((ev) => ({ value: ev, label: eventName(ev), description: ev, group: 'Single event' })),
+		// keep a filter from the URL selectable before the event list loads
+		...(event && !event.endsWith('*') && !events.includes(event)
+			? [{ value: event, label: eventName(event), description: event, group: 'Single event' }]
+			: [])
+	]);
 
 	$effect(() => {
 		const q = new URLSearchParams(params);
-		q.set('limit', '200');
+		q.set('limit', limitParam(params.get('limit')));
 		loading = true;
 		api<{ entries: AuditEntry[]; events: string[] }>('GET', '/audit?' + q)
 			.then((r) => {
@@ -46,6 +75,7 @@
 		if (event) q.set('event', event);
 		if (userId.trim()) q.set('user_id', userId.trim());
 		if (since) q.set('since', since);
+		if (limit !== '200') q.set('limit', limit);
 		const s = q.toString();
 		goto('/audit' + (s ? '?' + s : ''), { keepFocus: true, noScroll: true });
 	}
@@ -53,6 +83,7 @@
 		event = '';
 		userId = '';
 		since = '';
+		limit = '200';
 		apply();
 	}
 
@@ -75,36 +106,30 @@
 </div>
 
 <form class="filters" onsubmit={apply}>
-	<label class="field">
-		<span>Event</span>
-		<select bind:value={event} onchange={() => apply()}>
-			<option value="">All events</option>
-			<option value="admin_*">Admin actions</option>
-			<option value="login*">Sign-ins and failures</option>
-			<option value="password_*">Password changes and resets</option>
-			<optgroup label="Single event">
-				{#each events as ev (ev)}<option value={ev}>{eventName(ev)}</option>{/each}
-			</optgroup>
-		</select>
-	</label>
-	<label class="field">
+	<div class="field wide">
+		<span id="f-event">Event</span>
+		<Dropdown options={eventOptions} bind:value={event} labelledby="f-event" onchange={() => apply()} />
+	</div>
+	<label class="field wide">
 		<span>Done by user ID</span>
 		<input type="text" bind:value={userId} placeholder="usr_…" spellcheck="false" autocomplete="off" />
 	</label>
-	<label class="field">
-		<span>When</span>
-		<select bind:value={since} onchange={() => apply()}>
-			{#each ranges as r (r.v)}<option value={r.v}>{r.label}</option>{/each}
-		</select>
-	</label>
+	<div class="field">
+		<span id="f-when">When</span>
+		<Dropdown options={ranges} bind:value={since} labelledby="f-when" onchange={() => apply()} />
+	</div>
+	<div class="field">
+		<span id="f-limit">Show</span>
+		<Dropdown options={limits} bind:value={limit} labelledby="f-limit" onchange={() => apply()} />
+	</div>
 	<div class="btns">
 		<button class="btn">Apply</button>
 		{#if params.size}<button class="btn btn-ghost" type="button" onclick={reset}>Clear filters</button>{/if}
 	</div>
 </form>
 <p class="muted note">
-	Shows up to 200 entries. The user filter matches who performed the action; for admin actions the affected
-	account is listed separately.
+	Shows up to {limitParam(params.get('limit'))} entries. The user filter matches who performed the action; for admin
+	actions the affected account is listed separately.
 </p>
 
 {#if error}
@@ -155,14 +180,22 @@
 
 <style>
 	.filters {
-		display: grid;
-		grid-template-columns: minmax(200px, 260px) minmax(200px, 280px) minmax(160px, 200px) auto;
+		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-4);
 		align-items: end;
 		padding: var(--space-4) var(--space-5);
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
+	}
+	.filters > .field {
+		flex: 1 1 160px;
+		max-width: 260px;
+	}
+	.filters > .field.wide {
+		flex-basis: 220px;
+		max-width: 300px;
 	}
 	.btns {
 		display: flex;
@@ -220,17 +253,18 @@
 		padding: var(--space-6) 0;
 	}
 	@media (max-width: 1000px) {
-		.filters {
-			grid-template-columns: 1fr 1fr;
-		}
 		.hide-m {
 			display: none;
 		}
 	}
 	@media (max-width: 640px) {
 		.filters {
-			grid-template-columns: 1fr;
 			padding: var(--space-4);
+		}
+		.filters > .field,
+		.filters > .field.wide {
+			flex-basis: 100%;
+			max-width: none;
 		}
 		.hide-s {
 			display: none;

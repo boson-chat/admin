@@ -6,6 +6,8 @@
 	import { browser, datetime, eventName, eventTone } from '$lib/format';
 	import type { AuditEntry, User, UserSession } from '$lib/types';
 	import Confirm from '$lib/components/Confirm.svelte';
+	import type { DropdownOption } from '$lib/dropdown';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 
@@ -16,6 +18,17 @@
 	let error = $state('');
 
 	let self = $derived(session.info?.user.id === id);
+
+	type Role = User['role'];
+	const roles: DropdownOption<Role>[] = [
+		{ value: 'user', label: 'User', description: 'Chat and voice; no panel access' },
+		{ value: 'admin', label: 'Admin', description: 'This panel, the admin API and voice moderation' }
+	];
+	// The dropdown's value; reset to the saved role if the change is cancelled.
+	let roleChoice = $state<Role>('user');
+	$effect(() => {
+		if (user) roleChoice = user.role;
+	});
 
 	async function loadUser() {
 		try {
@@ -61,6 +74,7 @@
 			);
 			loadActivity();
 		} catch (e) {
+			if (user) roleChoice = user.role;
 			toasts.push(errorText(e), 'bad');
 		}
 	}
@@ -111,29 +125,6 @@
 			{#if user.display_name && user.display_name !== user.username}<p>{user.display_name}</p>{/if}
 		</div>
 		<div class="actions">
-			{#if user.role === 'admin'}
-				<Confirm title="Remove admin role?" action="Make regular user" onconfirm={() => setRole('user')}>
-					{#snippet trigger(open)}
-						<button
-							class="btn btn-small"
-							onclick={open}
-							disabled={self}
-							title={self ? 'You can’t demote yourself' : ''}>Remove admin</button
-						>
-					{/snippet}
-					{user.username} will lose access to this panel and the admin API on their next request.
-				</Confirm>
-			{:else}
-				<Confirm
-					title="Make {user.username} an admin?"
-					action="Make admin"
-					onconfirm={() => setRole('admin')}
-				>
-					{#snippet trigger(open)}<button class="btn btn-small" onclick={open}>Make admin</button>{/snippet}
-					Admins can manage every account, revoke sessions and create invites, and get moderator rights in voice
-					rooms.
-				</Confirm>
-			{/if}
 			{#if user.disabled_at}
 				<Confirm title="Enable {user.username}?" action="Enable account" onconfirm={() => setDisabled(false)}>
 					{#snippet trigger(open)}<button class="btn btn-small" onclick={open}>Enable account</button
@@ -158,6 +149,36 @@
 	</div>
 
 	<dl class="facts">
+		<div>
+			<dt id="role-l">Role</dt>
+			<dd>
+				<Confirm
+					title={roleChoice === 'admin' ? `Make ${user.username} an admin?` : 'Remove admin role?'}
+					action={roleChoice === 'admin' ? 'Make admin' : 'Make regular user'}
+					onconfirm={() => setRole(roleChoice)}
+					oncancel={() => (roleChoice = user?.role ?? 'user')}
+				>
+					{#snippet trigger(open)}
+						<Dropdown
+							class="role"
+							options={roles}
+							bind:value={roleChoice}
+							labelledby="role-l"
+							size="small"
+							disabled={self}
+							title={self ? 'You can’t change your own role' : undefined}
+							onchange={open}
+						/>
+					{/snippet}
+					{#if roleChoice === 'admin'}
+						Admins can manage every account, revoke sessions and create invites, and get moderator rights in
+						voice rooms.
+					{:else}
+						{user.username} will lose access to this panel and the admin API on their next request.
+					{/if}
+				</Confirm>
+			</dd>
+		</div>
 		<div>
 			<dt>Email</dt>
 			<dd>
@@ -324,6 +345,9 @@
 	}
 	.small {
 		font-size: var(--text-xs);
+	}
+	dd :global(.role) {
+		min-width: 120px;
 	}
 	.ok {
 		color: var(--success-text);

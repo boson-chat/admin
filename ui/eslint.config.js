@@ -24,5 +24,5 @@ export default ts.config(
 		// URLSearchParams here only build query strings; nothing reads them reactively.
 		rules: { 'svelte/no-navigation-without-resolve': 'off', 'svelte/prefer-svelte-reactivity': 'off' }
 	},
-	{ ignores: ['build/', '.svelte-kit/', 'node_modules/'] }
+	{ ignores: ['build/', '.svelte-kit/', 'node_modules/', 'test-results/', 'playwright-report/'] }
 );
