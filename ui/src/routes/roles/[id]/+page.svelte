@@ -5,9 +5,10 @@
 	import { api } from '$lib/api';
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
-	import { hexOk, permLock, roleLock, vhostFor, vhostProblem } from '$lib/perms';
+	import { defaultWhois, hexOk, nameProblem, permLock, roleLock, vhostFor, vhostProblem } from '$lib/perms';
 	import { refreshSession, rolesState } from '$lib/roles.svelte';
-	import type { Permission, Role, RoleIRC, User } from '$lib/types';
+	import type { Permission, Role, RoleMember, User } from '$lib/types';
+	import Time from '$lib/components/Time.svelte';
 	import ColorPicker from '$lib/components/ColorPicker.svelte';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import Notice from '$lib/components/Notice.svelte';
@@ -29,7 +30,8 @@
 		name: string;
 		color: string | null;
 		permissions: string[];
-		irc: RoleIRC;
+		/** Editable strings: '' is sent as null (default line, no vhost). */
+		irc: { whois_line: string; vhost: string; oper: boolean };
 		hoist: boolean;
 		mentionable: boolean;
 	}
@@ -75,15 +77,24 @@
 		if (draft.name.trim() !== base.name) out.name = draft.name.trim();
 		if (draft.color !== base.color) out.color = draft.color;
 		if (draft.permissions.join() !== base.permissions.join()) out.permissions = draft.permissions;
-		if (JSON.stringify(draft.irc) !== JSON.stringify(base.irc))
-			out.irc = { ...draft.irc, whois_line: draft.irc.whois_line.trim(), vhost: draft.irc.vhost.trim() };
+		const irc = { ...draft.irc, oper: draft.irc.oper || ircPerms };
+		if (JSON.stringify(irc) !== JSON.stringify(base.irc))
+			out.irc = {
+				oper: irc.oper,
+				whois_line: irc.whois_line.trim() || null,
+				vhost: irc.vhost.trim() || null
+			};
 		if (draft.hoist !== base.hoist) out.hoist = draft.hoist;
 		if (draft.mentionable !== base.mentionable) out.mentionable = draft.mentionable;
 		return out;
 	});
 	let changes = $derived(Object.keys(patch).length);
 	let vhostIssue = $derived(draft ? vhostProblem(draft.irc.vhost) : '');
-	let nameIssue = $derived(draft && !draft.name.trim() ? 'A role needs a name.' : '');
+	let nameIssue = $derived(draft && !role?.builtin ? nameProblem(draft.name) : '');
+	// auth makes a role with any irc.* permission an oper class.
+	let ircPerms = $derived(
+		!!draft?.permissions.some((p) => p.startsWith('irc.')) || role?.builtin === 'owner'
+	);
 
 	beforeNavigate((nav) => {
 		if (changes && !saving && nav.to?.url.pathname !== page.url.pathname) {
@@ -221,7 +232,7 @@
 	}
 
 	// ---- members ----
-	let members = $state<User[] | null>(null);
+	let members = $state<RoleMember[] | null>(null);
 	let membersNext = $state('');
 	let membersError = $state('');
 	let memberBusy = $state('');
@@ -230,7 +241,7 @@
 		try {
 			const q = new URLSearchParams({ limit: '50' });
 			if (cursor) q.set('cursor', cursor);
-			const r = await api<{ users: User[]; next_cursor?: string }>(
+			const r = await api<{ users: RoleMember[]; next_cursor?: string }>(
 				'GET',
 				`/roles/${encodeURIComponent(role.id)}/members?${q}`
 			);
@@ -258,7 +269,7 @@
 			memberBusy = '';
 		}
 	}
-	async function removeMember(u: User) {
+	async function removeMember(u: RoleMember) {
 		if (!role) return;
 		memberBusy = u.id;
 		try {
@@ -334,13 +345,14 @@
 								bind:this={nameInput}
 								bind:value={draft.name}
 								maxlength="32"
-								disabled={role.builtin === 'member'}
+								disabled={!!role.builtin}
 								aria-invalid={!!nameIssue || undefined}
 								aria-describedby="name-hint"
 							/>
 							<small id="name-hint"
-								>{#if role.builtin === 'member'}Member is everyone’s role; its name is fixed.{:else if nameIssue}{nameIssue}{:else}Up
-									to 32 characters. Shown in the app and on this panel.{/if}</small
+								>{#if role.builtin}Built-in roles keep their names.{:else if nameIssue}{nameIssue}{:else}Up to
+									32 letters, digits, spaces, - and _. It also names the IRC oper class{#if role.slug}
+										(<code>{role.slug}</code>){/if}.{/if}</small
 							>
 						</label>
 
@@ -428,12 +440,10 @@
 							<div class="pg-head">
 								<h3 id="pg-{g.id}">{g.label}</h3>
 								<p>{g.detail}</p>
-								{#if g.id === 'irc' && !draft.irc.oper && !isOwnerRole}
+								{#if g.id === 'irc' && !isOwnerRole}
 									<p class="warn-line">
-										These apply only when holders are opered up.
-										<button type="button" class="linkish" onclick={() => setTab('irc')}
-											>Turn on “Oper up on IRC”</button
-										>
+										{#if ircPerms}Holders are IRC operators (oper class <code>{role.slug ?? role.name}</code>)
+											while any of these is on.{:else}Turning any of these on makes holders IRC operators.{/if}
 									</p>
 								{/if}
 							</div>
@@ -462,9 +472,12 @@
 							<div class="toggles">
 								<Toggle
 									label="Oper up on IRC"
-									detail="Holders become IRC operators with this role’s IRC permissions and WHOIS line. It takes effect on their next IRC login."
-									bind:checked={draft.irc.oper}
-									disabled={!!lock}
+									detail={ircPerms
+										? 'Always on while the role has IRC permissions. Holders get them and the WHOIS line on their next IRC login.'
+										: 'Holders become IRC operators with this role’s WHOIS line. It takes effect on their next IRC login.'}
+									checked={draft.irc.oper || ircPerms}
+									onchange={(on) => draft && (draft.irc.oper = on)}
+									disabled={!!lock || ircPerms}
 								/>
 							</div>
 							<label class="field">
@@ -475,14 +488,15 @@
 										type="text"
 										bind:value={draft.irc.whois_line}
 										maxlength="120"
-										placeholder="is a network moderator"
+										placeholder={defaultWhois(draft.name || role.name)}
 										aria-describedby="whois-hint"
 										spellcheck="true"
 									/>
 								</span>
 								<small id="whois-hint"
-									>What <code>/whois</code> says about holders, after their nick. {draft.irc.whois_line
-										.length}/120.</small
+									>What <code>/whois</code> says about holders, after their nick. Empty uses “{defaultWhois(
+										draft.name || role.name
+									)}”. {draft.irc.whois_line.length}/120.</small
 								>
 							</label>
 							<label class="field">
@@ -522,8 +536,8 @@
 						<WhoisPreview
 							nick={previewNick}
 							host={shownHost}
-							whois={draft.irc.whois_line.trim()}
-							oper={draft.irc.oper}
+							whois={draft.irc.whois_line.trim() || defaultWhois(draft.name || role.name)}
+							oper={draft.irc.oper || ircPerms}
 							server={ircHost}
 						/>
 					</div>
@@ -567,11 +581,9 @@
 													>{m.display_name}</span
 												>{/if}
 										</div>
-										<div class="others">
-											{#each (m.roles ?? []).filter((r) => r.id !== role.id) as r (r.id)}<RoleChip
-													role={r}
-													size="small"
-												/>{/each}
+										<div class="others muted small">
+											{#if m.disabled}<span class="tag tag-bad">Disabled</span>{/if}
+											{#if m.assigned_at}Since <Time at={m.assigned_at} />{/if}
 										</div>
 										<button
 											type="button"
@@ -768,15 +780,8 @@
 	.warn-line {
 		color: var(--warn-text) !important;
 	}
-	.linkish {
-		padding: 0;
-		border: 0;
-		background: none;
-		color: var(--accent-text);
-		font: inherit;
-		text-decoration: underline;
-		text-underline-offset: 3px;
-		cursor: pointer;
+	.warn-line code {
+		color: var(--fg);
 	}
 	.pgroup ul {
 		list-style: none;

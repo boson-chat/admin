@@ -6,31 +6,28 @@
 	import { api } from '$lib/api';
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
-	import { roleLock } from '$lib/perms';
+	import { roleLock, userLock } from '$lib/perms';
 	import { refreshSession, rolesState } from '$lib/roles.svelte';
 	import type { DropdownOption } from '$lib/dropdown';
-	import type { Permission, PermissionList, RoleRef, User } from '$lib/types';
+	import type { RoleRef, User } from '$lib/types';
 	import Dropdown from './Dropdown.svelte';
 	import RoleChip from './RoleChip.svelte';
 
 	let { user, onchange }: { user: User; onchange: () => void } = $props();
 
-	let manage = $derived(session.can('roles.manage'));
-	let catalog = $state<Permission[]>([]);
+	// auth: assigning roles needs roles.manage and outranking the user
+	// (you may change your own roles below your rank).
+	let targetLock = $derived(userLock(user.roles, rolesState.viewer, user.id === session.info?.user.id));
+	let manage = $derived(session.can('roles.manage') && !targetLock);
 	let saving = $state(false);
 	// The dropdown's choice; follows the saved roles and resets to them on failure.
 	let picked = $derived((user.roles ?? []).map((r) => r.id));
 
+	// Roles and the catalog only need admin.panel.
 	$effect(() => {
-		if (manage) {
-			if (!rolesState.loaded) rolesState.load();
-		} else {
-			api<PermissionList>('GET', '/permissions')
-				.then((p) => (catalog = p.permissions))
-				.catch(() => (catalog = []));
-		}
+		if (!rolesState.loaded) rolesState.load();
 	});
-	let labels = $derived(manage ? rolesState.permissions : catalog);
+	let labels = $derived(rolesState.permissions);
 
 	let options = $derived<DropdownOption[]>(
 		rolesState.roles
@@ -91,7 +88,7 @@
 <div class="ur">
 	<div class="chips" aria-label="Roles">
 		{#each user.roles ?? [] as r (r.id)}
-			{@const lock = manage ? lockOf(r) : 'You need the “Manage roles” permission.'}
+			{@const lock = manage ? lockOf(r) : targetLock || 'You need the “Manage roles” permission.'}
 			<RoleChip
 				role={r}
 				href={manage ? `/roles/${encodeURIComponent(r.id)}` : undefined}
@@ -117,6 +114,8 @@
 			/>
 			<span class="muted hint">You can assign roles below your own highest role.</span>
 		</div>
+	{:else if targetLock && session.can('roles.manage')}
+		<p class="muted hint">{targetLock} Only someone senior to them can change their roles.</p>
 	{/if}
 
 	{#if user.permissions}

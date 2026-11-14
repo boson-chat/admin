@@ -52,8 +52,10 @@ export function viewer(mine: RoleRef[], perms: string[], roles: Role[] = []): Vi
 export function roleLock(role: Role, v: Viewer): string {
 	if (v.owner) return '';
 	if (!v.perms.has('roles.manage')) return 'You need the “Manage roles” permission.';
-	if (role.builtin === 'owner' && !v.perms.has('roles.owner'))
-		return 'Only someone with “Manage the Owner role” can change the Owner role.';
+	if (role.builtin === 'owner')
+		return v.perms.has('roles.owner')
+			? ''
+			: 'Only someone with “Manage the Owner role” can change the Owner role.';
 	if (role.builtin !== 'member' && role.position >= v.top)
 		return 'You can only change roles below your own highest role.';
 	return '';
@@ -65,26 +67,55 @@ export function permLock(perm: string, v: Viewer): string {
 	return 'You can’t grant a permission you don’t have yourself.';
 }
 
-/** Readable text on a role colour chip: the colour itself, or the default ink. */
+/** Whether a colour is a #rrggbb hex. */
 export function hexOk(c: string | null | undefined): c is string {
 	return !!c && /^#[0-9a-f]{6}$/i.test(c);
 }
 
-/** Expands a vhost template for a nick, the way the IRC server will. */
-export function vhostFor(template: string, username: string): string {
-	return template.replaceAll(/\{username\}/gi, username.toLowerCase());
+/**
+ * Why the viewer can't act on this user (disable, revoke sessions, change
+ * roles), or '': auth needs the user's highest role below the viewer's.
+ */
+export function userLock(target: RoleRef[] | undefined, v: Viewer, self = false): string {
+	if (v.owner || self || !target) return '';
+	const top = target.reduce((t, r) => Math.max(t, r.position), -1);
+	return top >= v.top ? 'Their highest role is at or above yours.' : '';
 }
 
-/** A problem with a vhost template, or '' when it looks valid. */
+/** auth's default WHOIS line for a role: "is a Moderator", "is an Admin". */
+export function defaultWhois(name: string): string {
+	return (/^[aeiou]/i.test(name.trim()) ? 'is an ' : 'is a ') + name.trim();
+}
+
+/**
+ * Renders a vhost template for an account the way auth does: {username} is
+ * the name in ASCII lower case with the nick characters Ergo rejects in
+ * vhosts ([ ] \ ` ^ { | }) turned into "-".
+ */
+export function vhostFor(template: string, username: string): string {
+	const u = username.replace(/[A-Z]/g, (c) => c.toLowerCase()).replace(/[[\]\\`^{|}]/g, '-');
+	return template.replaceAll('{username}', u);
+}
+
+/** A problem with a vhost template (auth's rules), or '' when it is valid. */
 export function vhostProblem(template: string): string {
 	const t = template.trim();
 	if (!t) return '';
-	if (/\{(?!username\})[^}]*\}/i.test(t)) return 'The only placeholder is {username}.';
-	const plain = t.replaceAll(/\{username\}/gi, 'x');
-	if (!/^[a-z0-9.-]+$/i.test(plain)) return 'Use letters, digits, dashes, dots and {username} only.';
-	if (!plain.includes('.')) return 'A vhost needs at least one dot, like {username}.staff.example.com.';
-	if (plain.split('.').some((l) => !l)) return 'There is an empty part between two dots.';
-	if (t.replaceAll(/\{username\}/gi, '').length > 63)
-		return 'Keep it under 64 characters besides {username}.';
+	const stat = t.replaceAll('{username}', 'u');
+	if (!/^[0-9A-Za-z.\-_/]+$/.test(stat))
+		return 'Use letters, digits, . - _ / and {username} only (the only placeholder is {username}).';
+	if (/^[./]|[./]$/.test(stat)) return 'A vhost can’t start or end with . or /.';
+	if (stat.includes('..') || stat.includes('//')) return 'A vhost can’t contain .. or //.';
+	if (new TextEncoder().encode(t.replaceAll('{username}', 'u'.repeat(30))).length > 64)
+		return 'Too long: at most 64 characters with a 30-character username.';
+	return '';
+}
+
+/** A problem with a role name (auth's rules), or ''. */
+export function nameProblem(name: string): string {
+	const n = name.trim().replace(/\s+/g, ' ');
+	if (!n) return 'A role needs a name.';
+	if (n.length > 32) return 'At most 32 characters.';
+	if (!/^[A-Za-z0-9 _-]+$/.test(n)) return 'Use letters, digits, spaces, - and _ only.';
 	return '';
 }

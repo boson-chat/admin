@@ -33,6 +33,16 @@ export interface PermissionList {
 	requires?: string;
 }
 
+/** One holder of a role (GET /api/roles/{id}/members). */
+export interface RoleMember {
+	id: string;
+	username: string;
+	display_name: string;
+	disabled: boolean;
+	assigned_at: string | null;
+	assigned_by: string | null;
+}
+
 export type Builtin = 'owner' | 'admin' | 'moderator' | 'member';
 
 export interface RoleRef {
@@ -43,13 +53,17 @@ export interface RoleRef {
 }
 
 export interface RoleIRC {
-	whois_line: string;
-	/** e.g. "{username}.staff.boson.chat"; empty = no vhost. */
-	vhost: string;
+	/** null = auth's default, "is a <name>" ("is an" before a vowel). */
+	whois_line: string | null;
+	/** e.g. "{username}.staff.boson.chat"; null = no vhost. */
+	vhost: string | null;
+	/** Effective: true whenever the role has an irc.* permission. */
 	oper: boolean;
 }
 
 export interface Role extends RoleRef {
+	/** The Ergo oper class name. */
+	slug?: string;
 	builtin: Builtin | null;
 	permissions: string[];
 	irc: RoleIRC;

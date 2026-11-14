@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { firstAllowed, permFor, permLock, roleLock, vhostFor, vhostProblem, viewer } from './perms';
+import {
+	defaultWhois,
+	firstAllowed,
+	nameProblem,
+	permFor,
+	permLock,
+	roleLock,
+	userLock,
+	vhostFor,
+	vhostProblem,
+	viewer
+} from './perms';
 import type { Role } from './types';
 
 const role = (id: string, position: number, builtin: Role['builtin'] = null): Role => ({
@@ -65,16 +76,45 @@ describe('hierarchy', () => {
 });
 
 describe('vhosts', () => {
-	it('expands {username}', () => {
+	it('renders {username} like auth', () => {
 		expect(vhostFor('{username}.staff.boson.chat', 'Ana')).toBe('ana.staff.boson.chat');
-		expect(vhostFor('{USERNAME}.x.y', 'b')).toBe('b.x.y');
+		expect(vhostFor('{username}.x', 'Bob[x]')).toBe('bob-x-.x');
+		expect(vhostFor('staff/{username}', 'a\\b^c|d`e{f}')).toBe('staff/a-b-c-d-e-f-');
 	});
 	it('explains bad templates', () => {
 		expect(vhostProblem('')).toBe('');
 		expect(vhostProblem('{username}.staff.boson.chat')).toBe('');
+		expect(vhostProblem('staff/{username}')).toBe('');
+		expect(vhostProblem('users.boson.chat')).toBe('');
 		expect(vhostProblem('{nick}.staff.boson.chat')).toMatch(/only placeholder/);
-		expect(vhostProblem('staff')).toMatch(/dot/);
-		expect(vhostProblem('a..b')).toMatch(/empty part/);
 		expect(vhostProblem('a b.c')).toMatch(/letters/);
+		expect(vhostProblem('.{username}.x')).toMatch(/start or end/);
+		expect(vhostProblem('{username}.x/')).toMatch(/start or end/);
+		expect(vhostProblem('a..b')).toMatch(/\.\./);
+		expect(vhostProblem('a//b')).toMatch(/\/\//);
+		expect(vhostProblem('{username}.' + 'a'.repeat(33))).toBe('');
+		expect(vhostProblem('{username}.' + 'a'.repeat(34))).toMatch(/long/);
+	});
+});
+
+describe('names and defaults', () => {
+	it('checks role names like auth', () => {
+		expect(nameProblem('Night shift')).toBe('');
+		expect(nameProblem('ops_team-2')).toBe('');
+		expect(nameProblem('DJ!')).toMatch(/letters/);
+		expect(nameProblem(' ')).toMatch(/needs a name/);
+		expect(nameProblem('x'.repeat(33))).toMatch(/32/);
+	});
+	it('words the default WHOIS line', () => {
+		expect(defaultWhois('Moderator')).toBe('is a Moderator');
+		expect(defaultWhois('Admin')).toBe('is an Admin');
+	});
+	it('locks users at or above the viewer', () => {
+		const v = viewer([{ id: 'admin', name: 'Admin', color: null, position: 90 }], ['users.manage'], roles);
+		const ref = (p: number) => [{ id: 'x', name: 'x', color: null, position: p }];
+		expect(userLock(ref(40), v)).toBe('');
+		expect(userLock([], v)).toBe('');
+		expect(userLock(ref(90), v)).toMatch(/at or above/);
+		expect(userLock(ref(90), v, true)).toBe('');
 	});
 });

@@ -85,7 +85,7 @@ const eventNames: Record<string, string> = {
 	admin_user_created: 'Created a user',
 	admin_user_disabled: 'Disabled a user',
 	admin_user_enabled: 'Enabled a user',
-	admin_role_changed: 'Changed a role',
+	admin_role_changed: 'Changed admin status',
 	admin_session_revoked: 'Revoked a user session',
 	admin_invite_created: 'Created an invite',
 	admin_invite_revoked: 'Revoked an invite',
@@ -98,7 +98,11 @@ const eventNames: Record<string, string> = {
 	sso_identity_linked: 'Linked an SSO sign-in',
 	sso_identity_unlinked: 'Unlinked an SSO sign-in',
 	sso_login_failed: 'Failed SSO sign-in',
-	signing_key_created: 'Created a signing key'
+	signing_key_created: 'Created a signing key',
+	role_created: 'Created a role',
+	role_updated: 'Changed a role',
+	role_deleted: 'Deleted a role',
+	user_roles_changed: 'Changed someone’s roles'
 };
 export function eventName(e: string): string {
 	return eventNames[e] ?? e.replaceAll('_', ' ');
@@ -110,6 +114,8 @@ export function eventTone(e: string): 'bad' | 'admin' | 'plain' {
 	if (
 		e.startsWith('admin_') ||
 		e.startsWith('sso_provider_') ||
+		e.startsWith('role_') ||
+		e === 'user_roles_changed' ||
 		e === 'settings_updated' ||
 		e === 'signing_key_created'
 	)

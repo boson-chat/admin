@@ -12,6 +12,8 @@
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Time from '$lib/components/Time.svelte';
 	import UserRoles from '$lib/components/UserRoles.svelte';
+	import { userLock } from '$lib/perms';
+	import { rolesState } from '$lib/roles.svelte';
 
 	let id = $derived(page.params.id ?? '');
 	let user = $state<User | null>(null);
@@ -23,7 +25,13 @@
 
 	let self = $derived(session.info?.user.id === id);
 	let canManage = $derived(session.can('users.manage'));
-	let canModerate = $derived(session.can('users.moderate'));
+	// auth: disabling, enabling and revoking sessions take users.moderate or
+	// users.manage, and outranking the user.
+	let targetLock = $derived(user ? userLock(user.roles, rolesState.viewer, self) : '');
+	let canModerate = $derived((session.can('users.moderate') || session.can('users.manage')) && !targetLock);
+	$effect(() => {
+		if (session.info?.roles_supported && !rolesState.loaded) rolesState.load();
+	});
 	// auth >= 1.5.0 reports roles; older releases have role=user|admin.
 	let hasRoles = $derived(user?.roles !== undefined);
 
@@ -232,7 +240,7 @@
 			<div>
 				<dt id="role-l">Role</dt>
 				<dd>
-					{#if !canManage}
+					{#if !session.can('roles.manage')}
 						{user.role === 'admin' ? 'Admin' : 'User'}
 					{:else}
 						<Confirm

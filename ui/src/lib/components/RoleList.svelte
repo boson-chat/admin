@@ -35,7 +35,10 @@
 		preview = null;
 		saving = true;
 		try {
-			const r = await api<{ roles: Role[] }>('POST', '/roles/reorder', { order: next.map((r) => r.id) });
+			const r = await api<{ roles: Role[] }>('POST', '/roles/reorder', {
+				// auth takes the movable roles only; Owner and Member keep their places
+				order: next.filter((r) => !pinned(r)).map((r) => r.id)
+			});
 			rolesState.roles = sorted(r.roles);
 		} catch (e) {
 			rolesState.roles = before;
@@ -49,8 +52,8 @@
 	function startDrag(e: PointerEvent, role: Role) {
 		if (!movable(role) || saving || e.button !== 0) return;
 		e.preventDefault();
-		const handle = e.currentTarget as HTMLElement;
-		handle.setPointerCapture(e.pointerId);
+		// Listen on the window: reordering moves the handle in the DOM, which
+		// would drop a pointer capture on it.
 		dragging = role.id;
 		preview = [...rolesState.roles];
 		const move = (ev: PointerEvent) => {
@@ -69,9 +72,9 @@
 			preview = moveRole(preview, from, to, movable);
 		};
 		const end = (ev: PointerEvent) => {
-			handle.removeEventListener('pointermove', move);
-			handle.removeEventListener('pointerup', end);
-			handle.removeEventListener('pointercancel', end);
+			window.removeEventListener('pointermove', move);
+			window.removeEventListener('pointerup', end);
+			window.removeEventListener('pointercancel', end);
 			dragging = null;
 			if (ev.type === 'pointercancel' || !preview) {
 				preview = null;
@@ -82,9 +85,9 @@
 			announce = `${role.name} moved to position ${at + 1} of ${next.length}.`;
 			commit(next);
 		};
-		handle.addEventListener('pointermove', move);
-		handle.addEventListener('pointerup', end);
-		handle.addEventListener('pointercancel', end);
+		window.addEventListener('pointermove', move);
+		window.addEventListener('pointerup', end);
+		window.addEventListener('pointercancel', end);
 	}
 
 	let keyTimer: ReturnType<typeof setTimeout>;
