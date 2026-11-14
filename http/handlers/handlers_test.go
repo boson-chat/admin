@@ -31,6 +31,8 @@ type harness struct {
 	fake  *authapitest.Fake
 	srv   http.Handler
 	codec *session.Codec
+	h     *Handlers
+	mux   *http.ServeMux
 }
 
 func newHarness(t *testing.T) *harness {
@@ -46,7 +48,7 @@ func newHarness(t *testing.T) *harness {
 	h := &Handlers{Admin: svc, Overview: fakeOverview{}, Sessions: codec, Origin: origin, Features: Features{Version: "test"}}
 	mux := http.NewServeMux()
 	h.Register(mux)
-	return &harness{t: t, fake: f, srv: middleware.TrustedClientIP(nil)(mux), codec: codec}
+	return &harness{t: t, fake: f, srv: middleware.TrustedClientIP(nil)(mux), codec: codec, h: h, mux: mux}
 }
 
 type reqOpt func(*http.Request)
@@ -282,7 +284,7 @@ func TestOverviewAndSSO(t *testing.T) {
 	if w := h.do("GET", "/api/overview", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"auth"`) {
 		t.Fatalf("overview: %d %s", w.Code, w.Body)
 	}
-	if w := h.do("GET", "/api/sso", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"planned"`) {
+	if w := h.do("GET", "/api/sso/providers", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), `"providers":[]`) {
 		t.Fatalf("sso: %d %s", w.Code, w.Body)
 	}
 }

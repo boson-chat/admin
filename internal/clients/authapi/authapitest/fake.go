@@ -27,6 +27,14 @@ type Fake struct {
 	Invites   []authapi.Invite
 	Audit     []authapi.AuditEntry
 
+	// Legacy makes the fake an auth v1.2: none of the newer admin
+	// endpoints exist and audit filters are ignored.
+	Legacy    bool
+	Settings  authapi.NetworkSettings
+	Providers []authapi.SSOProviderConfig
+	// Emails records password-reset / verification sends as "kind:userID".
+	Emails []string
+
 	// RefreshDelay slows refreshes down (to provoke races in tests).
 	RefreshDelay time.Duration
 	// RefreshErr, when set, is returned by Refresh.
@@ -43,6 +51,7 @@ func New() *Fake {
 	return &Fake{
 		Users: map[string]*authapi.User{}, Passwords: map[string]string{},
 		access: map[string]string{}, refresh: map[string]string{}, used: map[string]bool{},
+		Settings: authapi.NetworkSettings{Registration: "invite", ChannelCreation: "registered", VoiceChannelCreation: "founders"},
 	}
 }
 
@@ -270,25 +279,6 @@ func (f *Fake) RevokeInvite(_ context.Context, at, _ string) error {
 	defer f.mu.Unlock()
 	_, err := f.authLocked(at, true)
 	return err
-}
-
-func (f *Fake) ListAudit(_ context.Context, at, userID string, limit int) ([]authapi.AuditEntry, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, err := f.authLocked(at, true); err != nil {
-		return nil, err
-	}
-	var out []authapi.AuditEntry
-	for _, e := range f.Audit {
-		if userID != "" && (e.UserID == nil || *e.UserID != userID) {
-			continue
-		}
-		out = append(out, e)
-		if len(out) == limit {
-			break
-		}
-	}
-	return out, nil
 }
 
 var _ authapi.AuthClientImpl = (*Fake)(nil)

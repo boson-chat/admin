@@ -14,8 +14,11 @@ import (
 	"github.com/boson-chat/admin/http/middleware"
 	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/authapi"
+	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/logger"
 	"github.com/boson-chat/admin/internal/services/admin"
+	"github.com/boson-chat/admin/internal/services/containers"
+	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/session"
 )
@@ -34,13 +37,25 @@ type Features struct {
 	Version    string `json:"version"`
 	GrafanaURL string `json:"grafana_url,omitempty"`
 	Metrics    bool   `json:"metrics"`
+	// Services: DOCKER_PROXY_URL is set.
+	Services bool `json:"services"`
+	// Profiles: BOSON_API_URL is set.
+	Profiles bool `json:"profiles"`
+	// Directory: DIRECTORY_API_URL is set; DirectoryRegistration: the
+	// proposed self-hosted registration is switched on.
+	Directory             bool `json:"directory"`
+	DirectoryRegistration bool `json:"directory_registration"`
 }
 
 // Handlers is the DI container for the HTTP layer.
 type Handlers struct {
 	Admin    admin.AdminServiceImpl
 	Overview overview.OverviewServiceImpl
-	Sessions *session.Codec
+	// Optional: nil when not configured.
+	Containers containers.ContainersServiceImpl
+	Directory  directory.DirectoryServiceImpl
+	Profiles   bosonapi.ProfileClientImpl
+	Sessions   *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features
@@ -56,6 +71,10 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/logout", h.authed(h.logout))
 
 	mux.HandleFunc("GET /api/users", h.authed(h.listUsers))
+	mux.HandleFunc("POST /api/users", h.authed(h.createUser))
+	mux.HandleFunc("POST /api/users/{id}/password-reset", h.authed(h.sendPasswordReset))
+	mux.HandleFunc("POST /api/users/{id}/verification", h.authed(h.resendVerification))
+	mux.HandleFunc("GET /api/users/{id}/profile", h.authed(h.userProfile))
 	mux.HandleFunc("GET /api/users/{id}", h.authed(h.getUser))
 	mux.HandleFunc("PATCH /api/users/{id}", h.authed(h.updateUser))
 	mux.HandleFunc("POST /api/users/{id}/disable", h.authed(h.setDisabled(true)))
@@ -70,7 +89,28 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/audit", h.authed(h.audit))
 	mux.HandleFunc("GET /api/overview", h.authed(h.overview))
-	mux.HandleFunc("GET /api/sso", h.authed(h.sso))
+
+	mux.HandleFunc("GET /api/settings", h.authed(h.getSettings))
+	mux.HandleFunc("PATCH /api/settings", h.authed(h.updateSettings))
+
+	mux.HandleFunc("GET /api/sso/providers", h.authed(h.listProviders))
+	mux.HandleFunc("POST /api/sso/providers", h.authed(h.createProvider))
+	mux.HandleFunc("GET /api/sso/providers/{id}", h.authed(h.getProvider))
+	mux.HandleFunc("PATCH /api/sso/providers/{id}", h.authed(h.updateProvider))
+	mux.HandleFunc("DELETE /api/sso/providers/{id}", h.authed(h.deleteProvider))
+	mux.HandleFunc("POST /api/sso/providers/{id}/test", h.authed(h.testProvider))
+
+	mux.HandleFunc("GET /api/services", h.authed(h.listServices))
+	mux.HandleFunc("GET /api/services/{name}", h.authed(h.getService))
+	mux.HandleFunc("POST /api/services/{name}/{action}", h.authed(h.serviceAction))
+	mux.HandleFunc("GET /api/services/{name}/logs", h.authed(h.serviceLogs))
+
+	mux.HandleFunc("GET /api/directory", h.authed(h.directoryStatus))
+	mux.HandleFunc("POST /api/directory", h.authed(h.directorySubmit))
+	mux.HandleFunc("PATCH /api/directory/{id}", h.authed(h.directoryUpdate))
+	mux.HandleFunc("POST /api/directory/{id}/verify", h.authed(h.directoryVerify))
+	mux.HandleFunc("POST /api/directory/{id}/regenerate-token", h.authed(h.directoryRegenerate))
+	mux.HandleFunc("DELETE /api/directory/{id}", h.authed(h.directoryUnlist))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apperr.ErrNotFound)
@@ -99,7 +139,9 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		}
 	}
 	if e, ok := apperr.As(err); ok {
-		if e.Status >= 500 {
+		// 501 (upstream lacks a feature) and 503 (feature not configured)
+		// are expected states, not failures.
+		if e.Status >= 500 && e.Status != http.StatusNotImplemented && e.Status != http.StatusServiceUnavailable {
 			logger.FromCtx(r.Context()).Warn().Err(err).Str("path", r.URL.Path).Msg("upstream error")
 		}
 		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message})

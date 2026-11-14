@@ -8,18 +8,24 @@ import (
 	"io/fs"
 	"net"
 	nethttp "net/http"
+	"net/url"
+	"os"
 	"time"
 
 	"github.com/boson-chat/admin/config"
 	"github.com/boson-chat/admin/http/handlers"
 	"github.com/boson-chat/admin/http/middleware"
 	"github.com/boson-chat/admin/internal/clients/authapi"
+	"github.com/boson-chat/admin/internal/clients/bosonapi"
+	"github.com/boson-chat/admin/internal/clients/dockerapi"
 	"github.com/boson-chat/admin/internal/clients/health"
 	"github.com/boson-chat/admin/internal/clients/ircprobe"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/clients/tlsprobe"
 	"github.com/boson-chat/admin/internal/logger"
 	"github.com/boson-chat/admin/internal/services/admin"
+	"github.com/boson-chat/admin/internal/services/containers"
+	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/session"
 	"github.com/boson-chat/admin/metrics"
@@ -113,6 +119,38 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		Admin: adminSvc, Overview: overviewSvc, Sessions: codec, Origin: origin,
 		Features: handlers.Features{Version: cfg.AppConfig.Version, GrafanaURL: up.GrafanaURL, Metrics: prom != nil},
 	}
+	upstream := func(name string) func(op string, status int, err error, d time.Duration) {
+		return func(op string, status int, err error, d time.Duration) {
+			m.Upstream(context.Background(), name, op, status, err, d)
+		}
+	}
+	if dc := cfg.DockerConfig; dc.ProxyURL != "" {
+		self, _ := os.Hostname()
+		h.Containers = containers.NewContainersService(containers.Options{
+			Client:  dockerapi.NewDockerClient(dc.ProxyURL, dc.Timeout, upstream("docker")),
+			Project: dc.Project, Protected: dc.ProtectedServices(), SelfID: self, Metrics: m,
+		})
+		h.Features.Services = true
+	}
+	bc := cfg.BosonConfig
+	if bc.APIURL != "" {
+		h.Profiles = bosonapi.NewProfileClient(bc.APIURL, up.Timeout, upstream("boson_api"))
+		h.Features.Profiles = true
+		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
+	}
+	if bc.DirectoryURL != "" {
+		secret := []byte(bc.DirectoryKey)
+		if len(secret) == 0 {
+			secret = key
+		}
+		h.Directory = directory.NewDirectoryService(directory.Options{
+			Client: bosonapi.NewDirectoryClient(bc.DirectoryURL, max(up.Timeout, 20*time.Second), upstream("directory")),
+			APIURL: bc.DirectoryURL, Registration: bc.DirectoryRegistration, Secret: secret,
+			Hostname: bc.DirectoryHostname,
+		})
+		h.Features.Directory, h.Features.DirectoryRegistration = true, bc.DirectoryRegistration
+		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
+	}
 	mux := nethttp.NewServeMux()
 	h.Register(mux)
 	mux.Handle("/", spa)
@@ -129,6 +167,14 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		imux.Handle("GET /metrics", o.MetricsHandler)
 	}
 	return &App{Public: public, Internal: imux, Config: cfg}, nil
+}
+
+func originOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // Serve runs the public and internal listeners until ctx is cancelled.

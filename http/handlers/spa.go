@@ -20,6 +20,8 @@ type SPA struct {
 	index []byte
 	// ScriptHashes are CSP sources for index.html's inline bootstrap scripts.
 	ScriptHashes []string
+	// ImgOrigins are extra img-src origins (the boson CDN for avatars).
+	ImgOrigins []string
 }
 
 var inlineScript = regexp.MustCompile(`(?s)<script([^>]*)>(.*?)</script>`)
@@ -51,21 +53,14 @@ func (s *SPA) CSP(connect ...string) string {
 	if len(s.ScriptHashes) > 0 {
 		script += " " + strings.Join(s.ScriptHashes, " ")
 	}
-	conn := "'self'"
-	seen := map[string]bool{}
-	for _, o := range connect {
-		if o == "" || seen[o] || strings.ContainsAny(o, " ;,'*") {
-			continue
-		}
-		seen[o] = true
-		conn += " " + o
-	}
+	conn := "'self'" + origins(connect)
+	img := "'self' data:" + origins(s.ImgOrigins)
 	return strings.Join([]string{
 		"default-src 'self'",
 		"script-src " + script,
 		// Svelte transitions write inline styles.
 		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' data:",
+		"img-src " + img,
 		"font-src 'self'",
 		"connect-src " + conn,
 		"frame-ancestors 'none'",
@@ -73,6 +68,21 @@ func (s *SPA) CSP(connect ...string) string {
 		"form-action 'self'",
 		"object-src 'none'",
 	}, "; ")
+}
+
+// origins renders a CSP source list, dropping duplicates and anything
+// that could widen the policy.
+func origins(list []string) string {
+	out := ""
+	seen := map[string]bool{}
+	for _, o := range list {
+		if o == "" || seen[o] || strings.ContainsAny(o, " ;,'*") {
+			continue
+		}
+		seen[o] = true
+		out += " " + o
+	}
+	return out
 }
 
 var startTime = time.Now()

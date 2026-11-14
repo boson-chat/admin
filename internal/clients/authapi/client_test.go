@@ -81,9 +81,9 @@ func TestClientWireFormat(t *testing.T) {
 	if err := c.RevokeInvite(ctx, "tok", "inv_1"); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := c.ListAudit(ctx, "tok", "", 10)
-	if err != nil || len(entries) != 1 || entries[0].UserID != nil || string(entries[0].Meta) != `{"kid":"key_1"}` {
-		t.Fatalf("audit: %v %+v", err, entries)
+	page, err := c.QueryAudit(ctx, "tok", AuditQuery{Limit: 10})
+	if err != nil || page.Supported || len(page.Entries) != 1 || page.Entries[0].UserID != nil || string(page.Entries[0].Meta) != `{"kid":"key_1"}` {
+		t.Fatalf("audit: %v %+v", err, page)
 	}
 	_, err = c.GetUser(ctx, "tok", "missing")
 	if e, ok := apperr.As(err); !ok || e.Status != 404 || e.Code != "not_found" {

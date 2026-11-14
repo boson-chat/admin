@@ -1,0 +1,416 @@
+package handlers
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/boson-chat/admin/internal/apperr"
+	"github.com/boson-chat/admin/internal/clients/authapi"
+	"github.com/boson-chat/admin/internal/clients/bosonapi"
+	"github.com/boson-chat/admin/internal/services/containers"
+	"github.com/boson-chat/admin/internal/session"
+)
+
+// ---- network settings ----
+
+func (h *Handlers) getSettings(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	st, err := h.Admin.GetSettings(r.Context(), s)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": st})
+}
+
+func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	var p authapi.SettingsPatch
+	if err := decode(w, r, &p); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	st, err := h.Admin.UpdateSettings(r.Context(), s, p)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": st})
+}
+
+// ---- SSO providers ----
+
+func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	list, err := h.Admin.ListSSOProviders(r.Context(), s)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": list})
+}
+
+func (h *Handlers) getProvider(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	p, err := h.Admin.GetSSOProvider(r.Context(), s, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"provider": p})
+}
+
+func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	var in authapi.SSOProviderInput
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	p, err := h.Admin.CreateSSOProvider(r.Context(), s, in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"provider": p})
+}
+
+func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	var in authapi.SSOProviderInput
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	p, err := h.Admin.UpdateSSOProvider(r.Context(), s, r.PathValue("id"), in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"provider": p})
+}
+
+func (h *Handlers) deleteProvider(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if err := h.Admin.DeleteSSOProvider(r.Context(), s, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) testProvider(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	res, err := h.Admin.TestSSOProvider(r.Context(), s, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// ---- users ----
+
+func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	var in authapi.CreateUser
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out, err := h.Admin.CreateUser(r.Context(), s, in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (h *Handlers) sendPasswordReset(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if err := h.Admin.SendPasswordReset(r.Context(), s, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) resendVerification(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if err := h.Admin.ResendVerification(r.Context(), s, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// userProfile is the user's boson profile. It always answers 200 with
+// what is known, so the user page degrades: configured=false (no
+// BOSON_API_URL), unsupported (the API lacks the admin endpoint), error.
+func (h *Handlers) userProfile(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if h.Profiles == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"configured": false})
+		return
+	}
+	at, err := h.Admin.AccessToken(r.Context(), s)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	p, err := h.Profiles.AdminProfile(r.Context(), at, r.PathValue("id"))
+	switch {
+	case apperr.IsUnsupported(err):
+		e, _ := apperr.As(err)
+		writeJSON(w, http.StatusOK, map[string]any{"configured": true, "unsupported": e.Message})
+	case err != nil:
+		msg := "the boson API didn't answer"
+		if e, ok := apperr.As(err); ok {
+			msg = e.Message
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"configured": true, "error": msg})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"configured": true, "profile": p.Profile, "servers": p.Servers})
+	}
+}
+
+// ---- services (Docker) ----
+
+// stillAdmin re-checks the admin upstream. Docker and directory calls aren't
+// authorised by the auth service, so a demoted or disabled admin must not
+// keep using a still-valid panel cookie for them.
+func (h *Handlers) stillAdmin(w http.ResponseWriter, r *http.Request, s *session.Session) bool {
+	if _, err := h.Admin.Me(r.Context(), s); err != nil {
+		writeError(w, r, err)
+		return false
+	}
+	return true
+}
+
+func (h *Handlers) listServices(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	if h.Containers == nil {
+		writeJSON(w, http.StatusOK, containers.List{Services: []containers.Service{}, CheckedAt: time.Now().UTC()})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.Containers.List(r.Context()))
+}
+
+func (h *Handlers) containersOr503(w http.ResponseWriter, r *http.Request) bool {
+	if h.Containers == nil {
+		writeError(w, r, containers.ErrNotConfigured)
+		return false
+	}
+	return true
+}
+
+func (h *Handlers) getService(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.containersOr503(w, r) || !h.stillAdmin(w, r, s) {
+		return
+	}
+	v, err := h.Containers.Get(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"service": v})
+}
+
+func (h *Handlers) serviceAction(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.containersOr503(w, r) {
+		return
+	}
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	res, err := h.Containers.Action(r.Context(), s.Snapshot().Username, r.PathValue("name"), r.PathValue("action"), body.Confirm)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	status := http.StatusOK
+	if res.Deferred {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, res)
+}
+
+func (h *Handlers) serviceLogs(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.containersOr503(w, r) || !h.stillAdmin(w, r, s) {
+		return
+	}
+	q := r.URL.Query()
+	download := q.Get("download") == "1"
+	maxTail := containers.MaxTail
+	if download {
+		maxTail = containers.MaxDownload
+	}
+	tail := intQuery(r, "tail", 200, 1, maxTail)
+	var since time.Time
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			writeError(w, r, apperr.Invalid("since must be an RFC 3339 timestamp"))
+			return
+		}
+		since = t
+	}
+	name := r.PathValue("name")
+	lines, err := h.Containers.Logs(r.Context(), name, tail, since)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if download {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.log"`,
+			strings.NewReplacer(`"`, "", "/", "", "\\", "").Replace(name), time.Now().UTC().Format("20060102T150405Z")))
+		w.Header().Set("Cache-Control", "no-store")
+		var b strings.Builder
+		for _, l := range lines {
+			ts := ""
+			if !l.At.IsZero() {
+				ts = l.At.UTC().Format(time.RFC3339Nano) + " "
+			}
+			b.WriteString(ts + l.Stream + " " + l.Text + "\n")
+		}
+		_, _ = w.Write([]byte(b.String()))
+		return
+	}
+	var last *time.Time
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !lines[i].At.IsZero() {
+			last = &lines[i].At
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "last_at": last, "truncated": len(lines) >= tail})
+}
+
+// ---- directory ----
+
+func (h *Handlers) directoryOr503(w http.ResponseWriter, r *http.Request) bool {
+	if h.Directory == nil {
+		writeError(w, r, apperr.New(http.StatusServiceUnavailable, "directory_off", "the directory is off: DIRECTORY_API_URL is empty"))
+		return false
+	}
+	return true
+}
+
+func (h *Handlers) directoryStatus(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.directoryOr503(w, r) || !h.stillAdmin(w, r, s) {
+		return
+	}
+	writeJSON(w, http.StatusOK, h.Directory.Status(r.Context(), r.URL.Query().Get("hostname")))
+}
+
+func (h *Handlers) directorySubmit(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.directoryOr503(w, r) {
+		return
+	}
+	var in bosonapi.Submission
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	l, err := h.Directory.Submit(r.Context(), s.Snapshot().Username, in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, l)
+}
+
+func dirHost(r *http.Request) (string, error) {
+	h := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("hostname")))
+	if h == "" {
+		return "", apperr.Invalid("hostname is required")
+	}
+	return h, nil
+}
+
+func (h *Handlers) directoryUpdate(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.directoryOr503(w, r) {
+		return
+	}
+	host, err := dirHost(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var in bosonapi.Submission
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	l, err := h.Directory.Update(r.Context(), s.Snapshot().Username, host, r.PathValue("id"), in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
+func (h *Handlers) directoryVerify(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.directoryOr503(w, r) {
+		return
+	}
+	host, err := dirHost(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	res, err := h.Directory.Verify(r.Context(), s.Snapshot().Username, host, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handlers) directoryRegenerate(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.directoryOr503(w, r) {
+		return
+	}
+	host, err := dirHost(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	l, err := h.Directory.Regenerate(r.Context(), s.Snapshot().Username, host, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
+func (h *Handlers) directoryUnlist(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.directoryOr503(w, r) {
+		return
+	}
+	host, err := dirHost(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.stillAdmin(w, r, s) {
+		return
+	}
+	if err := h.Directory.Unlist(r.Context(), s.Snapshot().Username, host, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

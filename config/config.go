@@ -20,7 +20,37 @@ type Config struct {
 	HTTPConfig      HTTPConfig
 	SessionConfig   SessionConfig
 	UpstreamConfig  UpstreamConfig
+	DockerConfig    DockerConfig
+	BosonConfig     BosonConfig
 	TelemetryConfig TelemetryConfig
+}
+
+type DockerConfig struct {
+	// Docker socket proxy, e.g. http://docker-proxy:2375. Empty = services
+	// control off. Never point this at a raw Docker socket.
+	ProxyURL string `env:"DOCKER_PROXY_URL"`
+	// Compose project whose containers are shown; nothing else is touched.
+	Project string `default:"boson" env:"DOCKER_PROJECT"`
+	// Compose services that need their name typed to stop or restart.
+	Protected string `default:"admin,traefik" env:"DOCKER_PROTECTED_SERVICES"`
+	// Per request; stats take about a second.
+	Timeout time.Duration `default:"20s" env:"DOCKER_TIMEOUT"`
+}
+
+type BosonConfig struct {
+	// The stack's boson API (the api service), for admin profile reads.
+	// Empty = profiles off.
+	APIURL string `env:"BOSON_API_URL"`
+	// Where avatars and server icons are served from (img-src in the CSP).
+	CDNURL string `default:"https://cdn.boson.chat" env:"BOSON_CDN_URL"`
+	// The public directory. Empty = the directory page is off.
+	DirectoryURL string `default:"https://api.boson.chat" env:"DIRECTORY_API_URL"`
+	// Use the (proposed) self-hosted registration API.
+	DirectoryRegistration bool `default:"false" env:"DIRECTORY_REGISTRATION"`
+	// Secret for the directory management key; defaults to SESSION_KEY.
+	DirectoryKey string `env:"DIRECTORY_KEY"`
+	// The IRC hostname to list; defaults to IRC_CHECK_SERVER_NAME.
+	DirectoryHostname string `env:"DIRECTORY_HOSTNAME"`
 }
 
 type AppConfig struct {
@@ -115,7 +145,17 @@ func (c *Config) ApplyDefaults() {
 	if strings.TrimSpace(u.VersionTargets) == "" && u.AuthInternalURL != "" {
 		u.VersionTargets = "auth=" + u.AuthInternalURL + "/metrics"
 	}
+	d := &c.DockerConfig
+	d.ProxyURL = trim(d.ProxyURL)
+	b := &c.BosonConfig
+	b.APIURL, b.CDNURL, b.DirectoryURL = trim(b.APIURL), trim(b.CDNURL), trim(b.DirectoryURL)
+	if b.DirectoryHostname == "" {
+		b.DirectoryHostname = strings.TrimSpace(u.IRCCheckServerName)
+	}
 }
+
+// ProtectedServices parses DOCKER_PROTECTED_SERVICES.
+func (c DockerConfig) ProtectedServices() []string { return SplitList(c.Protected) }
 
 // Validate checks settings that would otherwise fail confusingly later.
 func (c Config) Validate() error {
@@ -141,7 +181,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	for name, v := range map[string]string{"AUTH_URL": c.UpstreamConfig.AuthURL, "AUTH_INTERNAL_URL": c.UpstreamConfig.AuthInternalURL,
-		"METRICS_URL": c.UpstreamConfig.MetricsURL, "GRAFANA_URL": c.UpstreamConfig.GrafanaURL} {
+		"METRICS_URL": c.UpstreamConfig.MetricsURL, "GRAFANA_URL": c.UpstreamConfig.GrafanaURL,
+		"DOCKER_PROXY_URL": c.DockerConfig.ProxyURL, "BOSON_API_URL": c.BosonConfig.APIURL,
+		"BOSON_CDN_URL": c.BosonConfig.CDNURL, "DIRECTORY_API_URL": c.BosonConfig.DirectoryURL} {
 		if v == "" {
 			continue
 		}
@@ -151,6 +193,12 @@ func (c Config) Validate() error {
 	}
 	if c.UpstreamConfig.AuthURL == "" {
 		return errors.New("AUTH_URL is required")
+	}
+	if strings.HasPrefix(c.DockerConfig.ProxyURL, "unix:") || strings.Contains(c.DockerConfig.ProxyURL, "docker.sock") {
+		return errors.New("DOCKER_PROXY_URL must be a socket proxy's http:// URL, never the Docker socket")
+	}
+	if c.BosonConfig.DirectoryRegistration && c.BosonConfig.DirectoryURL == "" {
+		return errors.New("DIRECTORY_REGISTRATION needs DIRECTORY_API_URL")
 	}
 	if c.SessionConfig.MaxAge <= 0 {
 		return errors.New("SESSION_MAX_AGE must be positive")

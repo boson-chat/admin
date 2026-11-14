@@ -35,7 +35,23 @@ type AuthClientImpl interface {
 	ListInvites(ctx context.Context, accessToken string, limit int) ([]Invite, error)
 	CreateInvite(ctx context.Context, accessToken string, in CreateInvite) (*Invite, error)
 	RevokeInvite(ctx context.Context, accessToken, id string) error
-	ListAudit(ctx context.Context, accessToken, userID string, limit int) ([]AuditEntry, error)
+	// QueryAudit lists audit entries. Auth releases without server-side
+	// filters ignore everything but user_id and limit (Supported=false).
+	QueryAudit(ctx context.Context, accessToken string, q AuditQuery) (*AuditPage, error)
+
+	GetSettings(ctx context.Context, accessToken string) (*NetworkSettings, error)
+	UpdateSettings(ctx context.Context, accessToken string, p SettingsPatch) (*NetworkSettings, error)
+
+	ListSSOProviders(ctx context.Context, accessToken string) ([]SSOProviderConfig, error)
+	GetSSOProvider(ctx context.Context, accessToken, id string) (*SSOProviderConfig, error)
+	CreateSSOProvider(ctx context.Context, accessToken string, in SSOProviderInput) (*SSOProviderConfig, error)
+	UpdateSSOProvider(ctx context.Context, accessToken, id string, in SSOProviderInput) (*SSOProviderConfig, error)
+	DeleteSSOProvider(ctx context.Context, accessToken, id string) error
+	TestSSOProvider(ctx context.Context, accessToken, id string) (*SSOTestResult, error)
+
+	CreateUser(ctx context.Context, accessToken string, in CreateUser) (*CreatedUser, error)
+	SendPasswordReset(ctx context.Context, accessToken, id string) error
+	ResendVerification(ctx context.Context, accessToken, id string) error
 }
 
 // Observer is told about every upstream call (for metrics).
@@ -216,6 +232,15 @@ func (c *AuthClient) ListUsers(ctx context.Context, at, query string, limit, off
 
 type userEnvelope struct {
 	User User `json:"user"`
+	// Identities may sit next to the user or inside it.
+	Identities *[]Identity `json:"identities"`
+}
+
+func (e *userEnvelope) merge() *User {
+	if e.User.Identities == nil && e.Identities != nil {
+		e.User.Identities = e.Identities
+	}
+	return &e.User
 }
 
 func (c *AuthClient) GetUser(ctx context.Context, at, id string) (*User, error) {
@@ -223,7 +248,7 @@ func (c *AuthClient) GetUser(ctx context.Context, at, id string) (*User, error) 
 	if err := c.do(ctx, "admin.users.get", http.MethodGet, "/v1/admin/users/"+url.PathEscape(id), at, nil, &out); err != nil {
 		return nil, err
 	}
-	return &out.User, nil
+	return out.merge(), nil
 }
 
 func (c *AuthClient) SetRole(ctx context.Context, at, id, role string) (*User, error) {
@@ -296,24 +321,4 @@ func (c *AuthClient) CreateInvite(ctx context.Context, at string, in CreateInvit
 
 func (c *AuthClient) RevokeInvite(ctx context.Context, at, id string) error {
 	return c.do(ctx, "admin.invites.revoke", http.MethodDelete, "/v1/admin/invites/"+url.PathEscape(id), at, nil, nil)
-}
-
-func (c *AuthClient) ListAudit(ctx context.Context, at, userID string, limit int) ([]AuditEntry, error) {
-	q := url.Values{}
-	if userID != "" {
-		q.Set("user_id", userID)
-	}
-	if limit > 0 {
-		q.Set("limit", strconv.Itoa(limit))
-	}
-	var out struct {
-		Entries []AuditEntry `json:"entries"`
-	}
-	if err := c.do(ctx, "admin.audit.list", http.MethodGet, "/v1/admin/audit?"+q.Encode(), at, nil, &out); err != nil {
-		return nil, err
-	}
-	if out.Entries == nil {
-		out.Entries = []AuditEntry{}
-	}
-	return out.Entries, nil
 }

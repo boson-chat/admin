@@ -42,3 +42,17 @@ var (
 	ErrNotFound       = New(http.StatusNotFound, "not_found", "not found")
 	ErrUpstream       = New(http.StatusBadGateway, "upstream_unavailable", "the auth service is unreachable")
 )
+
+// CodeUnsupported marks an upstream that doesn't have an endpoint yet (an
+// older release). The UI shows Message ("… requires auth ≥ v1.3.0") as an
+// explanation rather than an error.
+const CodeUnsupported = "upstream_unsupported"
+
+// Unsupported is a 501 saying which upstream release a feature needs.
+func Unsupported(msg string) *Error { return New(http.StatusNotImplemented, CodeUnsupported, msg) }
+
+// IsUnsupported reports whether err is an Unsupported error.
+func IsUnsupported(err error) bool {
+	e, ok := As(err)
+	return ok && e.Code == CodeUnsupported
+}
