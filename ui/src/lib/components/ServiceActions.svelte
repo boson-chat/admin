@@ -3,6 +3,7 @@
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import type { ServiceInfo } from '$lib/types';
 	import Confirm from './Confirm.svelte';
+	import { session } from '$lib/session.svelte';
 
 	/** Start / stop / restart buttons for one container, with confirmation. */
 	let {
@@ -51,7 +52,9 @@
 </script>
 
 <div class="acts" class:compact>
-	{#if running}
+	{#if !session.can('services.manage')}
+		<!-- restart / stop / start need services.manage -->
+	{:else if running}
 		<Confirm
 			title="Restart {svc.service}?"
 			action="Restart"

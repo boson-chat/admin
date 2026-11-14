@@ -67,6 +67,11 @@ type AdminServiceImpl interface {
 	Logout(ctx context.Context, s *session.Session) error
 	// Me re-checks the signed-in admin against the auth service.
 	Me(ctx context.Context, s *session.Session) (*authapi.User, error)
+	// Access is the signed-in account's permissions (cached for AccessTTL
+	// unless fresh). Without admin.panel it fails with ErrNotAdmin.
+	Access(ctx context.Context, s *session.Session, fresh bool) (*Access, error)
+	// Forget drops the session's cached permissions.
+	Forget(s *session.Session)
 	AuthConfig(ctx context.Context) (*authapi.PublicConfig, error)
 
 	ListUsers(ctx context.Context, s *session.Session, query string, limit, offset int) (*authapi.UserList, error)
@@ -96,6 +101,19 @@ type AdminServiceImpl interface {
 	// AccessToken returns a fresh access token for calls to other boson
 	// services that accept auth tokens (the boson API's admin profile read).
 	AccessToken(ctx context.Context, s *session.Session) (string, error)
+
+	ListPermissions(ctx context.Context, s *session.Session) (*PermissionList, error)
+	ListRoles(ctx context.Context, s *session.Session) ([]authapi.Role, error)
+	GetRole(ctx context.Context, s *session.Session, id string) (*authapi.Role, error)
+	CreateRole(ctx context.Context, s *session.Session, in authapi.RoleInput) (*authapi.Role, error)
+	UpdateRole(ctx context.Context, s *session.Session, id string, in authapi.RoleInput) (*authapi.Role, error)
+	DeleteRole(ctx context.Context, s *session.Session, id string) error
+	ReorderRoles(ctx context.Context, s *session.Session, order []string) ([]authapi.Role, error)
+	RoleMembers(ctx context.Context, s *session.Session, id, cursor string, limit int) (*authapi.MemberPage, error)
+	SetUserRoles(ctx context.Context, s *session.Session, userID string, roleIDs []string) ([]authapi.RoleRef, error)
+	// AddRoleMember / RemoveRoleMember change one role of one user.
+	AddRoleMember(ctx context.Context, s *session.Session, roleID, userID string) ([]authapi.RoleRef, error)
+	RemoveRoleMember(ctx context.Context, s *session.Session, roleID, userID string) ([]authapi.RoleRef, error)
 }
 
 type AdminService struct {
@@ -103,6 +121,7 @@ type AdminService struct {
 	Refresher *Refresher
 	Metrics   *metrics.Metrics
 	Now       func() time.Time
+	access    accessCache
 }
 
 func NewAdminService(client authapi.AuthClientImpl, refresher *Refresher, m *metrics.Metrics, now func() time.Time) AdminServiceImpl {
@@ -125,9 +144,20 @@ func (s *AdminService) Login(ctx context.Context, login, password string) (sessi
 		s.Metrics.Login(ctx, loginOutcome(err))
 		return session.Data{}, err
 	}
-	if t.User.Role != RoleAdmin {
+	// The login response's user may not carry permissions; /v1/me does
+	// (auth >= 1.5.0). Without it, fall back to the token's user.
+	u := &t.User
+	if u.Permissions == nil {
+		if me, merr := s.Client.Me(ctx, t.AccessToken); merr == nil {
+			u = me
+		} else {
+			logger.FromCtx(ctx).Warn().Err(merr).Msg("reading permissions after login")
+		}
+	}
+	a := accessFor(u)
+	if !a.Can(PermPanel) {
 		s.Metrics.Login(ctx, metrics.OutcomeNotAdmin)
-		// Don't leave a stray session behind for a non-admin.
+		// Don't leave a stray session behind for someone without panel access.
 		if lerr := s.Client.Logout(context.WithoutCancel(ctx), t.AccessToken); lerr != nil {
 			logger.FromCtx(ctx).Warn().Err(lerr).Msg("logout of non-admin session failed")
 		}
@@ -135,8 +165,9 @@ func (s *AdminService) Login(ctx context.Context, login, password string) (sessi
 	}
 	s.Metrics.Login(ctx, metrics.OutcomeSuccess)
 	now := s.Now()
-	d := session.Data{CSRF: session.NewCSRFToken(), IssuedAt: now}
+	d := session.Data{CSRF: session.NewCSRFToken(), IssuedAt: now, RBAC: !a.Legacy}
 	applyTokens(&d, t, now)
+	s.access.put(d.SessionID, a, now)
 	return d, nil
 }
 
@@ -177,7 +208,14 @@ func (s *AdminService) refresh(ctx context.Context, sess *session.Session, used 
 	} else {
 		s.Metrics.Refresh(ctx, metrics.OutcomeSuccess)
 	}
-	if t.User.Role != RoleAdmin {
+	// A cheap check on the refreshed user. With roles the token's user may
+	// not list permissions (then the per-request permission check decides);
+	// without roles only role=admin may keep the session.
+	if t.User.Permissions != nil {
+		if !accessFor(&t.User).Can(PermPanel) {
+			return apperr.ErrNotAdmin
+		}
+	} else if !sess.Snapshot().RBAC && t.User.Roles == nil && t.User.Role != RoleAdmin {
 		return apperr.ErrNotAdmin
 	}
 	now := s.Now()
@@ -224,15 +262,11 @@ func (s *AdminService) Logout(ctx context.Context, sess *session.Session) error 
 }
 
 func (s *AdminService) Me(ctx context.Context, sess *session.Session) (*authapi.User, error) {
-	var u *authapi.User
-	err := s.call(ctx, sess, func(at string) (err error) { u, err = s.Client.Me(ctx, at); return })
+	a, err := s.Access(ctx, sess, true)
 	if err != nil {
 		return nil, err
 	}
-	if u.Role != RoleAdmin {
-		return nil, apperr.ErrNotAdmin
-	}
-	return u, nil
+	return a.User, nil
 }
 
 func (s *AdminService) AuthConfig(ctx context.Context) (*authapi.PublicConfig, error) {

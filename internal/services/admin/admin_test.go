@@ -111,14 +111,28 @@ func TestRefreshFailureEndsSession(t *testing.T) {
 }
 
 func TestDemotedAdminLosesSessionOnRefresh(t *testing.T) {
-	f, svc, _ := setup(t)
-	s := login(t, svc)
-	f.Users["usr_admin"].Role = RoleUser
-	f.ExpireAccess()
-	_, err := svc.ListUsers(context.Background(), s, "", 10, 0)
-	if !errors.Is(err, apperr.ErrNotAdmin) {
-		t.Fatalf("got %v, want ErrNotAdmin", err)
-	}
+	t.Run("roles", func(t *testing.T) {
+		f, svc, _ := setup(t)
+		f.TokenPermissions = true
+		s := login(t, svc)
+		f.SetRoles("usr_admin") // only Member left: no admin.panel
+		f.ExpireAccess()
+		_, err := svc.ListUsers(context.Background(), s, "", 10, 0)
+		if !errors.Is(err, apperr.ErrNotAdmin) {
+			t.Fatalf("got %v, want ErrNotAdmin", err)
+		}
+	})
+	t.Run("before roles", func(t *testing.T) {
+		f, svc, _ := setup(t)
+		f.NoRoles = true
+		s := login(t, svc)
+		f.Users["usr_admin"].Role = RoleUser
+		f.ExpireAccess()
+		_, err := svc.ListUsers(context.Background(), s, "", 10, 0)
+		if !errors.Is(err, apperr.ErrNotAdmin) {
+			t.Fatalf("got %v, want ErrNotAdmin", err)
+		}
+	})
 }
 
 // Concurrent requests carrying the same expired cookie must share one

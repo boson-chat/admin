@@ -37,7 +37,7 @@ var (
 	ErrUnauthenticated = New(http.StatusUnauthorized, "unauthenticated", "sign in to continue")
 	// ErrSessionExpired: the upstream session can no longer be refreshed.
 	ErrSessionExpired = New(http.StatusUnauthorized, "session_expired", "your session has ended; sign in again")
-	ErrNotAdmin       = New(http.StatusForbidden, "not_admin", "this account is not an administrator")
+	ErrNotAdmin       = New(http.StatusForbidden, "not_admin", "this account doesn’t have access to the admin panel")
 	ErrCSRF           = New(http.StatusForbidden, "csrf", "missing or invalid CSRF token")
 	ErrNotFound       = New(http.StatusNotFound, "not_found", "not found")
 	ErrUpstream       = New(http.StatusBadGateway, "upstream_unavailable", "the auth service is unreachable")

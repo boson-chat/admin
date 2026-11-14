@@ -9,8 +9,10 @@
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 	import CreateUser from '$lib/components/CreateUser.svelte';
+	import RoleChip from '$lib/components/RoleChip.svelte';
+	import { session } from '$lib/session.svelte';
 
-	let creator: CreateUser;
+	let creator = $state<CreateUser>();
 
 	const sizes: DropdownOption[] = [
 		{ value: '25', label: '25 per page' },
@@ -71,9 +73,11 @@
 		<h1>Users</h1>
 		<p>Everyone with a boson account. Their username is also their IRC nick.</p>
 	</div>
-	<button class="btn btn-primary" onclick={() => creator.open()}>Create user</button>
+	{#if session.can('users.manage')}
+		<button class="btn btn-primary" onclick={() => creator?.open()}>Create user</button>
+	{/if}
 </div>
-<CreateUser bind:this={creator} />
+{#if session.can('users.manage')}<CreateUser bind:this={creator} />{/if}
 
 <div class="toolbar">
 	<label class="search">
@@ -112,7 +116,7 @@
 				<tr>
 					<th>User</th>
 					<th class="hide-s">Email</th>
-					<th>Role</th>
+					<th>{session.info?.roles_supported ? 'Roles' : 'Role'}</th>
 					<th>Status</th>
 					<th class="hide-s">Joined</th>
 				</tr>
@@ -132,11 +136,21 @@
 								{#if !u.email_verified}<span class="tag tag-warn">Unverified</span>{/if}
 							{:else}<span class="muted">None</span>{/if}
 						</td>
-						<td
-							>{#if u.role === 'admin'}<span class="tag tag-accent">Admin</span>{:else}<span class="muted"
+						<td class="roles">
+							{#if u.roles}
+								{#each u.roles.slice(0, 3) as r (r.id)}<RoleChip role={r} size="small" />{/each}
+								{#if u.roles.length > 3}<span
+										class="muted more"
+										title={u.roles
+											.slice(3)
+											.map((r) => r.name)
+											.join(', ')}>+{u.roles.length - 3}</span
+									>{/if}
+								{#if !u.roles.length}<span class="muted">Member</span>{/if}
+							{:else if u.role === 'admin'}<span class="tag tag-accent">Admin</span>{:else}<span class="muted"
 									>User</span
-								>{/if}</td
-						>
+								>{/if}
+						</td>
 						<td
 							>{#if u.disabled_at}<span class="tag tag-bad">Disabled</span>{:else}<span class="ok"
 									>Active</span
@@ -207,6 +221,16 @@
 		color: var(--fg-quiet);
 	}
 	.small {
+		font-size: var(--text-xs);
+	}
+	.roles {
+		min-width: 120px;
+	}
+	.roles :global(.chip) {
+		margin: 1px 4px 1px 0;
+	}
+	.more {
+		font-family: var(--font-mono);
 		font-size: var(--text-xs);
 	}
 	.ok {

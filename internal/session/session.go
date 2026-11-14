@@ -29,6 +29,9 @@ type Data struct {
 	// CSRF is echoed by the UI in X-CSRF-Token on state-changing requests.
 	CSRF     string    `json:"csrf"`
 	IssuedAt time.Time `json:"iat"`
+	// RBAC: the auth service had roles at sign-in (>= 1.5.0), so access is
+	// decided by permissions rather than role=admin.
+	RBAC bool `json:"rbac,omitempty"`
 }
 
 // Session is a request's mutable view of Data. Services replace the tokens

@@ -11,6 +11,67 @@ export interface User {
 	identities?: Identity[];
 	/** False for SSO-only accounts; absent on auth < 1.4.0. */
 	has_password?: boolean;
+	/** Their roles (most senior first); absent on auth < 1.5.0. Member is implicit. */
+	roles?: RoleRef[];
+	/** Effective permissions; absent on auth < 1.5.0. */
+	permissions?: string[];
+}
+
+export type PermissionGroup = 'admin' | 'network' | 'irc';
+
+export interface Permission {
+	id: string;
+	group: PermissionGroup | string;
+	label: string;
+	description: string;
+}
+
+export interface PermissionList {
+	permissions: Permission[];
+	/** "panel": the auth service predates roles; this is the panel's own list. */
+	source: 'auth' | 'panel';
+	requires?: string;
+}
+
+/** One holder of a role (GET /api/roles/{id}/members). */
+export interface RoleMember {
+	id: string;
+	username: string;
+	display_name: string;
+	disabled: boolean;
+	assigned_at: string | null;
+	assigned_by: string | null;
+}
+
+export type Builtin = 'owner' | 'admin' | 'moderator' | 'member';
+
+export interface RoleRef {
+	id: string;
+	name: string;
+	color: string | null;
+	position: number;
+}
+
+export interface RoleIRC {
+	/** null = auth's default, "is a <name>" ("is an" before a vowel). */
+	whois_line: string | null;
+	/** e.g. "{username}.staff.boson.chat"; null = no vhost. */
+	vhost: string | null;
+	/** Effective: true whenever the role has an irc.* permission. */
+	oper: boolean;
+}
+
+export interface Role extends RoleRef {
+	/** The Ergo oper class name. */
+	slug?: string;
+	builtin: Builtin | null;
+	permissions: string[];
+	irc: RoleIRC;
+	hoist: boolean;
+	mentionable: boolean;
+	member_count: number;
+	created_at?: string;
+	updated_at?: string;
 }
 
 export interface Identity {
@@ -33,6 +94,8 @@ export interface Features {
 	profiles: boolean;
 	directory: boolean;
 	directory_registration: boolean;
+	/** The public IRC hostname, when known. */
+	irc_host?: string;
 }
 
 export interface SessionInfo {
@@ -40,6 +103,11 @@ export interface SessionInfo {
 	csrf_token: string;
 	expires_at: string;
 	features: Features;
+	/** Effective permissions. The BFF enforces them; the UI hides what they don't cover. */
+	permissions: string[];
+	roles: RoleRef[];
+	/** The auth service has roles (≥ 1.5.0). Without them role=admin means every permission. */
+	roles_supported: boolean;
 }
 
 export interface UserSession {

@@ -7,7 +7,9 @@
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import Logo from './Logo.svelte';
 	import Dropdown from './Dropdown.svelte';
+	import RoleChip from './RoleChip.svelte';
 	import type { DropdownOption } from '$lib/dropdown';
+	import { permFor } from '$lib/perms';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -26,11 +28,25 @@
 			group: 'Accounts',
 			items: [
 				{ href: '/users', label: 'Users' },
+				{ href: '/roles', label: 'Roles' },
 				{ href: '/invites', label: 'Invites' },
 				{ href: '/sso', label: 'Sign-in providers' }
 			]
 		}
 	];
+
+	// Only the pages this account may open.
+	let shown = $derived(
+		nav
+			.map((g) => ({
+				...g,
+				items: g.items.filter((i) => {
+					const p = permFor(i.href);
+					return !p || session.can(p);
+				})
+			}))
+			.filter((g) => g.items.length)
+	);
 
 	let menuOpen = $state(false);
 	type Theme = 'system' | 'dark' | 'light';
@@ -88,7 +104,7 @@
 <div class="shell">
 	<header class="rail">
 		<div class="top">
-			<a class="brand" href="/" aria-label="boson admin, stack overview">
+			<a class="brand" href="/" aria-label="boson admin, home">
 				<span class="mark"><Logo /></span>
 				<span class="word">Boson</span>
 				<span class="sub">admin</span>
@@ -101,7 +117,7 @@
 			>
 		</div>
 		<nav id="nav" class:open={menuOpen} aria-label="Main">
-			{#each nav as g (g.group)}
+			{#each shown as g (g.group)}
 				<div class="group" id="nav-{g.group}">{g.group}</div>
 				<ul aria-labelledby="nav-{g.group}">
 					{#each g.items as item (item.href)}
@@ -118,7 +134,16 @@
 				{#if session.info}
 					<div class="who">
 						<span class="label">Signed in as</span>
-						<a href="/users/{session.info.user.id}">{session.info.user.username}</a>
+						{#if session.can('users.view')}
+							<a href="/users/{session.info.user.id}">{session.info.user.username}</a>
+						{:else}
+							<span class="me">{session.info.user.username}</span>
+						{/if}
+						{#if session.info.roles.length}
+							<span class="my-roles">
+								{#each session.info.roles.slice(0, 3) as r (r.id)}<RoleChip role={r} size="small" />{/each}
+							</span>
+						{/if}
 					</div>
 				{/if}
 				<div class="row">
@@ -308,6 +333,19 @@
 		font-weight: 600;
 		text-decoration: none;
 		overflow-wrap: anywhere;
+	}
+	.me {
+		font-family: var(--font-mono);
+		font-size: var(--text-base);
+		font-weight: 600;
+		color: var(--fg);
+		overflow-wrap: anywhere;
+	}
+	.my-roles {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1);
+		margin-top: var(--space-1);
 	}
 	nav .who a:hover {
 		color: var(--accent-text);

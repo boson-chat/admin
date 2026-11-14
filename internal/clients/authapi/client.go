@@ -52,6 +52,17 @@ type AuthClientImpl interface {
 	CreateUser(ctx context.Context, accessToken string, in CreateUser) (*CreatedUser, error)
 	SendPasswordReset(ctx context.Context, accessToken, id string) error
 	ResendVerification(ctx context.Context, accessToken, id string) error
+
+	// Roles (auth >= 1.5.0).
+	ListPermissions(ctx context.Context, accessToken string) ([]Permission, error)
+	ListRoles(ctx context.Context, accessToken string) ([]Role, error)
+	GetRole(ctx context.Context, accessToken, id string) (*Role, error)
+	CreateRole(ctx context.Context, accessToken string, in RoleInput) (*Role, error)
+	UpdateRole(ctx context.Context, accessToken, id string, in RoleInput) (*Role, error)
+	DeleteRole(ctx context.Context, accessToken, id string) error
+	ReorderRoles(ctx context.Context, accessToken string, order []string) ([]Role, error)
+	RoleMembers(ctx context.Context, accessToken, id, cursor string, limit int) (*MemberPage, error)
+	SetUserRoles(ctx context.Context, accessToken, userID string, roleIDs []string) ([]RoleRef, error)
 }
 
 // Observer is told about every upstream call (for metrics).
@@ -192,13 +203,11 @@ func (c *AuthClient) Logout(ctx context.Context, accessToken string) error {
 }
 
 func (c *AuthClient) Me(ctx context.Context, accessToken string) (*User, error) {
-	var out struct {
-		User User `json:"user"`
-	}
+	var out userEnvelope
 	if err := c.do(ctx, "me", http.MethodGet, "/v1/me", accessToken, nil, &out); err != nil {
 		return nil, err
 	}
-	return &out.User, nil
+	return out.merge(), nil
 }
 
 func (c *AuthClient) PublicConfig(ctx context.Context) (*PublicConfig, error) {
@@ -235,6 +244,9 @@ type userEnvelope struct {
 	// Identities and HasPassword sit next to the user (auth >= 1.4.0).
 	Identities  *[]Identity `json:"identities"`
 	HasPassword *bool       `json:"has_password"`
+	// Roles and Permissions sit next to the user too (auth >= 1.5.0).
+	Roles       *[]RoleRef `json:"roles"`
+	Permissions *[]string  `json:"permissions"`
 }
 
 func (e *userEnvelope) merge() *User {
@@ -243,6 +255,12 @@ func (e *userEnvelope) merge() *User {
 	}
 	if e.User.HasPassword == nil {
 		e.User.HasPassword = e.HasPassword
+	}
+	if e.User.Roles == nil {
+		e.User.Roles = e.Roles
+	}
+	if e.User.Permissions == nil {
+		e.User.Permissions = e.Permissions
 	}
 	return &e.User
 }

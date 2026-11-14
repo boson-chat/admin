@@ -55,10 +55,23 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   their boson profile (avatar, display name, handle) and the servers they
   list in the directory, list and revoke their sessions, and see their recent
   activity.
+- **Roles:** network-wide, IRC-native roles (auth ≥ 1.5.0). Each role is
+  an Ergo oper class with a WHOIS line and an optional vhost, so IRC users see
+  it in `/whois` and in hostmasks. Built-ins Owner, Admin, Moderator and
+  Member (everyone) can't be deleted; add your own. A Discord-style list
+  (drag or ↑ ↓ to reorder, colour, member count) and an editor: **Display**
+  (name, colour picker, hoist, mentionable, delete with the name typed),
+  **Permissions** (grouped switches with descriptions), **IRC** (oper,
+  WHOIS line and vhost template with a live mIRC-style `/whois` and
+  `nick!user@host` preview) and **Members** (search to add, remove). Users
+  show role chips; a user's page assigns roles (multi-select) and lists
+  their effective permissions. You can only change roles below your own
+  highest role and grant permissions you have; Owner bypasses that. The
+  auth service enforces it, the panel disables what you can't do.
 - **Invites:** create (uses, expiry, note), with the code shown once; list with
   status (active, used up, expired, revoked); revoke. Warns when registration
   is open or closed rather than invite-only.
-- **Audit log:** filter by event (or group: admin actions, sign-ins,
+- **Audit log:** filter by event (or group: admin actions, roles, sign-ins,
   SSO, password events), who did it, the affected account, and a time window;
   scrolls through the whole history page by page. Usernames are resolved for
   the actor and for the account an admin action affected.
@@ -66,6 +79,9 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   Connect and SAML providers, with the callback / ACS / SP metadata URLs to
   copy and setup steps for Google, Authentik, Zitadel, Keycloak, Okta and
   Microsoft Entra ID. Client secrets are write-only.
+
+Every page needs a permission (see "Permissions" below): the navigation
+only lists the pages your roles allow, and the BFF refuses the rest.
 
 Features whose upstream endpoint doesn't exist yet (an older auth release,
 a boson API without the admin profile read) show what they need ("needs
@@ -110,7 +126,7 @@ out next to this one (`../auth`, `../quicvoice`).
 make dev-env      # writes .env with random dev secrets
 make dev-up       # postgres, mailpit, auth, admin, caddy, ergo, quicvoiced, victoriametrics
 docker compose exec auth ./auth user create --username admin --email admin@example.com
-docker compose exec auth ./auth user set-role admin admin
+docker compose exec auth ./auth user set-role admin admin   # auth ≥ 1.5.0: gives the Admin role
 ```
 
 Open http://localhost:8090 (or https://admin.localhost:8443 through Caddy with
@@ -356,12 +372,39 @@ running auth service and Dex, not only against fakes; rerun with
 | `GET /v1/admin/users/{id}` → `{user, identities[{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` | 1.4.0 | Linked sign-ins, "SSO only" |
 | `GET/POST /v1/admin/sso/providers`, `GET/PATCH/DELETE …/{id}`, `POST …/{id}/test` → `{ok, details{…}}` | 1.4.0 | Sign-in providers. `config` is one flat object per kind (OIDC: `issuer, client_id, client_secret (write-only), scopes, username_claim, email_claim, display_name_claim`; SAML: `idp_metadata_url \| idp_metadata_xml, entity_id, attribute_map, name_id_format, sign_requests`); the panel's own API nests it as `{oidc}` / `{saml}`. PATCH merges key by key: the panel omits `client_secret` to keep it and sends cleared optional keys as `null`. Responses carry `has_client_secret`, `start_url`, `redirect_uri` (OIDC), `acs_url`, `sp_metadata_url`, `sp_entity_id`, `sp_certificate` (SAML). Deleting a provider deletes its linked identities |
 
+**auth 1.5.0: roles and permissions** ([docs/roles.md](https://github.com/boson-chat/auth/blob/main/docs/roles.md)).
+Checked against a local auth built from the roles branch:
+`AUTH_TEST_URL=http://127.0.0.1:8080 AUTH_TEST_OWNER=… AUTH_TEST_ADMIN=… AUTH_TEST_PASSWORD=… go test -run TestRolesAgainstAuth ./internal/clients/authapi/`
+(an Owner and an Admin sharing a password).
+
+| Endpoint | Used for |
+|---|---|
+| `GET /v1/me`, `GET /v1/admin/users[/{id}]` add `roles[{id, name, color, position}]` (never Member) and, on `/me` and a single user, effective `permissions[]` | access checks, chips, effective permissions. Their absence means auth < 1.5.0 |
+| `GET /v1/admin/permissions` → `{permissions[{id, group, label, description}]}` | the Permissions tab, rendered from the live list (33 in 1.5.0) |
+| `GET /v1/admin/roles` (most senior first), `GET/PATCH/DELETE /v1/admin/roles/{id}`, `POST /v1/admin/roles` → 201 | Roles page. `null` clears `color`, `irc.whois_line` (then `is a <name>`) and `irc.vhost`; `irc.oper` comes back effective (on with any `irc.*` permission). Built-ins can't be renamed or deleted (`409 builtin_role`) |
+| `POST /v1/admin/roles/reorder {order}` → `{roles}` | the movable roles only (not Owner or Member), most senior first; they swap positions among themselves |
+| `GET /v1/admin/roles/{id}/members?cursor=&limit=` → `{users[{id, username, display_name, disabled, assigned_at, assigned_by}], next_cursor}` | Members tab |
+| `PUT /v1/admin/users/{id}/roles {role_ids}` → `{roles}` | assigning roles (the full set) |
+
+auth enforces the hierarchy (roles and users strictly below your highest
+role, only permissions you hold, Owner bypasses, `roles.owner` for the Owner
+role, the last Owner stays) with `403 role_hierarchy` /
+`permission_not_held` and `409 last_owner`; the panel disables the same
+things and words those errors. auth does not check `services.*` or
+`directory.manage`: the BFF does. Vhost templates and role names are
+checked with auth's rules before saving (letters, digits, `. - _ /` and
+`{username}`, ≤ 64 bytes with a 30-character username, no leading or
+trailing `.`/`/`, no `..`/`//`; names 1–32 letters, digits, spaces, `-`,
+`_`), and the preview renders `{username}` as auth does (ASCII lower case,
+`` []\`^{|} `` → `-`). auth's built-in Moderator has no `admin.panel`, so
+moderators don't open the panel unless a role gives it to them.
+
 **boson API: `GET /v1/admin/profiles/{auth_user_id}`** (new). The backend
 already verifies auth access tokens; the panel calls it with the signed-in
 admin's own token. The backend must:
 
-1. Gate on the token's `role` claim being `admin` (403 otherwise). Nothing
-   checks `role` today.
+1. Gate on the token's `role` claim being `admin`, or with auth ≥ 1.5.0 on
+   `users.view` (403 otherwise). Nothing checks `role` today.
 2. Map `auth_user_id` (`usr_…`) to `users.id` via `auth_identities`
    (`auth_user_id → user_id`) without creating a row.
 3. Answer `{"profile": {user_id, auth_user_id, handle, display_name,
@@ -399,9 +442,10 @@ verifies pending rows whose 72 h token has expired.
 
 ### Sessions
 
-- Sign-in posts to the auth service's `/v1/login` in bearer mode. Only
-  `role=admin` gets a panel session; anyone else's new upstream session is
-  logged out straight away.
+- Sign-in posts to the auth service's `/v1/login` in bearer mode, then reads
+  the account's effective permissions from `/v1/me`. Only accounts with
+  `admin.panel` get a panel session (on auth < 1.5.0: `role=admin`); anyone
+  else's new upstream session is logged out straight away.
 - The access and refresh tokens are sealed into one HttpOnly, `SameSite=Lax`,
   `Secure` cookie with AES-256-GCM under `SESSION_KEY`. The cookie name is
   bound as additional data. Page scripts never see a token; the BFF keeps no
@@ -415,10 +459,45 @@ verifies pending rows whose 72 h token has expired.
   so a request that still carries the old cookie gets the new tokens instead
   of tripping reuse detection. The memory is per process, which is why one
   replica (or sticky sessions) is recommended.
-- `GET /api/session` and the overview re-check the admin against `/v1/me`, so
-  a disabled or demoted admin is signed out on the next page load or poll.
-  Admin API calls are authorised by the auth service on every request.
+- Every `/api` call checks the account's permissions (below). They come from
+  `/v1/me`, remembered per panel session for 10 s; `GET /api/session`, Docker
+  and directory calls re-check every time. Losing `admin.panel` signs the
+  account out on its next request; a role change made in the panel applies
+  to the signed-in admin straight away. Admin API calls are also authorised
+  by the auth service on every request.
 - Signing out revokes the upstream session.
+
+### Permissions
+
+With auth ≥ 1.5.0 access comes from the account's roles. `admin.panel` opens
+the panel; each page and endpoint needs one more permission on top
+(`http/handlers/routes.go`). Without it the API answers
+`403 missing_permission` (the session stays) and the UI hides the nav item,
+the page and the buttons.
+
+| Permission | Pages and endpoints |
+|---|---|
+| `admin.panel` | sign in, `/api/session`, reading `/api/permissions`, `/api/roles`, `/api/roles/{id}` and its members |
+| `services.view` | Stack (`/api/overview`), Services list and logs (`GET /api/services…`) |
+| `services.manage` | restart / stop / start (`POST /api/services/{name}/{action}`) |
+| `settings.manage` | Network settings (`GET/PATCH /api/settings`) |
+| `directory.manage` | Directory (`/api/directory…`) |
+| `audit.view` | Audit log (`/api/audit`) |
+| `users.view` | Users, a user's page, sessions, activity, profile |
+| `users.manage` | create users, password reset / verification emails |
+| `users.moderate` or `users.manage` | disable / enable, revoke sessions (auth also requires outranking the user) |
+| `roles.manage` | Roles page and role changes (`POST/PATCH/DELETE /api/roles…`, reorder, members), assigning roles (`PUT /api/users/{id}/roles`, the 1.x `PATCH /api/users/{id} {role}`) |
+| `invites.manage` | Invites (`/api/invites…`) |
+| `sso.manage` | Sign-in providers (`/api/sso/providers…`) |
+
+`roles.owner` (edit and assign Owner) and the network (`channel.create`,
+`voice.create`, `voice.manage_any`, `voice.bypass_locks`) and IRC (`irc.*`,
+Ergo capabilities) permissions aren't used by the panel itself; they are
+edited on the Roles page and enforced by auth, the API, quicvoice and Ergo.
+
+**Older auth (< 1.5.0):** no roles. `role=admin` means every permission and
+anything else none, so the panel works as before; the Roles page says it
+needs auth ≥ 1.5.0 and users keep the User / Admin choice.
 
 ### CSRF and browser hardening
 
@@ -446,7 +525,7 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 
 | Method & path | |
 |---|---|
-| `GET /api/session` | `{user, csrf_token, expires_at, features: {version, grafana_url, metrics}}` or 401 |
+| `GET /api/session` | `{user, csrf_token, expires_at, features: {version, grafana_url, metrics, …, irc_host}, permissions, roles, roles_supported}` or 401 |
 | `POST /api/login` | `{login, password}` → session (sets the cookie) |
 | `POST /api/logout` | 204, clears the cookie |
 | `GET /api/users?q=&limit=&offset=` | `{users, total, limit, offset}` |
@@ -467,6 +546,10 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/services`, `GET /api/services/{name}` | containers of `DOCKER_PROJECT` |
 | `POST /api/services/{name}/{start\|stop\|restart}` `{confirm}` | 428 `confirmation_required` for a protected service without its name; 202 for the panel itself |
 | `GET /api/services/{name}/logs?tail=&since=&download=1` | `{lines, last_at}` or a text/plain attachment |
+| `GET /api/permissions` | `{permissions[{id, group, label, description}], source}`; `source: "panel"` (the panel's own list) on auth < 1.5.0 |
+| `GET/POST /api/roles`, `GET/PATCH/DELETE /api/roles/{id}`, `POST /api/roles/reorder` `{order}` | roles, most senior first; 501 `upstream_unsupported` on auth < 1.5.0. `null` or `""` clears `color`, `irc.whois_line`, `irc.vhost` |
+| `GET /api/roles/{id}/members?cursor=&limit=`, `PUT/DELETE /api/roles/{id}/members/{user_id}` | `{users, next_cursor}`; adding / removing one member reads and rewrites that user's roles |
+| `PUT /api/users/{id}/roles` `{role_ids}` | `{roles}` |
 | `GET /api/directory?hostname=`, `POST /api/directory`, `PATCH /api/directory/{id}?hostname=`, `POST …/{id}/verify`, `POST …/{id}/regenerate-token`, `DELETE …/{id}` | |
 
 ### Metrics
@@ -479,7 +562,7 @@ On `INTERNAL_ADDR` `/metrics` (and OTLP if configured), plus Go runtime metrics:
 | `admin_http_duration_seconds` | `http_route` |
 | `admin_upstream_requests_total` | `upstream`, `op`, `outcome` (status class or `error`) |
 | `admin_upstream_duration_seconds` | `upstream` |
-| `admin_logins_total` | `outcome` (`success`, `invalid_credentials`, `not_admin`, `rate_limited`, `error`) |
+| `admin_logins_total` | `outcome` (`success`, `invalid_credentials`, `not_admin` (no `admin.panel`), `rate_limited`, `error`) |
 | `admin_token_refreshes_total` | `outcome` (`success`, `shared`, `expired`, `error`) |
 | `admin_service_actions_total` | `action` (`start`, `stop`, `restart`), `outcome` (`success`, `refused`, `error`) |
 
@@ -503,6 +586,9 @@ metrics/                       OpenTelemetry instruments + Prometheus exporter
 ui/                            SvelteKit app (adapter-static), embedded via ui/embed.go
 scripts/e2e.sh                 end-to-end check against the dev compose
 ui/src/lib/components/Dropdown.svelte   the panel's select (WAI-ARIA select-only combobox)
+http/handlers/routes.go        the permission each /api route needs
+internal/services/admin/access.go   permission catalog, access checks and their cache
+ui/src/lib/perms.ts            page permissions and the role hierarchy, as the UI applies them
 ui/e2e/                        Playwright checks (dropdown keyboard/mouse, browser latency)
 ```
 

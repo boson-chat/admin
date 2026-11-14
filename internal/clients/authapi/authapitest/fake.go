@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,16 @@ type Fake struct {
 	// Emails records password-reset / verification sends as "kind:userID".
 	Emails []string
 
+	// NoRoles makes the fake an auth v1.4: everything but roles.
+	NoRoles bool
+	Roles   []authapi.Role
+	// UserRoles are users' explicit role IDs (Member is implicit).
+	UserRoles map[string][]string
+	// TokenPermissions: login/refresh responses carry roles and permissions.
+	TokenPermissions bool
+	// LastOrder is the last reorder request.
+	LastOrder []string
+
 	// RefreshDelay slows refreshes down (to provoke races in tests).
 	RefreshDelay time.Duration
 	// RefreshErr, when set, is returned by Refresh.
@@ -43,6 +54,7 @@ type Fake struct {
 	LastMeta authapi.ClientMeta
 
 	RefreshCalls atomic.Int32
+	MeCalls      atomic.Int32
 	LogoutCalls  atomic.Int32
 	Reuses       atomic.Int32
 }
@@ -52,17 +64,33 @@ func New() *Fake {
 		Users: map[string]*authapi.User{}, Passwords: map[string]string{},
 		access: map[string]string{}, refresh: map[string]string{}, used: map[string]bool{},
 		Settings: authapi.NetworkSettings{Registration: "invite", ChannelCreation: "registered", VoiceChannelCreation: "founders"},
+		Roles:    defaultRoles(), UserRoles: map[string][]string{},
 	}
 }
 
-// AddUser creates a user with a password.
+// AddUser creates a user with a password. role=admin also gets the Admin
+// role (as auth 1.5's migration does).
 func (f *Fake) AddUser(id, username, role, password string) *authapi.User {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	u := &authapi.User{ID: id, Username: username, Role: role, CreatedAt: time.Unix(1700000000, 0).UTC()}
 	f.Users[id] = u
 	f.Passwords[username] = password
+	if role == "admin" {
+		f.UserRoles[id] = []string{RoleAdmin}
+	}
 	return u
+}
+
+// panelLocked: may this user call the admin API? role=admin before roles,
+// admin.panel with them.
+func (f *Fake) panelLocked(u *authapi.User) bool {
+	if !f.rolesSupported() {
+		return u.Role == "admin"
+	}
+	c := *u
+	f.decorateLocked(&c)
+	return slices.Contains(*c.Permissions, "admin.panel")
 }
 
 // ExpireAccess invalidates every access token (as if 15 minutes passed).
@@ -78,8 +106,12 @@ func (f *Fake) issueLocked(uid string) *authapi.Tokens {
 	f.n++
 	at, rt := fmt.Sprintf("at-%d", f.n), fmt.Sprintf("rt-%d", f.n)
 	f.access[at], f.refresh[rt] = uid, uid
+	u := *f.Users[uid]
+	if f.TokenPermissions {
+		f.decorateLocked(&u)
+	}
 	return &authapi.Tokens{TokenType: "Bearer", AccessToken: at, RefreshToken: rt, ExpiresIn: 900, RefreshExpiresIn: 86400,
-		SessionID: "ses_" + uid, User: *f.Users[uid]}
+		SessionID: "ses_" + uid, User: u}
 }
 
 func (f *Fake) meta(ctx context.Context) {
@@ -142,7 +174,7 @@ func (f *Fake) authLocked(at string, admin bool) (*authapi.User, error) {
 	if u.DisabledAt != nil {
 		return nil, errUnauth
 	}
-	if admin && u.Role != "admin" {
+	if admin && !f.panelLocked(u) {
 		return nil, apperr.New(http.StatusForbidden, "forbidden", "admin only")
 	}
 	return u, nil
@@ -160,6 +192,7 @@ func (f *Fake) Logout(_ context.Context, at string) error {
 }
 
 func (f *Fake) Me(_ context.Context, at string) (*authapi.User, error) {
+	f.MeCalls.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	u, err := f.authLocked(at, false)
@@ -167,6 +200,7 @@ func (f *Fake) Me(_ context.Context, at string) (*authapi.User, error) {
 		return nil, err
 	}
 	c := *u
+	f.decorateLocked(&c)
 	return &c, nil
 }
 
@@ -182,7 +216,9 @@ func (f *Fake) ListUsers(_ context.Context, at, _ string, _, _ int) (*authapi.Us
 	}
 	out := &authapi.UserList{Users: []authapi.User{}}
 	for _, u := range f.Users {
-		out.Users = append(out.Users, *u)
+		c := *u
+		f.decorateLocked(&c)
+		out.Users = append(out.Users, c)
 	}
 	out.Total = int64(len(out.Users))
 	return out, nil
@@ -199,6 +235,7 @@ func (f *Fake) GetUser(_ context.Context, at, id string) (*authapi.User, error) 
 		return nil, apperr.ErrNotFound
 	}
 	c := *u
+	f.decorateLocked(&c)
 	return &c, nil
 }
 

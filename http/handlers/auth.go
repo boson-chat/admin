@@ -6,6 +6,7 @@ import (
 
 	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/authapi"
+	"github.com/boson-chat/admin/internal/services/admin"
 	"github.com/boson-chat/admin/internal/session"
 )
 
@@ -14,25 +15,40 @@ type sessionView struct {
 	CSRFToken string        `json:"csrf_token"`
 	ExpiresAt time.Time     `json:"expires_at"`
 	Features  Features      `json:"features"`
+	// Permissions are the account's effective permissions; the UI hides
+	// what they don't cover (the BFF enforces it).
+	Permissions []string `json:"permissions"`
+	// Roles are the account's roles (empty before auth 1.5.0).
+	Roles []authapi.RoleRef `json:"roles"`
+	// RolesSupported: the auth service has roles (>= 1.5.0). Without them
+	// role=admin grants every permission.
+	RolesSupported bool `json:"roles_supported"`
 }
 
-func (h *Handlers) view(d session.Data, u *authapi.User) sessionView {
-	if u == nil {
-		u = &authapi.User{ID: d.UserID, Username: d.Username, Role: d.Role}
+func (h *Handlers) view(d session.Data, a *admin.Access) sessionView {
+	v := sessionView{CSRFToken: d.CSRF, ExpiresAt: h.Sessions.Expiry(d), Features: h.Features,
+		Permissions: []string{}, Roles: []authapi.RoleRef{}}
+	if a == nil {
+		v.User = &authapi.User{ID: d.UserID, Username: d.Username, Role: d.Role}
+		return v
 	}
-	return sessionView{User: u, CSRFToken: d.CSRF, ExpiresAt: h.Sessions.Expiry(d), Features: h.Features}
+	v.User, v.Permissions, v.RolesSupported = a.User, a.Permissions, !a.Legacy
+	if a.User.Roles != nil {
+		v.Roles = *a.User.Roles
+	}
+	return v
 }
 
-// getSession re-checks the admin against the auth service (and refreshes
-// the tokens if needed), so a disabled or demoted admin is signed out on
-// the next page load.
+// getSession re-checks the account against the auth service (and refreshes
+// the tokens if needed), so a disabled account, or one that lost
+// admin.panel, is signed out on the next page load.
 func (h *Handlers) getSession(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	u, err := h.Admin.Me(r.Context(), s)
+	a, err := h.Admin.Access(r.Context(), s, true)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.view(s.Snapshot(), u))
+	writeJSON(w, http.StatusOK, h.view(s.Snapshot(), a))
 }
 
 type loginReq struct {
@@ -63,7 +79,9 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.view(d, nil))
+	// Login cached the account's permissions; this reads them back.
+	a, _ := h.Admin.Access(r.Context(), session.New(d), false)
+	writeJSON(w, http.StatusOK, h.view(d, a))
 }
 
 func (h *Handlers) logout(w http.ResponseWriter, r *http.Request, s *session.Session) {

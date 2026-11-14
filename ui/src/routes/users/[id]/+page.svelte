@@ -11,6 +11,9 @@
 	import type { DropdownOption } from '$lib/dropdown';
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Time from '$lib/components/Time.svelte';
+	import UserRoles from '$lib/components/UserRoles.svelte';
+	import { userLock } from '$lib/perms';
+	import { rolesState } from '$lib/roles.svelte';
 
 	let id = $derived(page.params.id ?? '');
 	let user = $state<User | null>(null);
@@ -21,6 +24,16 @@
 	let mailing = $state<'' | 'reset' | 'verification'>('');
 
 	let self = $derived(session.info?.user.id === id);
+	let canManage = $derived(session.can('users.manage'));
+	// auth: disabling, enabling and revoking sessions take users.moderate or
+	// users.manage, and outranking the user.
+	let targetLock = $derived(user ? userLock(user.roles, rolesState.viewer, self) : '');
+	let canModerate = $derived((session.can('users.moderate') || session.can('users.manage')) && !targetLock);
+	$effect(() => {
+		if (session.info?.roles_supported && !rolesState.loaded) rolesState.load();
+	});
+	// auth >= 1.5.0 reports roles; older releases have role=user|admin.
+	let hasRoles = $derived(user?.roles !== undefined);
 
 	type Role = User['role'];
 	const roles: DropdownOption<Role>[] = [
@@ -162,7 +175,7 @@
 			<div>
 				<h1>
 					{user.username}
-					{#if user.role === 'admin'}<span class="tag tag-accent">Admin</span>{/if}
+					{#if !hasRoles && user.role === 'admin'}<span class="tag tag-accent">Admin</span>{/if}
 					{#if user.disabled_at}<span class="tag tag-bad">Disabled</span>{/if}
 					{#if user.has_password === false}
 						{#if user.identities?.length}<span class="tag" title="Signs in only through a sign-in provider"
@@ -177,7 +190,7 @@
 			</div>
 		</div>
 		<div class="actions">
-			{#if user.email}
+			{#if user.email && canManage}
 				{#if !user.email_verified}
 					<button class="btn btn-small" onclick={() => sendMail('verification')} disabled={!!mailing}
 						>{mailing === 'verification' ? 'Sending…' : 'Resend verification'}</button
@@ -197,7 +210,9 @@
 					password keeps working until they do.
 				</Confirm>
 			{/if}
-			{#if user.disabled_at}
+			{#if !canModerate}
+				<!-- disabling and enabling need users.moderate -->
+			{:else if user.disabled_at}
 				<Confirm title="Enable {user.username}?" action="Enable account" onconfirm={() => setDisabled(false)}>
 					{#snippet trigger(open)}<button class="btn btn-small" onclick={open}>Enable account</button
 						>{/snippet}
@@ -221,36 +236,42 @@
 	</div>
 
 	<dl class="facts">
-		<div>
-			<dt id="role-l">Role</dt>
-			<dd>
-				<Confirm
-					title={roleChoice === 'admin' ? `Make ${user.username} an admin?` : 'Remove admin role?'}
-					action={roleChoice === 'admin' ? 'Make admin' : 'Make regular user'}
-					onconfirm={() => setRole(roleChoice)}
-					oncancel={() => (roleChoice = user?.role ?? 'user')}
-				>
-					{#snippet trigger(open)}
-						<Dropdown
-							class="role"
-							options={roles}
-							bind:value={roleChoice}
-							labelledby="role-l"
-							size="small"
-							disabled={self}
-							title={self ? 'You can’t change your own role' : undefined}
-							onchange={open}
-						/>
-					{/snippet}
-					{#if roleChoice === 'admin'}
-						Admins can manage every account, revoke sessions and create invites, and get moderator rights in
-						voice rooms.
+		{#if !hasRoles}
+			<div>
+				<dt id="role-l">Role</dt>
+				<dd>
+					{#if !session.can('roles.manage')}
+						{user.role === 'admin' ? 'Admin' : 'User'}
 					{:else}
-						{user.username} will lose access to this panel and the admin API on their next request.
+						<Confirm
+							title={roleChoice === 'admin' ? `Make ${user.username} an admin?` : 'Remove admin role?'}
+							action={roleChoice === 'admin' ? 'Make admin' : 'Make regular user'}
+							onconfirm={() => setRole(roleChoice)}
+							oncancel={() => (roleChoice = user?.role ?? 'user')}
+						>
+							{#snippet trigger(open)}
+								<Dropdown
+									class="role"
+									options={roles}
+									bind:value={roleChoice}
+									labelledby="role-l"
+									size="small"
+									disabled={self}
+									title={self ? 'You can’t change your own role' : undefined}
+									onchange={open}
+								/>
+							{/snippet}
+							{#if roleChoice === 'admin'}
+								Admins can manage every account, revoke sessions and create invites, and get moderator rights
+								in voice rooms.
+							{:else}
+								{user.username} will lose access to this panel and the admin API on their next request.
+							{/if}
+						</Confirm>
 					{/if}
-				</Confirm>
-			</dd>
-		</div>
+				</dd>
+			</div>
+		{/if}
 		<div>
 			<dt>Email</dt>
 			<dd>
@@ -277,6 +298,16 @@
 			<dd class="mono">{user.id}</dd>
 		</div>
 	</dl>
+
+	{#if hasRoles}
+		<section class="section" aria-labelledby="roles-h">
+			<div class="section-head">
+				<h2 id="roles-h">Roles</h2>
+				<p>Network-wide: they also set {user.username}’s IRC oper class and vhost on their next IRC login.</p>
+			</div>
+			<UserRoles {user} onchange={loadUser} />
+		</section>
+	{/if}
 
 	<section class="section" aria-labelledby="prof-h">
 		<div class="section-head">
@@ -438,7 +469,7 @@
 								<td><Time at={s.last_seen_at} /></td>
 								<td class="hide-s"><Time at={s.created_at} /></td>
 								<td class="num">
-									{#if !s.current}
+									{#if !s.current && canModerate}
 										<Confirm
 											title="Revoke this session?"
 											action="Revoke session"

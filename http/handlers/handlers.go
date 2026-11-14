@@ -45,6 +45,8 @@ type Features struct {
 	// proposed self-hosted registration is switched on.
 	Directory             bool `json:"directory"`
 	DirectoryRegistration bool `json:"directory_registration"`
+	// IRCHost is the public IRC hostname (for previews of how roles look on IRC).
+	IRCHost string `json:"irc_host,omitempty"`
 }
 
 // Handlers is the DI container for the HTTP layer.
@@ -70,47 +72,10 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login", h.login)
 	mux.HandleFunc("POST /api/logout", h.authed(h.logout))
 
-	mux.HandleFunc("GET /api/users", h.authed(h.listUsers))
-	mux.HandleFunc("POST /api/users", h.authed(h.createUser))
-	mux.HandleFunc("POST /api/users/{id}/password-reset", h.authed(h.sendPasswordReset))
-	mux.HandleFunc("POST /api/users/{id}/verification", h.authed(h.resendVerification))
-	mux.HandleFunc("GET /api/users/{id}/profile", h.authed(h.userProfile))
-	mux.HandleFunc("GET /api/users/{id}", h.authed(h.getUser))
-	mux.HandleFunc("PATCH /api/users/{id}", h.authed(h.updateUser))
-	mux.HandleFunc("POST /api/users/{id}/disable", h.authed(h.setDisabled(true)))
-	mux.HandleFunc("POST /api/users/{id}/enable", h.authed(h.setDisabled(false)))
-	mux.HandleFunc("GET /api/users/{id}/sessions", h.authed(h.listUserSessions))
-	mux.HandleFunc("GET /api/users/{id}/audit", h.authed(h.userAudit))
-	mux.HandleFunc("DELETE /api/sessions/{id}", h.authed(h.revokeSession))
-
-	mux.HandleFunc("GET /api/invites", h.authed(h.listInvites))
-	mux.HandleFunc("POST /api/invites", h.authed(h.createInvite))
-	mux.HandleFunc("DELETE /api/invites/{id}", h.authed(h.revokeInvite))
-
-	mux.HandleFunc("GET /api/audit", h.authed(h.audit))
-	mux.HandleFunc("GET /api/overview", h.authed(h.overview))
-
-	mux.HandleFunc("GET /api/settings", h.authed(h.getSettings))
-	mux.HandleFunc("PATCH /api/settings", h.authed(h.updateSettings))
-
-	mux.HandleFunc("GET /api/sso/providers", h.authed(h.listProviders))
-	mux.HandleFunc("POST /api/sso/providers", h.authed(h.createProvider))
-	mux.HandleFunc("GET /api/sso/providers/{id}", h.authed(h.getProvider))
-	mux.HandleFunc("PATCH /api/sso/providers/{id}", h.authed(h.updateProvider))
-	mux.HandleFunc("DELETE /api/sso/providers/{id}", h.authed(h.deleteProvider))
-	mux.HandleFunc("POST /api/sso/providers/{id}/test", h.authed(h.testProvider))
-
-	mux.HandleFunc("GET /api/services", h.authed(h.listServices))
-	mux.HandleFunc("GET /api/services/{name}", h.authed(h.getService))
-	mux.HandleFunc("POST /api/services/{name}/{action}", h.authed(h.serviceAction))
-	mux.HandleFunc("GET /api/services/{name}/logs", h.authed(h.serviceLogs))
-
-	mux.HandleFunc("GET /api/directory", h.authed(h.directoryStatus))
-	mux.HandleFunc("POST /api/directory", h.authed(h.directorySubmit))
-	mux.HandleFunc("PATCH /api/directory/{id}", h.authed(h.directoryUpdate))
-	mux.HandleFunc("POST /api/directory/{id}/verify", h.authed(h.directoryVerify))
-	mux.HandleFunc("POST /api/directory/{id}/regenerate-token", h.authed(h.directoryRegenerate))
-	mux.HandleFunc("DELETE /api/directory/{id}", h.authed(h.directoryUnlist))
+	// Every other route needs admin.panel plus its permission (routes.go).
+	for _, rt := range h.routes() {
+		mux.HandleFunc(rt.Pattern, h.gate(rt.Perm, rt.Fresh, rt.fn))
+	}
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apperr.ErrNotFound)

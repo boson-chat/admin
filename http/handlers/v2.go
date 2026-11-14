@@ -166,21 +166,7 @@ func (h *Handlers) userProfile(w http.ResponseWriter, r *http.Request, s *sessio
 
 // ---- services (Docker) ----
 
-// stillAdmin re-checks the admin upstream. Docker and directory calls aren't
-// authorised by the auth service, so a demoted or disabled admin must not
-// keep using a still-valid panel cookie for them.
-func (h *Handlers) stillAdmin(w http.ResponseWriter, r *http.Request, s *session.Session) bool {
-	if _, err := h.Admin.Me(r.Context(), s); err != nil {
-		writeError(w, r, err)
-		return false
-	}
-	return true
-}
-
 func (h *Handlers) listServices(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	if !h.stillAdmin(w, r, s) {
-		return
-	}
 	if h.Containers == nil {
 		writeJSON(w, http.StatusOK, containers.List{Services: []containers.Service{}, CheckedAt: time.Now().UTC()})
 		return
@@ -197,7 +183,7 @@ func (h *Handlers) containersOr503(w http.ResponseWriter, r *http.Request) bool 
 }
 
 func (h *Handlers) getService(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	if !h.containersOr503(w, r) || !h.stillAdmin(w, r, s) {
+	if !h.containersOr503(w, r) {
 		return
 	}
 	v, err := h.Containers.Get(r.Context(), r.PathValue("name"))
@@ -219,9 +205,6 @@ func (h *Handlers) serviceAction(w http.ResponseWriter, r *http.Request, s *sess
 		writeError(w, r, err)
 		return
 	}
-	if !h.stillAdmin(w, r, s) {
-		return
-	}
 	res, err := h.Containers.Action(r.Context(), s.Snapshot().Username, r.PathValue("name"), r.PathValue("action"), body.Confirm)
 	if err != nil {
 		writeError(w, r, err)
@@ -235,7 +218,7 @@ func (h *Handlers) serviceAction(w http.ResponseWriter, r *http.Request, s *sess
 }
 
 func (h *Handlers) serviceLogs(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	if !h.containersOr503(w, r) || !h.stillAdmin(w, r, s) {
+	if !h.containersOr503(w, r) {
 		return
 	}
 	q := r.URL.Query()
@@ -297,7 +280,7 @@ func (h *Handlers) directoryOr503(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handlers) directoryStatus(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	if !h.directoryOr503(w, r) || !h.stillAdmin(w, r, s) {
+	if !h.directoryOr503(w, r) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.Directory.Status(r.Context(), r.URL.Query().Get("hostname")))
@@ -310,9 +293,6 @@ func (h *Handlers) directorySubmit(w http.ResponseWriter, r *http.Request, s *se
 	var in bosonapi.Submission
 	if err := decode(w, r, &in); err != nil {
 		writeError(w, r, err)
-		return
-	}
-	if !h.stillAdmin(w, r, s) {
 		return
 	}
 	l, err := h.Directory.Submit(r.Context(), s.Snapshot().Username, in)
@@ -345,9 +325,6 @@ func (h *Handlers) directoryUpdate(w http.ResponseWriter, r *http.Request, s *se
 		writeError(w, r, err)
 		return
 	}
-	if !h.stillAdmin(w, r, s) {
-		return
-	}
 	l, err := h.Directory.Update(r.Context(), s.Snapshot().Username, host, r.PathValue("id"), in)
 	if err != nil {
 		writeError(w, r, err)
@@ -363,9 +340,6 @@ func (h *Handlers) directoryVerify(w http.ResponseWriter, r *http.Request, s *se
 	host, err := dirHost(r)
 	if err != nil {
 		writeError(w, r, err)
-		return
-	}
-	if !h.stillAdmin(w, r, s) {
 		return
 	}
 	res, err := h.Directory.Verify(r.Context(), s.Snapshot().Username, host, r.PathValue("id"))
@@ -385,9 +359,6 @@ func (h *Handlers) directoryRegenerate(w http.ResponseWriter, r *http.Request, s
 		writeError(w, r, err)
 		return
 	}
-	if !h.stillAdmin(w, r, s) {
-		return
-	}
 	l, err := h.Directory.Regenerate(r.Context(), s.Snapshot().Username, host, r.PathValue("id"))
 	if err != nil {
 		writeError(w, r, err)
@@ -403,9 +374,6 @@ func (h *Handlers) directoryUnlist(w http.ResponseWriter, r *http.Request, s *se
 	host, err := dirHost(r)
 	if err != nil {
 		writeError(w, r, err)
-		return
-	}
-	if !h.stillAdmin(w, r, s) {
 		return
 	}
 	if err := h.Directory.Unlist(r.Context(), s.Snapshot().Username, host, r.PathValue("id")); err != nil {
