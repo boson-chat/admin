@@ -1,6 +1,7 @@
 package stackconfig
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/boson-chat/admin/config"
 	"github.com/boson-chat/admin/internal/services/admin"
+	"github.com/boson-chat/admin/internal/theme"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +29,9 @@ const (
 	KindList     Kind = "list"     // list of strings
 	KindRooms    Kind = "rooms"    // voice.rooms: [{id, name}]
 	KindDuration Kind = "duration" // 10m, 1h
+	KindText     Kind = "text"     // multi-line string (email bodies)
+	KindTheme    Kind = "theme"    // branding.theme: a boson-theme/1 document
+	KindImages   Kind = "images"   // branding.images: slot → file (written by uploads)
 )
 
 // Key is one setting in the file (schema v1, the stack's config contract).
@@ -168,6 +173,43 @@ func optionalText(max int) func(string) (string, error) {
 	}
 }
 
+func multiline(max int) func(string) (string, error) {
+	return func(s string) (string, error) {
+		s = strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+		if s == "" || len([]rune(s)) > max || strings.ContainsAny(s, "\r\x00") {
+			return "", fmt.Errorf("must be 1–%d characters", max)
+		}
+		return s, nil
+	}
+}
+
+func color(s string) (string, error) { return theme.Color(s) }
+
+// EmailTemplates are the emails auth sends whose wording can be changed.
+var EmailTemplates = []string{"verification", "password_reset", "account_setup", "invite"}
+
+func emailKeys() []Key {
+	out := []Key{
+		{Key: "auth.email.sender_name", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: optionalText(64)},
+		{Key: "auth.email.accent", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: color},
+		{Key: "auth.email.footer", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: optionalText(200)},
+		{Key: "auth.email.logo", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
+	}
+	for _, t := range EmailTemplates {
+		out = append(out,
+			Key{Key: "auth.email.templates." + t + ".subject", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: text(200)},
+			Key{Key: "auth.email.templates." + t + ".body", Kind: KindText, Max: 5000, Perm: admin.PermSettingsManage, Services: []string{auth}, item: multiline(5000)},
+		)
+	}
+	return out
+}
+
+// Branding keys.
+const (
+	KeyBrandingTheme  = "branding.theme"
+	KeyBrandingImages = "branding.images"
+)
+
 const (
 	auth      = "auth"
 	ergo      = "ergo"
@@ -179,7 +221,7 @@ const (
 
 // Keys is the schema the panel edits. Other keys in the file are kept as
 // they are.
-var Keys = []Key{
+var Keys = append([]Key{
 	{Key: "network.name", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{everybody}, Env: "NETWORK_NAME", item: text(64)},
 
 	{Key: "auth.registration", Kind: KindEnum, Enum: []string{"open", "invite", "closed"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "REGISTRATION"},
@@ -228,7 +270,12 @@ var Keys = []Key{
 	{Key: KeyDirectoryRegistration, Kind: KindBool, Perm: admin.PermDirectoryManage, Services: []string{self}, Env: "DIRECTORY_REGISTRATION"},
 	{Key: KeyDirectoryHostname, Kind: KindString, Perm: admin.PermDirectoryManage, Services: []string{self}, Env: "DIRECTORY_HOSTNAME", item: Hostname},
 	{Key: KeyTLSCheckHosts, Kind: KindList, MaxItems: 20, Perm: admin.PermServicesManage, Services: []string{self}, Env: "TLS_CHECK_HOSTS", item: TLSHost},
-}
+
+	// Branding (auth serves it at /v1/branding; the panel pushes it to the
+	// directory listing). Images are written by the Branding page's uploads.
+	{Key: KeyBrandingTheme, Kind: KindTheme, Perm: admin.PermSettingsManage, Services: []string{auth}},
+	{Key: KeyBrandingImages, Kind: KindImages, Perm: admin.PermSettingsManage, Services: []string{auth}},
+}, emailKeys()...)
 
 // The admin panel's own keys.
 const (
@@ -301,6 +348,28 @@ func (k Key) Clean(v any) (any, error) {
 			return c, nil
 		}
 		return s, nil
+	case KindText:
+		s, ok := v.(string)
+		if !ok {
+			return fail("must be text")
+		}
+		c, err := k.item(s)
+		if err != nil {
+			return fail("%v", err)
+		}
+		return c, nil
+	case KindTheme:
+		t, err := theme.Clean(v)
+		if err != nil {
+			return fail("%v", err)
+		}
+		return t, nil
+	case KindImages:
+		m, err := theme.CleanImages(v)
+		if err != nil {
+			return fail("%v", err)
+		}
+		return m, nil
 	case KindDuration:
 		s, ok := v.(string)
 		d, err := time.ParseDuration(strings.TrimSpace(s))
@@ -401,7 +470,20 @@ func (k Key) FromNode(n *yaml.Node) (any, error) {
 			return nil, fmt.Errorf("%s: must be a whole number", k.Key)
 		}
 		raw = float64(i)
-	case KindString, KindEnum, KindDuration:
+	case KindTheme, KindImages:
+		var m any
+		if n.Kind != yaml.MappingNode || n.Decode(&m) != nil {
+			return nil, fmt.Errorf("%s: must be a mapping", k.Key)
+		}
+		// YAML numbers and maps into the API's JSON shape.
+		b, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", k.Key, err)
+		}
+		if err := json.Unmarshal(b, &raw); err != nil {
+			return nil, fmt.Errorf("%s: %v", k.Key, err)
+		}
+	case KindString, KindEnum, KindDuration, KindText:
 		var s string
 		if n.Kind != yaml.ScalarNode || n.Tag == "!!null" || n.Decode(&s) != nil {
 			return nil, fmt.Errorf("%s: must be text", k.Key)

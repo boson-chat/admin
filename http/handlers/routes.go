@@ -59,6 +59,14 @@ func (h *Handlers) routes() []route {
 		{"GET /api/config/status", "", false, h.getConfigStatus},
 		{"PATCH /api/config", configWrite, true, h.patchConfig},
 
+		// Branding: the theme and email wording are config keys (above);
+		// images and email previews here.
+		{"PUT /api/branding/images/{slot}", admin.PermSettingsManage, true, h.putBrandingImage},
+		{"DELETE /api/branding/images/{slot}", admin.PermSettingsManage, true, h.deleteBrandingImage},
+		{"GET /api/branding/assets/{file}", "", false, h.brandingAsset},
+		{"POST /api/emails/preview", admin.PermSettingsManage, false, h.emailPreview},
+		{"POST /api/emails/test", admin.PermSettingsManage, true, h.emailTest},
+
 		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
 		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
 		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},

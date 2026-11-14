@@ -54,20 +54,29 @@ func (h *Handlers) patchConfig(w http.ResponseWriter, r *http.Request, s *sessio
 		writeError(w, r, err)
 		return
 	}
-	h.writeConfig(w, r, s, in, func(v *stackconfig.View) any { return v })
+	if !h.writeConfig(w, r, s, in, func(v *stackconfig.View) any { return v }) {
+		return
+	}
+	for _, k := range in.Keys() {
+		if strings.HasPrefix(k, "branding.") {
+			h.pushBranding(r.Context(), s.Snapshot().Username)
+			break
+		}
+	}
 }
 
 // writeConfig saves a change and answers with render(view).
-func (h *Handlers) writeConfig(w http.ResponseWriter, r *http.Request, s *session.Session, c stackconfig.Change, render func(*stackconfig.View) any) {
+func (h *Handlers) writeConfig(w http.ResponseWriter, r *http.Request, s *session.Session, c stackconfig.Change, render func(*stackconfig.View) any) bool {
 	v, err := h.Config.Update(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), c, h.can(r, s))
 	if err != nil {
 		writeError(w, r, configErr(err))
-		return
+		return false
 	}
 	if v.ETag != "" {
 		w.Header().Set("ETag", v.ETag)
 	}
 	writeJSON(w, http.StatusOK, render(v))
+	return true
 }
 
 func configErr(err error) error {

@@ -26,6 +26,7 @@ import (
 	"github.com/boson-chat/admin/internal/configfile"
 	"github.com/boson-chat/admin/internal/logger"
 	"github.com/boson-chat/admin/internal/services/admin"
+	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/overview"
@@ -167,6 +168,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		h.Features.Profiles = true
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}
+	var email authapi.EmailClientImpl
+	if up.AuthInternalURL != "" && up.InternalAPIToken != "" {
+		email = authapi.NewEmailClient(up.AuthInternalURL, up.InternalAPIToken, max(up.Timeout, 20*time.Second), upstream("auth_internal"))
+	}
+	brandingSvc := branding.NewBrandingService(branding.Options{Config: stack, Dir: cfg.StackConfig.BrandingDir, Email: email})
+	h.Branding = brandingSvc
 	if bc.DirectoryURL != "" {
 		secret := []byte(bc.DirectoryKey)
 		if len(secret) == 0 {
@@ -180,6 +187,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 				a := stack.Admin()
 				return a.DirectoryRegistration, a.DirectoryHostname
 			},
+			Branding: brandingSvc.Bundle,
 		})
 		h.Features.Directory = true // DirectoryRegistration: Handlers.features()
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
