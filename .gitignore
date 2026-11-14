@@ -15,6 +15,7 @@ node_modules/
 /ui/.svelte-kit/
 /ui/test-results/
 /ui/playwright-report/
+/ui/e2e/.auth/
 
 # Local environment and secrets
 .env

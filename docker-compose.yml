@@ -70,13 +70,25 @@ services:
         quicvoiced=http://quicvoiced:8080/healthz,
         caddy=http://caddy:80/
       VERSION_TARGETS: auth=http://auth:8081/metrics,quicvoiced=http://quicvoiced:8080/version
-      # A public cert (valid) and the dev Caddy's internal-CA cert (untrusted).
-      TLS_CHECK_HOSTS: example.com:443,admin.localhost:443@caddy:443
+      # A public cert (valid), the dev Caddy's internal-CA cert and Ergo's
+      # self-signed one (both untrusted).
+      TLS_CHECK_HOSTS: example.com:443,admin.localhost:443@caddy:443,irc.localhost:6697@ergo:6697
+      # The IRC check: CAP LS + registration over TLS (Ergo's 004 gives the version).
+      IRC_CHECK: ircs://ergo:6697
+      IRC_CHECK_SERVER_NAME: irc.localhost
+      # The dev compose fronts the panel with Caddy (the stack uses Traefik).
+      EDGE_NAME: Caddy
+      # Timed from the browser. Voice has no public HTTP listener here, so it
+      # shows "n/a"; irc is Ergo's WebSocket listener (published below).
+      PUBLIC_PROBE_TARGETS: >-
+        auth=http://localhost:8080/healthz,
+        quicvoiced=https://voice.localhost:8443/healthz,
+        irc=ws://localhost:8097/webirc
       METRICS_URL: ${METRICS_URL:-http://victoriametrics:8428}
       GRAFANA_URL: ${GRAFANA_URL:-}
     ports:
       - "127.0.0.1:8090:8080"
-    depends_on: [auth]
+    depends_on: [auth, ergo]
 
   # The stack's TLS front, here with Caddy's internal CA.
   caddy:
@@ -86,6 +98,17 @@ services:
     ports:
       - "127.0.0.1:8443:443"
     depends_on: [admin]
+
+  # IRC, as in the stack's irc profile: upstream Ergo with its default config
+  # (self-signed TLS on 6697) for the overview's IRC check.
+  ergo:
+    image: ghcr.io/ergochat/ergo:v2.19.1
+    environment:
+      # Ergo's defaults plus the WebSocket listener the stack serves at /webirc.
+      ERGO__SERVER__LISTENERS: >-
+        {":6697": {"tls": {"cert": "fullchain.pem", "key": "privkey.pem"}}, ":8097": {"websocket": true}}
+    ports:
+      - "127.0.0.1:8097:8097"
 
   quicvoiced:
     build: ../quicvoice

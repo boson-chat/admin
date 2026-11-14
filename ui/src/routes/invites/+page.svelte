@@ -5,6 +5,8 @@
 	import { date } from '$lib/format';
 	import type { Invite } from '$lib/types';
 	import Confirm from '$lib/components/Confirm.svelte';
+	import type { DropdownOption } from '$lib/dropdown';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 
@@ -12,20 +14,31 @@
 	let registration = $state('');
 	let error = $state('');
 
-	let maxUses = $state(1);
+	let uses = $state('1');
+	let customUses = $state(2);
+	let maxUses = $derived(uses === 'custom' ? customUses : Number(uses));
 	let ttl = $state('168h');
 	let note = $state('');
 	let creating = $state(false);
 	let created = $state<Invite | null>(null);
 	let copied = $state(false);
 
-	const expiries = [
-		{ v: '1h', label: '1 hour' },
-		{ v: '24h', label: '1 day' },
-		{ v: '168h', label: '7 days' },
-		{ v: '720h', label: '30 days' },
-		{ v: '', label: 'Never' }
+	const useOptions: DropdownOption[] = [
+		{ value: '1', label: 'Single use', description: 'One account, e.g. a personal invite' },
+		{ value: '5', label: '5 uses' },
+		{ value: '10', label: '10 uses' },
+		{ value: '25', label: '25 uses' },
+		{ value: '100', label: '100 uses', description: 'A group or event' },
+		{ value: 'custom', label: 'Custom…', description: 'Any number up to 10,000' }
 	];
+	const expiries: DropdownOption[] = [
+		{ value: '1h', label: '1 hour' },
+		{ value: '24h', label: '1 day' },
+		{ value: '168h', label: '7 days' },
+		{ value: '720h', label: '30 days' },
+		{ value: '', label: 'Never', description: 'Valid until used up or revoked' }
+	];
+	let customInput = $state<HTMLInputElement>();
 
 	async function load() {
 		try {
@@ -110,17 +123,38 @@
 <div class="layout">
 	<form class="create" onsubmit={create}>
 		<h2>New invite</h2>
-		<label class="field">
-			<span>Uses</span>
-			<input type="number" min="1" max="10000" bind:value={maxUses} required />
-			<small>How many accounts can register with this code.</small>
-		</label>
-		<label class="field">
-			<span>Expires after</span>
-			<select bind:value={ttl}>
-				{#each expiries as x (x.v)}<option value={x.v}>{x.label}</option>{/each}
-			</select>
-		</label>
+		<div class="field">
+			<span id="inv-uses">Uses</span>
+			<Dropdown
+				options={useOptions}
+				bind:value={uses}
+				name="uses"
+				labelledby="inv-uses"
+				describedby="inv-uses-help"
+				onchange={(v) => {
+					if (v === 'custom') setTimeout(() => customInput?.select());
+				}}
+			/>
+			{#if uses === 'custom'}
+				<label class="custom">
+					<span class="sr-only">Number of uses</span>
+					<input
+						bind:this={customInput}
+						type="number"
+						name="max_uses"
+						min="1"
+						max="10000"
+						bind:value={customUses}
+						required
+					/>
+				</label>
+			{/if}
+			<small id="inv-uses-help">How many accounts can register with this code.</small>
+		</div>
+		<div class="field">
+			<span id="inv-ttl">Expires after</span>
+			<Dropdown options={expiries} bind:value={ttl} name="ttl" labelledby="inv-ttl" />
+		</div>
 		<label class="field">
 			<span>Note</span>
 			<input type="text" bind:value={note} maxlength="200" placeholder="Who it’s for" />
@@ -221,6 +255,9 @@
 	}
 	.create .btn {
 		justify-self: start;
+	}
+	.custom {
+		display: block;
 	}
 	/* the one-time reveal: the accent is reserved for this moment */
 	.reveal {

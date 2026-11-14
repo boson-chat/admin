@@ -4,10 +4,20 @@
 	import { api } from '$lib/api';
 	import { errorText } from '$lib/toasts.svelte';
 	import type { User } from '$lib/types';
+	import type { DropdownOption } from '$lib/dropdown';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 
-	const PAGE = 50;
+	const sizes: DropdownOption[] = [
+		{ value: '25', label: '25 per page' },
+		{ value: '50', label: '50 per page' },
+		{ value: '100', label: '100 per page' }
+	];
+	const DEFAULT_SIZE = '50';
+	function sizeParam(v: string | null) {
+		return sizes.some((s) => s.value === v) ? (v as string) : DEFAULT_SIZE;
+	}
 
 	let users = $state<User[]>([]);
 	let total = $state(0);
@@ -16,13 +26,15 @@
 
 	let q = $derived(page.url.searchParams.get('q') ?? '');
 	let offset = $derived(Math.max(0, Number(page.url.searchParams.get('offset')) || 0));
+	let pageSize = $derived(Number(sizeParam(page.url.searchParams.get('limit'))));
 	let input = $state(page.url.searchParams.get('q') ?? '');
+	let size = $state(sizeParam(page.url.searchParams.get('limit')));
 
 	$effect(() => {
 		const query = q;
 		const off = offset;
 		loading = true;
-		const params = new URLSearchParams({ limit: String(PAGE), offset: String(off) });
+		const params = new URLSearchParams({ limit: String(pageSize), offset: String(off) });
 		if (query) params.set('q', query);
 		api<{ users: User[]; total: number }>('GET', '/users?' + params)
 			.then((r) => {
@@ -43,6 +55,7 @@
 		const p = new URLSearchParams();
 		if (query) p.set('q', query);
 		if (off) p.set('offset', String(off));
+		if (size !== DEFAULT_SIZE) p.set('limit', size);
 		const s = p.toString();
 		goto('/users' + (s ? '?' + s : ''), { keepFocus: true, noScroll: true, replaceState: true });
 	}
@@ -74,6 +87,15 @@
 			{#if total === 0}No users{:else}{offset + 1}–{offset + users.length} of {total}{/if}
 		{/if}
 	</span>
+	<Dropdown
+		class="size"
+		options={sizes}
+		bind:value={size}
+		label="Users per page"
+		size="small"
+		align="end"
+		onchange={() => setParams(q, 0)}
+	/>
 </div>
 
 {#if error}
@@ -130,17 +152,17 @@
 			</tbody>
 		</table>
 	</div>
-	{#if total > PAGE}
+	{#if total > pageSize}
 		<div class="pager">
 			<button
 				class="btn btn-small"
 				disabled={offset === 0}
-				onclick={() => setParams(q, Math.max(0, offset - PAGE))}>Previous</button
+				onclick={() => setParams(q, Math.max(0, offset - pageSize))}>Previous</button
 			>
 			<button
 				class="btn btn-small"
-				disabled={offset + PAGE >= total}
-				onclick={() => setParams(q, offset + PAGE)}>Next</button
+				disabled={offset + pageSize >= total}
+				onclick={() => setParams(q, offset + pageSize)}>Next</button
 			>
 		</div>
 	{/if}
@@ -157,6 +179,9 @@
 	.search {
 		flex: 1 1 260px;
 		max-width: 420px;
+	}
+	.toolbar :global(.size) {
+		margin-left: auto;
 	}
 	.count {
 		font-family: var(--font-mono);

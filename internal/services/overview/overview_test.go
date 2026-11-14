@@ -9,6 +9,7 @@ import (
 
 	"github.com/boson-chat/admin/config"
 	"github.com/boson-chat/admin/internal/clients/health"
+	"github.com/boson-chat/admin/internal/clients/ircprobe"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/clients/tlsprobe"
 )
@@ -152,5 +153,75 @@ func TestMetrics(t *testing.T) {
 	m = s.Overview(context.Background()).Metrics
 	if m.Error != "metrics backend unreachable" {
 		t.Fatalf("shared error not surfaced: %q", m.Error)
+	}
+}
+
+type fakeIRC struct {
+	calls atomic.Int32
+	res   ircprobe.Result
+}
+
+func (f *fakeIRC) Probe(_ context.Context, _, _ string, _ bool) ircprobe.Result {
+	f.calls.Add(1)
+	return f.res
+}
+
+func TestIRCProbe(t *testing.T) {
+	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	clock := now
+	fi := &fakeIRC{res: ircprobe.Result{OK: true, Latency: 12 * time.Millisecond, Version: "ergo-2.19.1"}}
+	target := &config.IRCTarget{Address: "ergo:6697", ServerName: "irc.example.com", TLS: true, Label: "ircs://ergo:6697"}
+	s := NewOverviewService(Options{Health: fakeHealth{}, TLS: &fakeTLS{}, IRCProbe: fi, IRC: target,
+		Targets: []config.Target{{Name: "auth", URL: "http://auth/healthz"}}, Now: func() time.Time { return clock }})
+	o := s.Overview(context.Background())
+	if !o.IRC.Configured || o.IRC.Target != "ircs://ergo:6697" || o.Edge.Name != "Traefik" {
+		t.Fatalf("overview: %+v %+v", o.IRC, o.Edge)
+	}
+	if len(o.Services) != 2 || o.Services[1].Name != "irc" || o.Services[1].Status != StatusUp ||
+		o.Services[1].Version != "ergo-2.19.1" || o.Services[1].Checks[0].LatencyMS != 12 {
+		t.Fatalf("services: %+v", o.Services)
+	}
+
+	// Cached within the TTL.
+	fi.res = ircprobe.Result{Detail: "connection refused"}
+	clock = now.Add(10 * time.Second)
+	if o = s.Overview(context.Background()); fi.calls.Load() != 1 || o.Services[1].Status != StatusUp {
+		t.Fatalf("not cached: %d calls, %+v", fi.calls.Load(), o.Services[1])
+	}
+	clock = now.Add(time.Minute)
+	o = s.Overview(context.Background())
+	if o.Services[1].Status != StatusDown || o.Services[1].Checks[0].Detail != "connection refused" {
+		t.Fatalf("down: %+v", o.Services[1])
+	}
+}
+
+func TestIRCMergedWithHealthTarget(t *testing.T) {
+	fi := &fakeIRC{res: ircprobe.Result{OK: false, Detail: "timed out"}}
+	s := NewOverviewService(Options{Health: fakeHealth{}, TLS: &fakeTLS{}, IRCProbe: fi, Edge: "Caddy",
+		IRC:     &config.IRCTarget{Address: "ergo:6697", Label: "ircs://ergo:6697"},
+		Targets: []config.Target{{Name: "irc", URL: "http://irc/healthz"}}})
+	o := s.Overview(context.Background())
+	if len(o.Services) != 1 || len(o.Services[0].Checks) != 2 || o.Services[0].Status != StatusDegraded || o.Edge.Name != "Caddy" {
+		t.Fatalf("services: %+v", o.Services)
+	}
+}
+
+func TestIRCNotConfigured(t *testing.T) {
+	o := NewOverviewService(Options{Health: fakeHealth{}, TLS: &fakeTLS{}}).Overview(context.Background())
+	if o.IRC.Configured || len(o.Services) != 0 {
+		t.Fatalf("%+v %+v", o.IRC, o.Services)
+	}
+}
+
+func TestPublicProbesIncludeThePanel(t *testing.T) {
+	o := NewOverviewService(Options{Health: fakeHealth{}, TLS: &fakeTLS{},
+		Public: []config.PublicProbe{{Name: "auth", URL: "https://auth.example.com/healthz", Kind: "http"}}}).Overview(context.Background())
+	if len(o.PublicProbes) != 2 || o.PublicProbes[0].Name != "admin" || o.PublicProbes[0].URL != "/healthz" || o.PublicProbes[1].Name != "auth" {
+		t.Fatalf("%+v", o.PublicProbes)
+	}
+	o = NewOverviewService(Options{Health: fakeHealth{}, TLS: &fakeTLS{},
+		Public: []config.PublicProbe{{Name: "admin", URL: "https://admin.example.com/healthz", Kind: "http"}}}).Overview(context.Background())
+	if len(o.PublicProbes) != 1 {
+		t.Fatalf("%+v", o.PublicProbes)
 	}
 }

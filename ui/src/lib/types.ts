@@ -112,4 +112,13 @@ export interface Overview {
 	certificates: Certificate[];
 	metrics: { configured: boolean; error?: string; stats: Stat[] };
 	grafana_url?: string;
+	edge: { name: string };
+	irc: { configured: boolean; target?: string };
+	public_probes?: PublicProbe[];
+}
+
+export interface PublicProbe {
+	name: string;
+	url: string;
+	kind: 'http' | 'ws';
 }

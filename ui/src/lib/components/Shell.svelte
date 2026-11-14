@@ -6,6 +6,8 @@
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import Logo from './Logo.svelte';
+	import Dropdown from './Dropdown.svelte';
+	import type { DropdownOption } from '$lib/dropdown';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -28,7 +30,13 @@
 	];
 
 	let menuOpen = $state(false);
-	let theme = $state<'system' | 'dark' | 'light'>('system');
+	type Theme = 'system' | 'dark' | 'light';
+	let theme = $state<Theme>('system');
+	const themes: DropdownOption<Theme>[] = [
+		{ value: 'system', label: 'System', description: 'Follow the device setting' },
+		{ value: 'dark', label: 'Dark', description: 'Terminal' },
+		{ value: 'light', label: 'Light', description: 'Daylight' }
+	];
 
 	$effect(() => {
 		try {
@@ -43,8 +51,7 @@
 		else document.documentElement.dataset.theme = theme;
 	});
 
-	function cycleTheme() {
-		theme = theme === 'system' ? 'dark' : theme === 'dark' ? 'light' : 'system';
+	function saveTheme() {
 		try {
 			if (theme === 'system') localStorage.removeItem('theme');
 			else localStorage.setItem('theme', theme);
@@ -112,10 +119,17 @@
 					</div>
 				{/if}
 				<div class="row">
+					<div class="theme">
+						<span class="label" id="theme-label">Theme</span>
+						<Dropdown
+							options={themes}
+							bind:value={theme}
+							onchange={saveTheme}
+							labelledby="theme-label"
+							size="small"
+						/>
+					</div>
 					<button class="btn btn-small" onclick={signOut}>Sign out</button>
-					<button class="btn btn-small btn-ghost" onclick={cycleTheme} title="Colour theme"
-						>Theme: {theme}</button
-					>
 				</div>
 				{#if session.info}
 					<span class="ver">Panel {session.info.features.version}</span>
@@ -300,11 +314,12 @@
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
-		gap: var(--space-2);
+		gap: var(--space-3);
 	}
-	.row .btn-ghost {
-		padding-inline: var(--space-2);
-		margin-left: calc(-1 * var(--space-2));
+	.theme {
+		display: grid;
+		gap: 2px;
+		width: 100%;
 	}
 	.ver {
 		font-family: var(--font-mono);

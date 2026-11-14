@@ -15,6 +15,7 @@ import (
 	"github.com/boson-chat/admin/http/middleware"
 	"github.com/boson-chat/admin/internal/clients/authapi"
 	"github.com/boson-chat/admin/internal/clients/health"
+	"github.com/boson-chat/admin/internal/clients/ircprobe"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/clients/tlsprobe"
 	"github.com/boson-chat/admin/internal/logger"
@@ -59,6 +60,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	targets, _ := up.Health()
 	versions, _ := up.Versions()
 	certs, _ := up.TLSTargets()
+	irc, _ := up.IRC()
+	probes, _ := up.PublicProbes()
+	connect := make([]string, 0, len(probes))
+	for _, p := range probes {
+		connect = append(connect, p.Origin)
+	}
 	var prom promql.PromClientImpl
 	if up.MetricsURL != "" {
 		prom = promql.NewPromClient(up.MetricsURL, up.Timeout)
@@ -72,6 +79,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		Certs:    certs,
 		Grafana:  up.GrafanaURL,
 		Version:  cfg.AppConfig.Version,
+		IRCProbe: ircprobe.NewIRCProber(min(up.Timeout, 5*time.Second)),
+		IRC:      irc,
+		Edge:     up.EdgeName,
+		Public:   probes,
 	})
 
 	key := o.SessionKey
@@ -108,7 +119,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	public := middleware.Chain(mux,
 		middleware.TrustedClientIP(trusted),
 		middleware.Observe(m),
-		middleware.SecurityHeaders(spa.CSP()),
+		middleware.SecurityHeaders(spa.CSP(connect...)),
 	)
 
 	imux := nethttp.NewServeMux()

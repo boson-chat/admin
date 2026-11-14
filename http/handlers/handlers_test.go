@@ -300,6 +300,13 @@ func TestSPA(t *testing.T) {
 	if len(spa.ScriptHashes) != 1 || !strings.Contains(spa.CSP(), spa.ScriptHashes[0]) || !strings.Contains(spa.CSP(), "frame-ancestors 'none'") {
 		t.Fatalf("csp: %s", spa.CSP())
 	}
+	if !strings.Contains(spa.CSP(), "connect-src 'self';") {
+		t.Fatalf("connect-src: %s", spa.CSP())
+	}
+	csp := spa.CSP("https://auth.example.com", "wss://irc.example.com", "https://auth.example.com", "*", "x;y")
+	if !strings.Contains(csp, "connect-src 'self' https://auth.example.com wss://irc.example.com;") {
+		t.Fatalf("connect-src with probes: %s", csp)
+	}
 	get := func(p string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		spa.ServeHTTP(w, httptest.NewRequest("GET", p, nil))

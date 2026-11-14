@@ -362,8 +362,7 @@ code {
 input[type='text'],
 input[type='search'],
 input[type='password'],
-input[type='number'],
-select {
+input[type='number'] {
 	width: 100%;
 	min-height: 38px;
 	padding: var(--space-2) var(--space-3);
@@ -377,16 +376,14 @@ select {
 		border-color var(--motion-fast) var(--ease-standard),
 		box-shadow var(--motion-fast) var(--ease-standard);
 }
-input:hover,
-select:hover {
+input:hover {
 	border-color: var(--border-strong);
 }
 input::placeholder {
 	color: var(--fg-3);
 	opacity: 1;
 }
-input:focus-visible,
-select:focus-visible {
+input:focus-visible {
 	outline: none;
 	border-color: var(--accent);
 	box-shadow:
@@ -394,26 +391,6 @@ select:focus-visible {
 		0 0 0 4px var(--accent-dim);
 	border-radius: var(--radius-sm);
 }
-select {
-	appearance: none;
-	padding-right: var(--space-8);
-	background-image:
-		linear-gradient(45deg, transparent 50%, var(--fg-2) 50%),
-		linear-gradient(135deg, var(--fg-2) 50%, transparent 50%);
-	background-position:
-		calc(100% - 17px) 50%,
-		calc(100% - 12px) 50%;
-	background-size:
-		5px 5px,
-		5px 5px;
-	background-repeat: no-repeat;
-}
-select option,
-select optgroup {
-	background: var(--surface-raised);
-	color: var(--fg);
-}
-
 /* ---- tables ----
    boson has no table component; this follows its list rows (border-soft
    separators, surface-hover on hover) and Field labels for the header. */

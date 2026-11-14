@@ -6,6 +6,7 @@
 		action,
 		danger = false,
 		onconfirm,
+		oncancel,
 		children,
 		trigger
 	}: {
@@ -13,33 +14,42 @@
 		action: string;
 		danger?: boolean;
 		onconfirm: () => Promise<void> | void;
+		/** Called when the dialog closes without confirming (Cancel, ×, Escape). */
+		oncancel?: () => void;
 		children: Snippet;
 		trigger: Snippet<[() => void]>;
 	} = $props();
 
+	const uid = $props.id();
 	let dialog: HTMLDialogElement;
 	let busy = $state(false);
+	let confirmed = false;
 
 	function open() {
+		confirmed = false;
 		dialog.showModal();
 	}
 	async function confirm() {
 		busy = true;
 		try {
 			await onconfirm();
+			confirmed = true;
 			dialog.close();
 		} finally {
 			busy = false;
 		}
 	}
+	function onclose() {
+		if (!confirmed) oncancel?.();
+	}
 </script>
 
 {@render trigger(open)}
 
-<dialog bind:this={dialog} aria-labelledby="dlg-title">
+<dialog bind:this={dialog} aria-labelledby="dlg-{uid}" {onclose}>
 	<form method="dialog">
 		<header>
-			<h2 id="dlg-title">{title}</h2>
+			<h2 id="dlg-{uid}">{title}</h2>
 			<button class="close" value="cancel" aria-label="Close" disabled={busy}>×</button>
 		</header>
 		<div class="body">{@render children()}</div>
