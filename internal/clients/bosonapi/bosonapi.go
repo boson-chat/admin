@@ -95,6 +95,11 @@ func (c *Client) roundTrip(ctx context.Context, method, path, auth string, hdr m
 		}
 		return resp.StatusCode, c.httpError(resp, data)
 	}
+	if out != nil && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		// A web UI's SPA fallback (the directory serves its site on every
+		// unknown path): this release doesn't have the endpoint.
+		return resp.StatusCode, apperr.New(http.StatusNotImplemented, apperr.CodeUnsupported, "")
+	}
 	if out != nil && len(data) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {
 			return resp.StatusCode, apperr.New(http.StatusBadGateway, "boson_api_error", c.Name+" sent a response the panel can't read")

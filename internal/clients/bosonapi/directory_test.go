@@ -1,8 +1,14 @@
 package bosonapi
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/boson-chat/admin/internal/apperr"
 )
 
 func TestDirectoryShapes(t *testing.T) {
@@ -40,5 +46,17 @@ func TestDirectoryShapes(t *testing.T) {
 	var v VerifyResult
 	if err := json.Unmarshal([]byte(`{"success":true,"server":{"id":"s","status":"verified"},"report":{"success":true,"results":{}}}`), &v); err != nil || v.Network == nil || v.Network.VerificationStatus != "verified" {
 		t.Fatalf("verify: %v %+v", err, v)
+	}
+}
+
+func TestSPAFallbackIsUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!doctype html><title>directory</title>"))
+	}))
+	defer srv.Close()
+	_, err := NewOperatorClient(srv.URL, "t", time.Second, nil).Peers(context.Background())
+	if !apperr.IsUnsupported(err) {
+		t.Fatalf("SPA page: %v", err)
 	}
 }

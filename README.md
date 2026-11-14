@@ -443,12 +443,16 @@ banner_url, origin, status, health_status, user_count, last_checked_at,
 last_verified_at, created_at}` (the backend's `verification_status` /
 `registered_at` names are read too). The panel's own API keeps the old
 names (`verification_status`, `verification_last_checked_at`,
-`registered_at`) so the UI didn't change. A plain-text 404 or a 405 reads as
-"endpoint missing".
+`registered_at`) so the UI didn't change. A plain-text 404, a 405 or an
+HTML page (the directory's web UI answers unknown paths) reads as "endpoint
+missing". Errors are `{error, message, code}`. Checked against a real
+directory (`ENV=development DNS_VERIFIER=fake`, an operator token), not only
+against fakes; rerun with
+`DIRECTORY_TEST_URL=http://127.0.0.1:8080 DIRECTORY_TEST_TOKEN=… go test -run TestAgainstDirectory ./internal/services/directory/`.
 
 | Endpoint | Auth | |
 |---|---|---|
-| `GET /v1/networks/lookup?hostname=` | none | the verified public listing (bare network or `{network}`), 404 `{"error":"not_found"}` |
+| `GET /v1/networks/lookup?hostname=` | none | the verified public listing (`{network, verification: null}`, or a bare network), 404 `{"error":"not_found"}` |
 | `GET /v1/networks/lookup?hostname=` | `Network <key>` | this key's own listing in any status: `{network, verification?}`; 404 `not_found` when the key has none |
 | `POST /v1/networks` `{hostname, port, tls, name, description?, tags?, languages?, is_nsfw?, website_url?}` | `Network <key>` | 201 `{network, verification: {record_name, record_value, expires_at}}`; same key + hostname again = 200 with the existing row; 409 `hostname_taken` |
 | `PATCH /v1/networks/{id}` | `Network <key>` | `{network, verification?}` |
@@ -456,7 +460,7 @@ names (`verification_status`, `verification_last_checked_at`,
 | `POST /v1/networks/{id}/regenerate-token` | `Network <key>` | `{network, verification}`, back to pending |
 | `DELETE /v1/networks/{id}` | `Network <key>` | 204 |
 | `GET /v1/networks?owner=<auth_user_id>&limit=100&cursor=` | `X-Internal-Token` | `{networks, next_cursor}`, every status for that owner; the panel follows `next_cursor` (≤ 5 pages) |
-| `GET /v1/admin/peers` | `X-Internal-Token` | `{peers: [{id, url, name, enabled, builtin, last_sync_at, last_error, listing_count}]}`; `builtin: true` is the main peer |
+| `GET /v1/admin/peers` | `X-Internal-Token` | `{peers: [{id, url, name, api, enabled, builtin, active, last_sync_at, last_error, listing_count, …}]}`; `builtin: true` is the main peer, absent with `DIRECTORY_INCLUDE_MAIN=false` |
 | `PATCH /v1/admin/peers/{id}` `{enabled}` | `X-Internal-Token` (+ `X-Acting-User`) | `{peer}` (or the bare peer) |
 
 Without a `builtin` peer (the directory runs with

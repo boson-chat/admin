@@ -330,7 +330,10 @@ type Peer struct {
 	Enabled bool   `json:"enabled"`
 	// Builtin: the main directory (DIRECTORY_MAIN_PEER), recreated on start
 	// unless DIRECTORY_INCLUDE_MAIN=false; switched off, never deleted.
-	Builtin      bool       `json:"builtin"`
+	Builtin bool `json:"builtin"`
+	// Active: synced right now (enabled, and for the builtin peer, included).
+	Active       bool       `json:"active"`
+	API          string     `json:"api,omitempty"`
 	LastSyncAt   *time.Time `json:"last_sync_at,omitempty"`
 	LastError    string     `json:"last_error,omitempty"`
 	ListingCount int        `json:"listing_count"`
