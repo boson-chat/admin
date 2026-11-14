@@ -36,6 +36,7 @@ type Metrics struct {
 	logins           metric.Int64Counter
 	refreshes        metric.Int64Counter
 	serviceActions   metric.Int64Counter
+	settingsChanges  metric.Int64Counter
 }
 
 // New creates the instruments on mp.
@@ -67,6 +68,8 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		logins:           counter("admin.logins", "{login}", "Panel sign-ins by outcome."),
 		refreshes:        counter("admin.token.refreshes", "{refresh}", "Access-token refreshes by outcome."),
 		serviceActions:   counter("admin.service.actions", "{action}", "Container start/stop/restart requests by action and outcome."),
+		// Prometheus: admin_settings_changes_total.
+		settingsChanges: counter("admin.settings.changes", "{change}", "Saves to the stack config file by section and outcome."),
 	}
 	if err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -115,4 +118,11 @@ func (m *Metrics) Refresh(ctx context.Context, outcome string) {
 // success, refused (typed confirmation missing) or error.
 func (m *Metrics) ServiceAction(ctx context.Context, action, outcome string) {
 	m.serviceActions.Add(ctx, 1, metric.WithAttributes(attribute.String("action", action), attribute.String("outcome", outcome)))
+}
+
+// SettingsChange records a save to the stack config file, per section it
+// touched (auth, admin, …). outcome is success, invalid, conflict,
+// invalid_file or error.
+func (m *Metrics) SettingsChange(ctx context.Context, section, outcome string) {
+	m.settingsChanges.Add(ctx, 1, metric.WithAttributes(attribute.String("section", section), attribute.String("outcome", outcome)))
 }

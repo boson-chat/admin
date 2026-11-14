@@ -23,6 +23,26 @@ type Config struct {
 	DockerConfig    DockerConfig
 	BosonConfig     BosonConfig
 	TelemetryConfig TelemetryConfig
+	StackConfig     StackConfig
+}
+
+// StackConfig is the stack's shared config file (config/boson.yaml).
+type StackConfig struct {
+	// Path of the file inside the container, e.g. /config/boson.yaml; its
+	// directory must be writable (saves are atomic renames). Empty = no
+	// file: every setting comes from the env, as before.
+	Path string `env:"BOSON_CONFIG"`
+	// Comma-separated name=url of each service's GET /internal/config/status
+	// (names are compose services: the restart button uses them). The
+	// panel reports its own status itself.
+	StatusTargets string `env:"CONFIG_STATUS_TARGETS"`
+	// How often the file is re-read when no change event arrives.
+	Poll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
+}
+
+// Statuses parses CONFIG_STATUS_TARGETS.
+func (c StackConfig) Statuses() ([]Target, error) {
+	return parseTargets("CONFIG_STATUS_TARGETS", c.StatusTargets)
 }
 
 type DockerConfig struct {
@@ -55,7 +75,9 @@ type BosonConfig struct {
 	DirectoryInternalToken string `env:"DIRECTORY_INTERNAL_TOKEN"`
 	// Secret for the directory management key; defaults to SESSION_KEY.
 	DirectoryKey string `env:"DIRECTORY_KEY"`
-	// The IRC hostname to list; defaults to IRC_CHECK_SERVER_NAME.
+	// The IRC hostname to list; defaults to IRC_CHECK_SERVER_NAME. With
+	// BOSON_CONFIG, admin.directory_hostname wins (and
+	// admin.directory_registration over DIRECTORY_REGISTRATION).
 	DirectoryHostname string `env:"DIRECTORY_HOSTNAME"`
 }
 
@@ -102,7 +124,8 @@ type UpstreamConfig struct {
 	// Comma-separated name=url version sources: a URL returning the version as text
 	// or JSON {"version"}, or a Prometheus /metrics URL (target_info service_version).
 	VersionTargets string `env:"VERSION_TARGETS"`
-	// Comma-separated host:port[@dial-host:dial-port] whose TLS certificates are checked.
+	// Comma-separated host:port[@dial-host:dial-port] whose TLS certificates
+	// are checked. With BOSON_CONFIG, admin.tls_check_hosts wins.
 	TLSCheckHosts string `env:"TLS_CHECK_HOSTS"`
 	// IRC server to probe: ircs://host:port (TLS) or irc://host:port. Empty = not checked.
 	IRCCheck string `env:"IRC_CHECK"`
@@ -185,6 +208,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if _, err := c.UpstreamConfig.PublicProbes(); err != nil {
+		return err
+	}
+	if _, err := c.StackConfig.Statuses(); err != nil {
 		return err
 	}
 	for name, v := range map[string]string{"AUTH_URL": c.UpstreamConfig.AuthURL, "AUTH_INTERNAL_URL": c.UpstreamConfig.AuthInternalURL,
@@ -318,18 +344,27 @@ type TLSTarget struct {
 
 // TLSTargets parses TLS_CHECK_HOSTS (host:port[@dial-host:dial-port]).
 func (c UpstreamConfig) TLSTargets() ([]TLSTarget, error) {
+	out, err := ParseTLSTargets(SplitList(c.TLSCheckHosts))
+	if err != nil {
+		return nil, fmt.Errorf("TLS_CHECK_HOSTS: %w", err)
+	}
+	return out, nil
+}
+
+// ParseTLSTargets parses host:port[@dial-host:dial-port] entries.
+func ParseTLSTargets(items []string) ([]TLSTarget, error) {
 	var out []TLSTarget
-	for _, item := range SplitList(c.TLSCheckHosts) {
+	for _, item := range items {
 		hostPort, dial, hasDial := strings.Cut(item, "@")
 		host, port, err := splitHostPort(hostPort)
 		if err != nil {
-			return nil, fmt.Errorf("TLS_CHECK_HOSTS: %w", err)
+			return nil, err
 		}
 		addr := host + ":" + port
 		if hasDial {
 			dh, dp, err := splitHostPort(dial)
 			if err != nil {
-				return nil, fmt.Errorf("TLS_CHECK_HOSTS: %w", err)
+				return nil, err
 			}
 			addr = dh + ":" + dp
 		}

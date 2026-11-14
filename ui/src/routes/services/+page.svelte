@@ -98,8 +98,10 @@
 	<State kind="off" title="Services control is off">
 		<p>
 			The panel controls containers through a locked-down Docker socket proxy that only allows listing, logs,
-			stats, start, stop and restart. Add the proxy to the stack and set <code>DOCKER_PROXY_URL</code>, for
-			example <code>http://docker-proxy:2375</code>. The README has the compose snippet.
+			stats, start, stop and restart. This is a deployment setting: add the proxy to the stack, set
+			<code>ADMIN_DOCKER_PROXY_URL</code> in the stack’s <code>.env</code> (for example
+			<code>http://docker-proxy:2375</code>) and run <code>docker compose up -d admin</code>. The README has
+			the compose snippet.
 		</p>
 		<p>The Docker socket itself is never mounted into the panel.</p>
 	</State>
@@ -112,7 +114,8 @@
 	<State kind="empty" title="No containers in “{data.project}”">
 		The proxy answered, but no container carries the compose label <code
 			>com.docker.compose.project={data.project}</code
-		>. Set <code>DOCKER_PROJECT</code> to the stack’s project name.
+		>. Set <code>DOCKER_PROJECT</code> on the admin service to the stack’s compose project name (a deployment
+		setting in <code>compose.yaml</code>) and recreate it.
 	</State>
 {:else}
 	<ul class="rack" aria-busy={loading}>

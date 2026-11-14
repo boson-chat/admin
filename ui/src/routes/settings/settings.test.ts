@@ -129,3 +129,22 @@ describe('network settings: guest access', () => {
 		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { require_email_verification: true });
 	});
 });
+
+describe('network settings: stack config file', () => {
+	beforeEach(() => api.mockReset());
+
+	it('says the file manages them and resets a key set there', async () => {
+		api.mockImplementation(async (method: string, path: string) => {
+			if (path === '/config') return {};
+			return {
+				settings: { ...base, guest_access: true, channel_auto_register: true, channel_expiry_days: 0 },
+				config: { managed: true, sources: { registration: 'file', guest_access: 'default' } }
+			};
+		});
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByText(/Saved to the stack config file/)).toBeTruthy();
+		await user.click(screen.getByRole('button', { name: 'Reset Registration to its default' }));
+		expect(api).toHaveBeenCalledWith('PATCH', '/config', { unset: ['auth.registration'] });
+	});
+});

@@ -4,6 +4,7 @@ package overview
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,6 +93,9 @@ type OverviewService struct {
 	Targets  []config.Target
 	Versions []config.Target
 	Certs    []config.TLSTarget
+	// CertsFn, when set, gives the current list instead of Certs
+	// (admin.tls_check_hosts in the stack config file can change it).
+	CertsFn  func() []config.TLSTarget
 	Grafana  string
 	Version  string
 	IRCProbe ircprobe.IRCProberImpl
@@ -109,6 +113,7 @@ type OverviewService struct {
 	mu        sync.Mutex
 	certCache []Certificate
 	certAt    time.Time
+	certKey   string
 	ircCache  *Service
 	ircAt     time.Time
 }
@@ -120,6 +125,7 @@ type Options struct {
 	Targets  []config.Target
 	Versions []config.Target
 	Certs    []config.TLSTarget
+	CertsFn  func() []config.TLSTarget
 	Grafana  string
 	Version  string
 	IRCProbe ircprobe.IRCProberImpl
@@ -137,7 +143,7 @@ func NewOverviewService(o Options) *OverviewService {
 		o.Edge = "Traefik"
 	}
 	return &OverviewService{Health: o.Health, TLS: o.TLS, Prom: o.Prom, Targets: o.Targets, Versions: o.Versions,
-		Certs: o.Certs, Grafana: o.Grafana, Version: o.Version, IRCProbe: o.IRCProbe, IRC: o.IRC, Edge: o.Edge,
+		Certs: o.Certs, CertsFn: o.CertsFn, Grafana: o.Grafana, Version: o.Version, IRCProbe: o.IRCProbe, IRC: o.IRC, Edge: o.Edge,
 		Public: withSelfProbe(o.Public), Now: o.Now, CertTTL: 5 * time.Minute, IRCTTL: 30 * time.Second}
 }
 
@@ -281,18 +287,31 @@ func rollup(checks []health.Result) string {
 	}
 }
 
+func (s *OverviewService) certTargets() []config.TLSTarget {
+	if s.CertsFn != nil {
+		return s.CertsFn()
+	}
+	return s.Certs
+}
+
 func (s *OverviewService) certificates(ctx context.Context) []Certificate {
+	targets := s.certTargets()
+	var kb strings.Builder
+	for _, t := range targets {
+		kb.WriteString(t.Label + "@" + t.Address + ",")
+	}
+	key := kb.String()
 	s.mu.Lock()
-	if s.certCache != nil && s.Now().Sub(s.certAt) < s.CertTTL {
+	if s.certCache != nil && s.certKey == key && s.Now().Sub(s.certAt) < s.CertTTL {
 		c := s.certCache
 		s.mu.Unlock()
 		return s.withDaysLeft(c)
 	}
 	s.mu.Unlock()
 
-	out := make([]Certificate, len(s.Certs))
+	out := make([]Certificate, len(targets))
 	var wg sync.WaitGroup
-	for i, t := range s.Certs {
+	for i, t := range targets {
 		wg.Go(func() {
 			c := Certificate{Target: t.Label, ServerName: t.ServerName, Address: t.Address, CheckedAt: s.Now().UTC()}
 			cert, err := s.TLS.Probe(ctx, t.ServerName, t.Address)
@@ -306,7 +325,7 @@ func (s *OverviewService) certificates(ctx context.Context) []Certificate {
 	}
 	wg.Wait()
 	s.mu.Lock()
-	s.certCache, s.certAt = out, s.Now()
+	s.certCache, s.certAt, s.certKey = out, s.Now(), key
 	s.mu.Unlock()
 	return s.withDaysLeft(out)
 }

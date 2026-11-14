@@ -134,7 +134,11 @@
 			<li class="branch" data-tone="none">
 				<span class="node" aria-hidden="true"></span>
 				<div class="name"><h3>No health checks</h3></div>
-				<span class="status muted">Set HEALTH_TARGETS</span>
+				<span
+					class="status muted"
+					title="A deployment setting: HEALTH_TARGETS on the admin service in compose.yaml"
+					>Set HEALTH_TARGETS</span
+				>
 			</li>
 		{/each}
 		{#if !hasIRC}
@@ -142,7 +146,7 @@
 				<span class="node" aria-hidden="true"></span>
 				<div class="name"><h3>IRC</h3></div>
 				<span class="status muted">Not configured</span>
-				<span class="hint muted">Set <code>IRC_CHECK</code></span>
+				<span class="hint muted">Set <code>ADMIN_IRC_CHECK</code> in .env</span>
 			</li>
 		{/if}
 	</ul>

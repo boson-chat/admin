@@ -361,8 +361,11 @@
 			<State kind="loading" title="Loading profile…" />
 		{:else if !profile.configured}
 			<State kind="off" title="Profiles aren’t connected">
-				Set <code>BOSON_API_URL</code> to the stack’s boson API (for example <code>http://api:3000</code>) to
-				show avatars, handles and the servers people list in the directory.
+				Profiles come from the stack’s boson API. This is a deployment setting: set <code
+					>ADMIN_BOSON_API_URL</code
+				>
+				in the stack’s <code>.env</code> (for example <code>http://api:3000</code>) and run
+				<code>docker compose up -d admin</code> to show avatars, handles and the servers people list in the directory.
 			</State>
 		{:else if profile.unsupported}
 			<State kind="unsupported" title="Needs a newer boson API">{profile.unsupported}.</State>

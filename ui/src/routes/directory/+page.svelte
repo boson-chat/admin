@@ -20,6 +20,7 @@
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
 	import Toggle from '$lib/components/Toggle.svelte';
+	import { stackConfig } from '$lib/stackconfig.svelte';
 
 	let st = $state<DirectoryStatus | null>(null);
 	let error = $state('');
@@ -40,6 +41,35 @@
 	let checking = $state(false);
 	let verify = $state<VerifyResult | null>(null);
 	let verifyError = $state('');
+
+	// The panel's own directory settings (registration on/off, the hostname)
+	// live in the stack config file when there is one.
+	let fileMode = $derived(!!session.info?.features.config_file);
+	let canPanel = $derived(fileMode && session.can('directory.manage'));
+	let regKey = $derived(stackConfig.key('admin.directory_registration'));
+	let hostKey = $derived(stackConfig.key('admin.directory_hostname'));
+	let newHost = $state('');
+	let panelBusy = $state(false);
+	let panelError = $state('');
+	$effect(() => {
+		if (fileMode && !stackConfig.view) void stackConfig.load();
+	});
+	async function setPanel(set: Record<string, boolean | string>, done: string) {
+		panelBusy = true;
+		panelError = '';
+		try {
+			await stackConfig.save({ set });
+			if (session.info && 'admin.directory_registration' in set)
+				session.info.features.directory_registration = set['admin.directory_registration'] as boolean;
+			toasts.push(done);
+			hostname = '';
+			await load();
+		} catch (e) {
+			panelError = errorText(e).replace(/^admin\.directory_hostname: /, '');
+		} finally {
+			panelBusy = false;
+		}
+	}
 
 	async function load(host = '') {
 		error = '';
@@ -362,7 +392,10 @@
 
 {#if off}
 	<State kind="off" title="The directory is off">
-		<code>DIRECTORY_API_URL</code> is empty, so the panel doesn’t talk to the boson directory.
+		<code>ADMIN_DIRECTORY_API_URL</code> is empty, so the panel doesn’t talk to the boson directory. It’s a
+		deployment setting: set it in the stack’s <code>.env</code> (default
+		<code>https://directory.boson.chat</code>) and run
+		<code>docker compose up -d admin</code>.
 	</State>
 {:else if error}
 	<State kind="error">
@@ -398,13 +431,51 @@
 					<code>{st.hostname}</code> isn’t in the public directory{st.public_error
 						? ' (the search failed: ' + st.public_error + ')'
 						: ''}.
+				{:else if canPanel}
+					Which IRC hostname should this page list and check?
 				{:else}
-					Set the IRC hostname to check: <code>DIRECTORY_HOSTNAME</code> or
-					<code>IRC_CHECK_SERVER_NAME</code>.
+					No IRC hostname to check. {fileMode
+						? 'Someone with directory.manage can set it here.'
+						: 'Set DIRECTORY_HOSTNAME (or IRC_CHECK_SERVER_NAME) on the admin service and recreate it.'}
 				{/if}
 			</p>
 		</div>
 	</section>
+
+	{#if !st.hostname && canPanel}
+		<form
+			class="section host-form"
+			onsubmit={(e) => {
+				e.preventDefault();
+				setPanel(
+					{ 'admin.directory_hostname': newHost },
+					`The Directory page now lists ${newHost.trim().toLowerCase()}.`
+				);
+			}}
+		>
+			<label for="dir-host">Public IRC hostname</label>
+			<div class="row">
+				<input
+					type="text"
+					id="dir-host"
+					class="mono"
+					placeholder="irc.example.org"
+					spellcheck="false"
+					autocomplete="off"
+					bind:value={newHost}
+					aria-invalid={!!panelError}
+					aria-describedby="dir-host-hint"
+				/>
+				<button class="btn btn-primary" disabled={!newHost.trim() || panelBusy}
+					>{panelBusy ? 'Saving…' : 'Save hostname'}</button
+				>
+			</div>
+			<p class="small muted" id="dir-host-hint">
+				{#if panelError}<span class="perr">{panelError}</span>{:else}Saved to the stack config file as
+					<code>admin.directory_hostname</code>.{/if}
+			</p>
+		</form>
+	{/if}
 
 	{#if !st.registration || st.unsupported}
 		<div class="section">
@@ -413,15 +484,26 @@
 					<p>{st.unsupported}.</p>
 					<p>
 						Networks register with a network key and a DNS record through the directory’s <code>/v1</code>
-						API. Point <code>DIRECTORY_API_URL</code> at a boson directory (default
-						<code>https://directory.boson.chat</code>).
+						API. Point <code>ADMIN_DIRECTORY_API_URL</code> in the stack’s <code>.env</code> at a boson
+						directory (default <code>https://directory.boson.chat</code>) and run
+						<code>docker compose up -d admin</code>.
 					</p>
 				</State>
 			{:else}
 				<State kind="off" title="Registration is switched off">
 					<p>
-						<code>DIRECTORY_REGISTRATION=false</code>, so this page only checks whether the network is listed.
-						Set it to <code>true</code> and the page walks you through it:
+						This page only checks whether the network is listed.
+						{#if canPanel}
+							Turn registration on and it walks you through listing it:
+						{:else if fileMode}
+							Someone with <code>directory.manage</code> can turn it on here, and the page then walks you through
+							it:
+						{:else}
+							To turn it on, set <code>ADMIN_DIRECTORY_REGISTRATION=true</code> in the stack’s
+							<code>.env</code>
+							and run
+							<code>docker compose up -d admin</code>. The page then walks you through it:
+						{/if}
 					</p>
 					<ol class="how">
 						<li>Fill in the network’s name, description and IRC address.</li>
@@ -433,6 +515,18 @@
 							Check it from here. The directory re-checks it daily and hides the listing if it disappears.
 						</li>
 					</ol>
+					{#if canPanel}
+						<p class="turn-on">
+							<button
+								class="btn btn-primary btn-small"
+								disabled={panelBusy}
+								onclick={() =>
+									setPanel({ 'admin.directory_registration': true }, 'Directory registration is on.')}
+								>{panelBusy ? 'Turning on…' : 'Turn on registration'}</button
+							>
+						</p>
+						{#if panelError}<p class="perr small" role="alert">{panelError}</p>{/if}
+					{/if}
 				</State>
 			{/if}
 		</div>
@@ -807,7 +901,41 @@
 	</section>
 {/if}
 
+{#if st && fileMode && (regKey || hostKey)}
+	<p class="panel-foot small muted">
+		This page lists <code>{st.hostname || 'no hostname'}</code>{hostKey?.set
+			? ' (set in the stack config file)'
+			: hostKey?.default
+				? ' (the default from the environment)'
+				: ''}; registration is {st.registration ? 'on' : 'off'}. Change either on
+		<a href="/config#g-admin">Stack config</a>.
+	</p>
+{/if}
+
 <style>
+	.host-form {
+		display: grid;
+		gap: var(--space-2);
+		max-width: 34rem;
+	}
+	.host-form label {
+		font-weight: 600;
+		font-size: var(--text-sm);
+	}
+	.host-form .row {
+		display: flex;
+		gap: var(--space-2);
+	}
+	.host-form input {
+		flex: 1;
+	}
+	.turn-on {
+		margin-top: var(--space-4);
+	}
+	.panel-foot {
+		margin-top: var(--space-8);
+		max-width: 64ch;
+	}
 	.standing {
 		display: flex;
 		gap: var(--space-4);

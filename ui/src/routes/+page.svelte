@@ -173,12 +173,28 @@
 	<section class="section" aria-labelledby="cert-h">
 		<div class="section-head">
 			<h2 id="cert-h">Certificates</h2>
-			<p>Checked by connecting to each host, every 5 minutes.</p>
+			<p>
+				Checked by connecting to each host, every 5 minutes.
+				{#if session.info?.features.config_file && session.can('services.manage')}
+					<a href="/config#g-admin">Change which hosts</a>
+				{/if}
+			</p>
 		</div>
 		{#if data.certificates.length === 0}
 			<Notice tone="info">
-				No hostnames are checked. Set <code>TLS_CHECK_HOSTS</code>, for example
-				<code>irc.example.com:6697,voice.example.com:443</code>.
+				No certificates are watched.
+				{#if session.info?.features.config_file}
+					{#if session.can('services.manage')}
+						<a href="/config#g-admin">Add hosts on Stack config</a>, for example
+						<code>irc.example.com:6697</code>.
+					{:else}
+						Someone with <code>services.manage</code> can add hosts on Stack config.
+					{/if}
+				{:else}
+					List them in <code>ADMIN_TLS_CHECK_HOSTS</code> in the stack’s <code>.env</code>, for example
+					<code>irc.example.com:6697,voice.example.com:443</code>, and run
+					<code>docker compose up -d admin</code>.
+				{/if}
 			</Notice>
 		{:else}
 			<div class="table-wrap">
@@ -225,8 +241,11 @@
 		</div>
 		{#if !data.metrics.configured}
 			<Notice tone="info">
-				Live metrics are off. Point <code>METRICS_URL</code> at a Prometheus-compatible query API (for example
-				VictoriaMetrics at <code>http://victoriametrics:8428</code>) to see voice and sign-in numbers here.
+				Live metrics are off. This is a deployment setting: point <code>ADMIN_METRICS_URL</code> in the
+				stack’s
+				<code>.env</code> at a Prometheus-compatible query API (for example VictoriaMetrics at
+				<code>http://victoriametrics:8428</code>) and run <code>docker compose up -d admin</code> to see voice and
+				sign-in numbers here.
 			</Notice>
 		{:else if data.metrics.error}
 			<Notice tone="warn">The metrics backend didn’t answer: {data.metrics.error}</Notice>
