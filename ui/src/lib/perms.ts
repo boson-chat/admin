@@ -4,6 +4,8 @@ import type { Role, RoleRef } from './types';
 export const pagePerms: { prefix: string; perm: string; label: string }[] = [
 	{ prefix: '/services', perm: 'services.view', label: 'Services' },
 	{ prefix: '/settings', perm: 'settings.manage', label: 'Network settings' },
+	{ prefix: '/branding', perm: 'settings.manage', label: 'Branding' },
+	{ prefix: '/emails', perm: 'settings.manage', label: 'Emails' },
 	{ prefix: '/directory', perm: 'directory.manage', label: 'Directory' },
 	{ prefix: '/audit', perm: 'audit.view', label: 'Audit log' },
 	{ prefix: '/users', perm: 'users.view', label: 'Users' },

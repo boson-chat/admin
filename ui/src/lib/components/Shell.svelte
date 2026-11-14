@@ -22,6 +22,8 @@
 				{ href: '/', label: 'Stack' },
 				{ href: '/services', label: 'Services' },
 				{ href: '/settings', label: 'Network settings' },
+				{ href: '/branding', label: 'Branding' },
+				{ href: '/emails', label: 'Emails' },
 				{ href: '/config', label: 'Stack config' },
 				{ href: '/directory', label: 'Directory' },
 				{ href: '/audit', label: 'Audit log' }

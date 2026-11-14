@@ -118,3 +118,10 @@ describe('names and defaults', () => {
 		expect(userLock(ref(90), v, true)).toBe('');
 	});
 });
+
+describe('branding pages', () => {
+	it('need settings.manage', () => {
+		expect(permFor('/branding')).toBe('settings.manage');
+		expect(permFor('/emails')).toBe('settings.manage');
+	});
+});

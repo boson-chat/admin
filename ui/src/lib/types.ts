@@ -100,6 +100,10 @@ export interface Features {
 	irc_host?: string;
 	/** The stack config file (BOSON_CONFIG) holds the runtime settings; the panel writes it. */
 	config_file?: boolean;
+	/** Branding image uploads work (needs the config file). */
+	branding?: boolean;
+	/** auth's internal email preview and test API is configured. */
+	email_preview?: boolean;
 }
 
 export interface SessionInfo {
@@ -472,7 +476,8 @@ export interface PublicProbe {
 
 // ---- the stack config file (config/boson.yaml) ----
 
-export type ConfigKind = 'bool' | 'string' | 'int' | 'enum' | 'list' | 'rooms' | 'duration';
+export type ConfigKind =
+	'bool' | 'string' | 'int' | 'enum' | 'list' | 'rooms' | 'duration' | 'text' | 'theme' | 'images';
 
 export interface VoiceRoom {
 	id: string;
@@ -553,6 +558,7 @@ export interface ConfigServiceStatus {
 }
 
 export interface ConfigChange {
-	set?: Record<string, ConfigValue>;
+	/** Theme documents (branding.theme) are objects. */
+	set?: Record<string, ConfigValue | object>;
 	unset?: string[];
 }
