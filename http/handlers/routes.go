@@ -72,6 +72,12 @@ func (h *Handlers) routes() []route {
 		{"DELETE /api/directory/{id}", admin.PermDirectoryManage, true, h.directoryUnlist},
 		{"GET /api/directory/federation", admin.PermDirectoryManage, true, h.directoryFederation},
 		{"PUT /api/directory/federation/include-main", admin.PermDirectoryManage, true, h.directoryIncludeMain},
+		{"PATCH /api/directory/settings", admin.PermDirectoryManage, true, h.directorySettings},
+		{"GET /api/directory/peers/check", admin.PermDirectoryManage, true, h.directoryPeerCheck},
+		{"POST /api/directory/peers", admin.PermDirectoryManage, true, h.directoryPeerAdd},
+		{"PATCH /api/directory/peers/{id}", admin.PermDirectoryManage, true, h.directoryPeerUpdate},
+		{"DELETE /api/directory/peers/{id}", admin.PermDirectoryManage, true, h.directoryPeerRemove},
+		{"POST /api/directory/peers/{id}/sync", admin.PermDirectoryManage, true, h.directoryPeerSync},
 
 		// Reading roles and the catalog needs only admin.panel, as in auth:
 		// user pages label effective permissions and show the hierarchy.

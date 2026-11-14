@@ -92,6 +92,10 @@ func TestAgainstDirectory(t *testing.T) {
 	if fed.Error != "" {
 		t.Fatalf("federation: %+v", fed)
 	}
+	if fed.Settings != nil {
+		liveSettings(t, loc, fed)
+		return
+	}
 	if fed.MainPeer == nil {
 		t.Logf("no builtin peer (DIRECTORY_INCLUDE_MAIN=false or a directory without federation)")
 		if _, err := loc.SetIncludeMain(ctx, "root", true); err == nil {
@@ -113,5 +117,38 @@ func TestAgainstDirectory(t *testing.T) {
 	bad := NewLocalService(LocalOptions{Client: bosonapi.NewOperatorClient(base, "wrong", 10*time.Second, nil)})
 	if f := bad.Federation(ctx); f.Error == "" {
 		t.Fatalf("wrong token accepted: %+v", f)
+	}
+}
+
+// liveSettings exercises the directory >= 1.4.0 settings API: include_main
+// both ways (also with no builtin peer yet), name, and restores both.
+func liveSettings(t *testing.T, loc LocalServiceImpl, fed *Federation) {
+	t.Helper()
+	ctx := context.Background()
+	st := fed.Settings
+	if st.IsMain {
+		if _, err := loc.SetIncludeMain(ctx, "root", true); err == nil {
+			t.Fatal("include_main on the main directory")
+		}
+	} else {
+		was := st.Settings.IncludeMain
+		f, err := loc.SetIncludeMain(ctx, "root", !was)
+		if err != nil || f.Settings.Settings.IncludeMain == was || (f.MainPeer != nil) == was {
+			t.Fatalf("toggle include_main: %v %+v", err, f.Settings)
+		}
+		if f, err = loc.SetIncludeMain(ctx, "root", was); err != nil || f.Settings.Settings.IncludeMain != was {
+			t.Fatalf("toggle back: %v %+v", err, f.Settings)
+		}
+	}
+	name, orig := "Live test directory", st.Settings.Name
+	f, err := loc.UpdateSettings(ctx, "root", SettingsUpdate{Name: &name})
+	if err != nil || f.Settings.Settings.Name != name {
+		t.Fatalf("rename: %v %+v", err, f)
+	}
+	if _, err := loc.UpdateSettings(ctx, "root", SettingsUpdate{Name: &orig}); err != nil {
+		t.Fatalf("restore name: %v", err)
+	}
+	if _, err := loc.CheckPeer(ctx, "http://127.0.0.1:1"); err == nil {
+		t.Fatal("unreachable peer checked fine")
 	}
 }

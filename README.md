@@ -51,8 +51,10 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   a note and its fields are never sent.
 - **Directory:** whether the network is listed in the boson directory
   (directory.boson.chat), and listing it with a network key and a DNS TXT
-  proof. With the stack's own directory: the "Include the boson main
-  directory" switch and its peers. See "Directory" below.
+  proof. With the stack's own directory: its name/operator/contact and sync
+  interval, the "Include the boson main directory" switch, and its peers
+  (add, enable/disable, sync, remove), all without editing `.env`. See
+  "Directory" below.
 - **Users:** search by username or email, paginate, create a user (with a
   password or an emailed set-password link), open a user to change their
   role, disable or enable them (disabling signs them out everywhere), send a
@@ -197,7 +199,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`, `12h`).
 | `BOSON_CDN_URL` | `https://cdn.boson.chat` | where avatars and server icons are served from; added to the CSP `img-src` |
 | `DIRECTORY_API_URL` | `https://directory.boson.chat` | the boson directory this network is listed in ([boson-chat/directory](https://github.com/boson-chat/directory), `/v1` API). Empty = the directory page is off |
 | `DIRECTORY_REGISTRATION` | `true` | register and edit this network's listing there (network key + DNS proof). `false` = the page only reports whether it is listed |
-| `DIRECTORY_LOCAL_URL` | – | the stack's own directory (`directory` profile), e.g. `http://directory:8080`: the "Include the boson main directory" switch, its peers, and the listings each user owns. Empty = off |
+| `DIRECTORY_LOCAL_URL` | – | the stack's own directory (`directory` profile), e.g. `http://directory:8080`: its settings, the "Include the boson main directory" switch, its peers, and the listings each user owns. Empty = off |
 | `DIRECTORY_INTERNAL_TOKEN` | – | operator token for `DIRECTORY_LOCAL_URL` (the directory's `DIRECTORY_INTERNAL_TOKEN`); required with it |
 | `DIRECTORY_KEY` | `SESSION_KEY` | secret the directory management key is derived from. Set it if you rotate `SESSION_KEY`, or the panel loses edit access to its listing |
 | `DIRECTORY_HOSTNAME` | `IRC_CHECK_SERVER_NAME` | the IRC hostname to list |
@@ -359,15 +361,30 @@ API's `GET /servers` search to say whether the network is listed.
 **The stack's own directory.** With the stack's `directory` profile, set
 `DIRECTORY_LOCAL_URL=http://directory:8080` and `DIRECTORY_INTERNAL_TOKEN`
 (the stack does both). The Directory page then gets a "Your own directory"
-section: the **Include the boson main directory** switch (the directory's
-built-in main peer, on by default: your directory also shows every network
-listed at directory.boson.chat, each only after your directory has checked
-its DNS itself) and a read-only list of its peers with their sync state.
-Peers are added and removed on the directory's own Peers page. A user's page
-lists the networks they registered in that directory, in any state. Switching
-the main peer needs `directory.manage` and is logged
-(`action=directory.include_main`, actor, enabled) here and in the
-directory's own audit log (the panel sends `X-Acting-User`).
+section where everything is changed at runtime: the directory keeps these
+settings in its own database (its env values are only defaults), so nobody
+edits `.env` or recreates the service.
+
+- **Include the boson main directory**: on by default, your directory also
+  shows every network listed at directory.boson.chat, each only after your
+  directory has checked its DNS itself. Works whether or not the built-in
+  peer exists yet (directory ≥ 1.4.0 creates or re-enables it). When the
+  stack's directory *is* the main directory (its main peer URL is its own,
+  like directory.boson.chat), the page says so instead of showing the
+  switch.
+- **Directory details**: name, operator, contact (its
+  `/.well-known/boson-directory.json`) and how often peers sync.
+- **Other directories**: add one by URL (checked against its `.well-known`
+  first), switch it on/off, sync now, remove; each shows its listing count,
+  last sync and last error.
+
+Settings need directory ≥ 1.4.0; on an older one the page says so and the
+switch only toggles an existing built-in peer (peers work either way). A
+user's page lists the networks they registered in that directory, in any
+state. Every change needs `directory.manage` and is logged here
+(`action=directory.include_main|settings|peer_add|peer_enable|peer_sync|peer_remove`,
+actor) and in the directory's own audit log (the panel sends
+`X-Acting-User`).
 
 ## Upstream work
 
@@ -462,10 +479,8 @@ against fakes; rerun with
 | `GET /v1/networks?owner=<auth_user_id>&limit=100&cursor=` | `X-Internal-Token` | `{networks, next_cursor}`, every status for that owner; the panel follows `next_cursor` (≤ 5 pages) |
 | `GET /v1/admin/peers` | `X-Internal-Token` | `{peers: [{id, url, name, api, enabled, builtin, active, last_sync_at, last_error, listing_count, …}]}`; `builtin: true` is the main peer, absent with `DIRECTORY_INCLUDE_MAIN=false` |
 | `PATCH /v1/admin/peers/{id}` `{enabled}` | `X-Internal-Token` (+ `X-Acting-User`) | `{peer}` (or the bare peer) |
-
-Without a `builtin` peer (the directory runs with
-`DIRECTORY_INCLUDE_MAIN=false`) the switch is off and explains how to turn
-it on.
+| `GET /v1/admin/peers/check?url=` · `POST /v1/admin/peers {url}` · `DELETE /v1/admin/peers/{id}` · `POST /v1/admin/peers/{id}/sync` | `X-Internal-Token` (+ `X-Acting-User`) | check / add / remove / sync now (502 `peer_unreachable` is shown with its reason) |
+| `GET /v1/admin/settings` · `PATCH /v1/admin/settings {name?, operator?, contact?, include_main?, sync_every?}` | `X-Internal-Token` (+ `X-Acting-User`) | directory ≥ 1.4.0: `{settings, defaults, overridden, is_main, main_active, main_peer, …}`; older directories read as unsupported |
 
 ## How it works
 
@@ -580,8 +595,12 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/roles/{id}/members?cursor=&limit=`, `PUT/DELETE /api/roles/{id}/members/{user_id}` | `{users, next_cursor}`; adding / removing one member reads and rewrites that user's roles |
 | `PUT /api/users/{id}/roles` `{role_ids}` | `{roles}` |
 | `GET /api/directory?hostname=`, `POST /api/directory`, `PATCH /api/directory/{id}?hostname=`, `POST …/{id}/verify`, `POST …/{id}/regenerate-token`, `DELETE …/{id}` | |
-| `GET /api/directory/federation` | `{url, main_peer?, peers, unsupported?, error?}`; 503 `directory_local_off` without `DIRECTORY_LOCAL_URL` |
-| `PUT /api/directory/federation/include-main` `{enabled}` | the same; 409 `main_peer_missing` when the directory has no built-in main peer |
+| `GET /api/directory/federation` | `{url, main_peer?, peers, settings?, settings_unsupported?, settings_error?, unsupported?, error?}`; 503 `directory_local_off` without `DIRECTORY_LOCAL_URL` |
+| `PUT /api/directory/federation/include-main` `{enabled}` | the same; through the directory's settings (≥ 1.4.0), else by toggling the built-in peer (409 `main_peer_missing` when an old directory has none); 409 `is_main_directory` on the main directory |
+| `PATCH /api/directory/settings` `{name?, operator?, contact?, sync_every?}` | federation JSON; unsupported before directory 1.4.0 |
+| `GET /api/directory/peers/check?url=` | `{url, well_known: {name, api, …}}` (a bare host gets `https://`) |
+| `POST /api/directory/peers` `{url}` · `PATCH /api/directory/peers/{id}` `{enabled}` · `DELETE /api/directory/peers/{id}` | federation JSON (201 for add) |
+| `POST /api/directory/peers/{id}/sync` | `{federation, result: {created, updated, deleted, verified, error?}}` |
 | `GET /api/users/{id}/networks` | always 200: `{configured, networks?, unsupported?, error?}` (the stack's own directory) |
 
 ### Metrics

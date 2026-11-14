@@ -10,6 +10,7 @@ import (
 	"github.com/boson-chat/admin/internal/clients/authapi"
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/services/containers"
+	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/session"
 )
 
@@ -422,6 +423,104 @@ func (h *Handlers) directoryIncludeMain(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeJSON(w, http.StatusOK, f)
+}
+
+// directorySettings changes the stack directory's runtime settings
+// (name, operator, contact, sync interval): stored in its database, so
+// nobody edits .env.
+func (h *Handlers) directorySettings(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	var in directory.SettingsUpdate
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	f, err := h.LocalDirectory.UpdateSettings(r.Context(), s.Snapshot().Username, in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, f)
+}
+
+func (h *Handlers) directoryPeerCheck(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	c, err := h.LocalDirectory.CheckPeer(r.Context(), r.URL.Query().Get("url"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (h *Handlers) directoryPeerAdd(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	var in struct {
+		URL string `json:"url"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	f, err := h.LocalDirectory.AddPeer(r.Context(), s.Snapshot().Username, in.URL)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, f)
+}
+
+func (h *Handlers) directoryPeerUpdate(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if in.Enabled == nil {
+		writeError(w, r, apperr.Invalid("enabled (true or false) is required"))
+		return
+	}
+	f, err := h.LocalDirectory.SetPeerEnabled(r.Context(), s.Snapshot().Username, r.PathValue("id"), *in.Enabled)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, f)
+}
+
+func (h *Handlers) directoryPeerRemove(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	f, err := h.LocalDirectory.RemovePeer(r.Context(), s.Snapshot().Username, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, f)
+}
+
+func (h *Handlers) directoryPeerSync(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	f, res, err := h.LocalDirectory.SyncPeer(r.Context(), s.Snapshot().Username, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"federation": f, "result": res})
 }
 
 // userNetworks is the listings a user owns in the stack's own directory.
