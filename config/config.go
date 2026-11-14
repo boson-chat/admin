@@ -64,6 +64,12 @@ type BosonConfig struct {
 	// The stack's boson API (the api service), for admin profile reads.
 	// Empty = profiles off.
 	APIURL string `env:"BOSON_API_URL"`
+	// The api's internal listener (http://api:3001) and its
+	// INTERNAL_API_TOKEN (sent as X-Internal-Token): the Nick registration
+	// page's status and Test connection. Empty URL = that page says the api
+	// isn't reachable.
+	APIInternalURL   string `env:"BOSON_API_INTERNAL_URL"`
+	APIInternalToken string `env:"BOSON_API_INTERNAL_TOKEN"`
 	// Where avatars and server icons are served from (img-src in the CSP).
 	CDNURL string `default:"https://cdn.boson.chat" env:"BOSON_CDN_URL"`
 	// The directory this network is listed in (github.com/boson-chat/directory).
@@ -184,6 +190,7 @@ func (c *Config) ApplyDefaults() {
 	d.ProxyURL = trim(d.ProxyURL)
 	b := &c.BosonConfig
 	b.APIURL, b.CDNURL, b.DirectoryURL = trim(b.APIURL), trim(b.CDNURL), trim(b.DirectoryURL)
+	b.APIInternalURL, b.APIInternalToken = trim(b.APIInternalURL), strings.TrimSpace(b.APIInternalToken)
 	b.DirectoryLocalURL, b.DirectoryInternalToken = trim(b.DirectoryLocalURL), strings.TrimSpace(b.DirectoryInternalToken)
 	if b.DirectoryHostname == "" {
 		b.DirectoryHostname = strings.TrimSpace(u.IRCCheckServerName)
@@ -223,7 +230,7 @@ func (c Config) Validate() error {
 		"METRICS_URL": c.UpstreamConfig.MetricsURL, "GRAFANA_URL": c.UpstreamConfig.GrafanaURL,
 		"DOCKER_PROXY_URL": c.DockerConfig.ProxyURL, "BOSON_API_URL": c.BosonConfig.APIURL,
 		"BOSON_CDN_URL": c.BosonConfig.CDNURL, "DIRECTORY_API_URL": c.BosonConfig.DirectoryURL,
-		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL} {
+		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL, "BOSON_API_INTERNAL_URL": c.BosonConfig.APIInternalURL} {
 		if v == "" {
 			continue
 		}

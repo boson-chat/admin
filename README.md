@@ -51,6 +51,17 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   a note and its fields are never sent. With auth ≥ 1.8.0 also guest access:
   whether people can use IRC without an account (off = IRC requires a login);
   disabled with a note on older auth.
+- **Nick registration:** the api's nick claims (registering users' nicks
+  with NickServ on other IRC networks through `reg+<user id>-<token>@domain`
+  addresses and a POP3 mailbox; off by default). The switch, email domain,
+  claims per user per hour and the mailbox (host, port, TLS, user) are
+  `nick_claim.*` keys of the config file (`settings.manage`); the password
+  stays in the api's `.env` (`NICK_CLAIM_POP3_PASSWORD`) and the page shows
+  whether it's set. **Test connection** has the api sign in and count
+  messages with the unsaved values; a status card shows the worker (running,
+  last check, last OK, last error, failures in a row) and pending claims.
+  Turning it on without a domain and a mail server is refused. Needs
+  `BOSON_API_INTERNAL_URL`. Browser checks: `./scripts/e2e-nick.sh`.
 - **Directory:** whether the network is listed in the boson directory
   (directory.boson.chat), and listing it with a network key and a DNS TXT
   proof. With the stack's own directory: its name/operator/contact and sync
@@ -205,6 +216,8 @@ stack's `.env` and recreate the service.
 | `DOCKER_PROTECTED_SERVICES` | `admin,traefik` | compose services whose name must be typed to stop or restart them (the panel's own container always is) |
 | `DOCKER_TIMEOUT` | `20s` | per Docker call (stats take about a second) |
 | `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
+| `BOSON_API_INTERNAL_URL` | – | the api's internal listener (`http://api:3001`): the Nick registration page's status and Test connection. Empty = the page says the api isn't reachable (settings still save to the file) |
+| `BOSON_API_INTERNAL_TOKEN` | – | the api's `INTERNAL_API_TOKEN`, sent as `X-Internal-Token` |
 | `BOSON_CDN_URL` | `https://cdn.boson.chat` | where avatars and server icons are served from; added to the CSP `img-src` |
 | `DIRECTORY_API_URL` | `https://directory.boson.chat` | the boson directory this network is listed in ([boson-chat/directory](https://github.com/boson-chat/directory), `/v1` API). Empty = the directory page is off |
 | `DIRECTORY_REGISTRATION` | `true` | *default*: `admin.directory_registration` in the config file wins. Register and edit this network's listing there (network key + DNS proof). `false` = the page only reports whether it is listed |

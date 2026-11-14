@@ -216,6 +216,7 @@ const (
 	voice     = "quicvoiced"
 	dir       = "directory"
 	self      = "admin"
+	api       = "api"
 	everybody = "*"
 )
 
@@ -271,11 +272,56 @@ var Keys = append([]Key{
 	{Key: KeyDirectoryHostname, Kind: KindString, Perm: admin.PermDirectoryManage, Services: []string{self}, Env: "DIRECTORY_HOSTNAME", item: Hostname},
 	{Key: KeyTLSCheckHosts, Kind: KindList, MaxItems: 20, Perm: admin.PermServicesManage, Services: []string{self}, Env: "TLS_CHECK_HOSTS", item: TLSHost},
 
+	// Nick registration (the api's nick claims, docs/nick-claim.md). The
+	// mailbox password stays in .env (NICK_CLAIM_POP3_PASSWORD).
+	{Key: KeyNickClaimEnabled, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "NICK_CLAIM_ENABLED"},
+	{Key: KeyNickClaimEmailDomain, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "NICK_CLAIM_EMAIL_DOMAIN", item: emailDomain},
+	{Key: KeyNickClaimRateLimit, Kind: KindInt, Min: 1, Max: 10000, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "NICK_CLAIM_RATE_LIMIT_PER_HOUR"},
+	{Key: KeyNickClaimProtocol, Kind: KindEnum, Enum: []string{"pop3"}, Perm: admin.PermSettingsManage, Services: []string{api}},
+	{Key: KeyNickClaimHost, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "POP3_HOST", item: MailHost},
+	{Key: KeyNickClaimPort, Kind: KindInt, Min: 1, Max: 65535, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "POP3_PORT"},
+	{Key: KeyNickClaimTLS, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "POP3_TLS"},
+	{Key: KeyNickClaimUser, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "POP3_USER", item: text(254)},
+
 	// Branding (auth serves it at /v1/branding; the panel pushes it to the
 	// directory listing). Images are written by the Branding page's uploads.
 	{Key: KeyBrandingTheme, Kind: KindTheme, Perm: admin.PermSettingsManage, Services: []string{auth}},
 	{Key: KeyBrandingImages, Kind: KindImages, Perm: admin.PermSettingsManage, Services: []string{auth}},
 }, emailKeys()...)
+
+// Nick registration keys (the api's nick_claim section).
+const (
+	KeyNickClaimEnabled     = "nick_claim.enabled"
+	KeyNickClaimEmailDomain = "nick_claim.email_domain"
+	KeyNickClaimRateLimit   = "nick_claim.rate_limit_per_hour"
+	KeyNickClaimProtocol    = "nick_claim.inbound.protocol"
+	KeyNickClaimHost        = "nick_claim.inbound.host"
+	KeyNickClaimPort        = "nick_claim.inbound.port"
+	KeyNickClaimTLS         = "nick_claim.inbound.tls"
+	KeyNickClaimUser        = "nick_claim.inbound.user"
+)
+
+// emailDomain: the domain in the reg+…@ addresses (a DNS name).
+func emailDomain(s string) (string, error) {
+	d, err := Hostname(s)
+	if err != nil {
+		return "", fmt.Errorf("%q must be a domain like nick.example.com", strings.TrimSpace(s))
+	}
+	return d, nil
+}
+
+// MailHost checks a mail server's host: a DNS name, a compose service
+// name or an IP address.
+func MailHost(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
+	if s == "" {
+		return "", fmt.Errorf("the mail server can't be empty")
+	}
+	if err := dialHost(s); err != nil {
+		return "", fmt.Errorf("%q isn't a hostname or IP address, like pop3.example.com", s)
+	}
+	return s, nil
+}
 
 // The admin panel's own keys.
 const (

@@ -67,6 +67,11 @@ func (h *Handlers) routes() []route {
 		{"POST /api/emails/preview", admin.PermSettingsManage, false, h.emailPreview},
 		{"POST /api/emails/test", admin.PermSettingsManage, true, h.emailTest},
 
+		// Nick registration: its settings are nick_claim.* config keys; the
+		// api's status and the mailbox test here.
+		{"GET /api/nick-claims", admin.PermSettingsManage, false, h.nickClaimStatus},
+		{"POST /api/nick-claims/test", admin.PermSettingsManage, true, h.nickClaimTest},
+
 		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
 		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
 		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},

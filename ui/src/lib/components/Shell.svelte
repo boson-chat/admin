@@ -24,6 +24,7 @@
 				{ href: '/settings', label: 'Network settings' },
 				{ href: '/branding', label: 'Branding' },
 				{ href: '/emails', label: 'Emails' },
+				{ href: '/nick-registration', label: 'Nick registration' },
 				{ href: '/config', label: 'Stack config' },
 				{ href: '/directory', label: 'Directory' },
 				{ href: '/audit', label: 'Audit log' }

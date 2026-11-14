@@ -156,5 +156,6 @@ export const serviceNames: Record<string, string> = {
 	auth: 'Auth',
 	ergo: 'IRC (Ergo)',
 	quicvoiced: 'Voice',
-	directory: 'Directory'
+	directory: 'Directory',
+	api: 'API'
 };
