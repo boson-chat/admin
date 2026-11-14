@@ -1,7 +1,8 @@
 #!/bin/sh
 # The Emails page's live-preview browser checks, self-contained: starts the
 # fake auth (ui/e2e/fake-auth.mjs) and the panel on it with a throwaway
-# config file, runs ui/e2e/emails-preview.spec.ts, and stops both.
+# config file, runs ui/e2e/emails-preview.spec.ts and emails-mjml.spec.ts,
+# and stops both.
 #
 #   ./scripts/e2e-emails.sh          # SCREENSHOT_DIR=... to keep screenshots
 set -eu
@@ -30,4 +31,4 @@ done
 
 cd "$ROOT/ui"
 BASE_URL=http://localhost:18690 FAKE_AUTH_INTERNAL_URL=http://127.0.0.1:18681 ADMIN_PASSWORD=e2e-password \
-	npx playwright test auth.setup emails-preview "$@"
+	npx playwright test auth.setup emails-preview emails-mjml "$@"

@@ -41,6 +41,10 @@ type StackConfig struct {
 	// Where branding images are written (branding.images names files in
 	// it). Empty = branding/ next to the config file.
 	BrandingDir string `env:"BRANDING_DIR"`
+	// Where the emails' MJML sources and compiled HTML are written
+	// (auth.email.layout and auth.email.templates.*.{mjml,html} name
+	// files in it). Empty = emails/ next to the config file.
+	EmailsDir string `env:"EMAILS_DIR"`
 }
 
 // Statuses parses CONFIG_STATUS_TARGETS.

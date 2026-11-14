@@ -169,12 +169,21 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 var errUnsupportedMedia = apperr.New(http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) error {
+	return decodeLimit(w, r, dst, maxBody)
+}
+
+// decodeLimit is decode with a larger body limit (email HTML).
+func decodeLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "application/json" {
 		return errUnsupportedMedia
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return apperr.New(http.StatusRequestEntityTooLarge, "body_too_large", "the request is too large")
+		}
 		return apperr.Invalid("malformed JSON body")
 	}
 	return nil

@@ -5,7 +5,28 @@
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { stackConfig } from '$lib/stackconfig.svelte';
-	import type { ConfigChange } from '$lib/types';
+	import type { ConfigChange, ConfigView } from '$lib/types';
+	import MjmlEditor from '$lib/components/MjmlEditor.svelte';
+	import {
+		LAYOUT,
+		PLACEHOLDER_HELP,
+		placeholdersFor,
+		type CompileResult,
+		type Diagnostic
+	} from '$lib/mjml/compile';
+	import { browserWorker, mjmlCompiler, type MjmlCompiler } from '$lib/mjml/compiler';
+	import {
+		afterRemove,
+		afterSave,
+		discard as discardDraft,
+		initialMode,
+		isDirty,
+		loaded as loadedDraft,
+		previewHTML,
+		resetTo,
+		type Drafts,
+		type Mode
+	} from '$lib/mjml/drafts';
 	import {
 		EMAIL_TEMPLATES,
 		MAX_BODY,
@@ -28,6 +49,7 @@
 		type PreviewField,
 		type PreviewRequest
 	} from '$lib/livepreview';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import ColorPicker from '$lib/components/ColorPicker.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
@@ -59,16 +81,222 @@
 
 	// ---- templates ----
 	type Draft = { subject: string; body: string };
-	let selected = $state<EmailTemplateId>('verification');
+	/** The tab: the MJML layout or one email. */
+	let selected = $state<EmailTemplateId | typeof LAYOUT>('verification');
+	/** The email the preview shows: the selected one, or the last one while on the layout. */
+	let previewTpl = $state<EmailTemplateId>('verification');
+	$effect(() => {
+		if (selected !== LAYOUT) previewTpl = selected;
+	});
+	let tplId = $derived(selected === LAYOUT ? previewTpl : selected);
 	let drafts = $state<Record<string, Draft>>({});
 	let saved = $state<Record<string, Draft>>({});
-	let tpl = $derived(EMAIL_TEMPLATES.find((t) => t.id === selected)!);
-	let draft = $derived(drafts[selected] ?? { subject: '', body: '' });
+	let tpl = $derived(EMAIL_TEMPLATES.find((t) => t.id === tplId)!);
+	let draft = $derived(drafts[tplId] ?? { subject: '', body: '' });
 	let tDirty = (id: string) => JSON.stringify(drafts[id]) !== JSON.stringify(saved[id]);
 	let custom = (id: string) => !!(saved[id]?.subject || saved[id]?.body);
 	let savingTpl = $state(false);
 	let unknown = $derived(unknownVars(draft.subject + '\n' + draft.body, tpl.vars));
-	let dirty = $derived(sDirty || EMAIL_TEMPLATES.some((t) => tDirty(t.id)));
+
+	// ---- MJML (layout + per email) ----
+	const htmlKey = (part: string) =>
+		part === LAYOUT ? 'auth.email.layout.html' : `auth.email.templates.${part}.html`;
+	/** The part has its own MJML saved. */
+	const hasOverride = (part: string) => !!key(htmlKey(part))?.set;
+	let modes = $state<Record<string, Mode>>({});
+	const modeOf = (id: string): Mode => modes[id] ?? initialMode(hasOverride(id));
+	let mj = $state<Drafts>({});
+	/** Why a part's MJML couldn't be loaded. */
+	let mjLoadError = $state<Record<string, string>>({});
+	let savingMj = $state(false);
+	let mjError = $state('');
+	/** The MJML on screen: the layout, or an email in MJML mode. */
+	let activePart = $derived(selected === LAYOUT ? LAYOUT : modeOf(selected) === 'mjml' ? selected : null);
+	let mjDirty = $derived(Object.values(mj).some(isDirty));
+	let dirty = $derived(sDirty || mjDirty || EMAIL_TEMPLATES.some((t) => tDirty(t.id)));
+	const partDirty = (id: string) => tDirty(id) || isDirty(mj[id]);
+
+	const defaults: Record<string, string> = {};
+	async function defaultSource(part: string): Promise<string> {
+		if (defaults[part] === undefined) {
+			const r = await api<{ mjml: string }>('GET', `/emails/default-mjml?part=${encodeURIComponent(part)}`);
+			defaults[part] = r.mjml;
+		}
+		return defaults[part];
+	}
+
+	/** Loads a part's saved MJML, or Boson's default when it has none. */
+	async function ensurePart(part: string) {
+		if (mj[part] || loadingParts.has(part)) return;
+		loadingParts.add(part);
+		delete mjLoadError[part];
+		try {
+			let src: string | null = null;
+			if (hasOverride(part)) {
+				const r = await api<{ set: boolean; mjml?: string }>('GET', `/emails/mjml/${part}`);
+				src = r.set ? (r.mjml ?? '') : null;
+			}
+			let fallback = '';
+			if (src === null) fallback = await defaultSource(part);
+			mj[part] = loadedDraft(src, fallback);
+		} catch (e) {
+			mjLoadError[part] = isUnsupported(e)
+				? `${e.message}. Boson’s default MJML comes from auth; update auth to edit it here.`
+				: errorText(e);
+		} finally {
+			loadingParts.delete(part);
+		}
+	}
+	const loadingParts = new Set<string>();
+	$effect(() => {
+		const p = activePart;
+		if (p && loaded) untrack(() => void ensurePart(p));
+	});
+
+	// Compile in the worker as you type (debounced); keep the last good
+	// HTML for the preview while the source has errors.
+	type Compiled = { source: string; html: string; diagnostics: Diagnostic[]; ok: boolean };
+	let compiled = $state<Record<string, Compiled | undefined>>({});
+	let compiling = $state(false);
+	let compileError = $state('');
+	let compiler: MjmlCompiler | undefined;
+	const getCompiler = () => (compiler ??= mjmlCompiler(browserWorker));
+	const lc = livePreview<{ part: string; source: string }, CompileResult>({
+		fetch: (i, signal) => getCompiler().compile(i.source, i.part, signal),
+		onResult(r, i) {
+			compiled[i.part] = {
+				source: i.source,
+				html: r.html || compiled[i.part]?.html || '',
+				diagnostics: r.diagnostics,
+				ok: r.ok
+			};
+			compileError = '';
+		},
+		onError: (e) => (compileError = errorText(e)),
+		onLoading: (b) => (compiling = b),
+		delay: 250
+	});
+	onDestroy(() => {
+		lc.cancel();
+		compiler?.dispose();
+	});
+	let editorSource = $derived(activePart ? mj[activePart]?.draft : undefined);
+	let lastCompiled = '';
+	$effect(() => {
+		const p = activePart;
+		const src = editorSource;
+		if (!p || src === undefined) return;
+		untrack(() => {
+			if (compiled[p]?.source === src) return;
+			// A part just opened compiles at once; typing waits for a pause.
+			if (p !== lastCompiled || !compiled[p]) {
+				lastCompiled = p;
+				void lc.now({ part: p, source: src });
+			} else lc.schedule({ part: p, source: src });
+		});
+	});
+	let current = $derived(activePart ? compiled[activePart] : undefined);
+	let diagnostics = $derived(current?.diagnostics ?? []);
+	let errorCount = $derived(diagnostics.filter((d) => d.severity === 'error').length);
+	let warnCount = $derived(diagnostics.length - errorCount);
+	let upToDate = $derived(!!current && current.source === editorSource && !compiling);
+	let editor = $state<MjmlEditor>();
+
+	const partLabel = (part: string) =>
+		part === LAYOUT ? 'Layout' : (EMAIL_TEMPLATES.find((t) => t.id === part)?.label ?? part);
+
+	async function saveMjml() {
+		const part = activePart;
+		const d = part ? mj[part] : undefined;
+		if (!part || !d) return;
+		savingMj = true;
+		mjError = '';
+		try {
+			// The subject (and message) of an email in MJML mode save too.
+			if (part !== LAYOUT && tDirty(part) && !(await saveChange(templateChange(part), '', part))) return;
+			const c = await getCompiler().compile(d.draft, part);
+			compiled[part] = {
+				source: d.draft,
+				html: c.html || compiled[part]?.html || '',
+				diagnostics: c.diagnostics,
+				ok: c.ok
+			};
+			if (!c.ok) {
+				toasts.push('Fix the MJML errors before saving.', 'bad');
+				return;
+			}
+			const etag = stackConfig.view?.etag;
+			const r = await api<{ config: ConfigView }>(
+				'PUT',
+				`/emails/mjml/${part}`,
+				{ mjml: d.draft, html: c.html },
+				etag ? { 'If-Match': etag } : undefined
+			);
+			stackConfig.view = r.config;
+			mj[part] = afterSave(mj[part]!, d.draft);
+			modes[part] = 'mjml';
+			toasts.push(part === LAYOUT ? 'Layout saved.' : `${partLabel(part)} email saved with its own MJML.`);
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 400 && (e.field === 'mjml' || e.field === 'html'))
+				mjError = e.message;
+			toasts.push(errorText(e), 'bad');
+			if (e instanceof ApiError && e.status === 412) await stackConfig.load();
+		} finally {
+			savingMj = false;
+		}
+	}
+
+	async function removeMjml() {
+		const part = activePart;
+		if (!part) return;
+		const what =
+			part === LAYOUT
+				? 'Use Boson’s built-in layout again? Your layout MJML is deleted.'
+				: `Remove the ${partLabel(part).toLowerCase()} email’s own MJML? It goes back to the layout and your text.`;
+		if (!confirm(what)) return;
+		savingMj = true;
+		mjError = '';
+		try {
+			const etag = stackConfig.view?.etag;
+			const r = await api<{ config: ConfigView }>(
+				'DELETE',
+				`/emails/mjml/${part}`,
+				undefined,
+				etag ? { 'If-Match': etag } : undefined
+			);
+			stackConfig.view = r.config;
+			mj[part] = afterRemove(await defaultSource(part).catch(() => ''));
+			if (part !== LAYOUT) modes[part] = 'text';
+			toasts.push(
+				part === LAYOUT
+					? 'Emails use Boson’s built-in layout again.'
+					: `${partLabel(part)} email uses the layout again.`
+			);
+		} catch (e) {
+			toasts.push(errorText(e), 'bad');
+			if (e instanceof ApiError && e.status === 412) await stackConfig.load();
+		} finally {
+			savingMj = false;
+		}
+	}
+
+	async function resetMjml() {
+		const part = activePart;
+		if (!part || !mj[part]) return;
+		try {
+			mj[part] = resetTo(mj[part]!, await defaultSource(part));
+		} catch (e) {
+			toasts.push(errorText(e), 'bad');
+		}
+	}
+	const discardMjml = () => {
+		if (activePart && mj[activePart]) mj[activePart] = discardDraft(mj[activePart]!);
+	};
+	function setDraft(part: string, v: string) {
+		const d = mj[part];
+		if (d && d.draft !== v) mj[part] = { ...d, draft: v };
+	}
+	const sizeKB = (s: string) => (new Blob([s]).size / 1024).toFixed(1);
 
 	/**
 	 * Reads the saved config into the form. keep: unsaved edits survive the
@@ -112,7 +340,7 @@
 		try {
 			await stackConfig.save(c);
 			fill(what);
-			toasts.push(msg);
+			if (msg) toasts.push(msg);
 			return true;
 		} catch (e) {
 			toasts.push(errorText(e), 'bad');
@@ -139,29 +367,34 @@
 	}
 	const discardSettings = () => (s = { ...sSaved });
 
-	async function saveTemplate() {
-		savingTpl = true;
-		const d = drafts[selected];
+	/** The config change that saves an email's subject and message. */
+	function templateChange(id: string): ConfigChange {
+		const d = drafts[id];
 		const set: Record<string, string> = {};
 		const unset: string[] = [];
-		if (d.subject.trim()) set[subjectKey(selected)] = d.subject.trim();
-		else if (saved[selected].subject) unset.push(subjectKey(selected));
-		if (d.body.trim()) set[bodyKey(selected)] = d.body;
-		else if (saved[selected].body) unset.push(bodyKey(selected));
-		await saveChange({ set, unset }, `${tpl.label} email saved.`, selected);
+		if (d.subject.trim()) set[subjectKey(id)] = d.subject.trim();
+		else if (saved[id].subject) unset.push(subjectKey(id));
+		if (d.body.trim()) set[bodyKey(id)] = d.body;
+		else if (saved[id].body) unset.push(bodyKey(id));
+		return { set, unset };
+	}
+
+	async function saveTemplate() {
+		savingTpl = true;
+		await saveChange(templateChange(tplId), `${tpl.label} email saved.`, tplId);
 		savingTpl = false;
 	}
 
 	async function resetTemplate() {
 		savingTpl = true;
-		const unset = [subjectKey(selected), bodyKey(selected)].filter((k) => key(k)?.set);
-		if (unset.length) await saveChange({ unset }, `${tpl.label} email is back to Boson’s wording.`, selected);
-		else drafts[selected] = { subject: '', body: '' };
+		const unset = [subjectKey(tplId), bodyKey(tplId)].filter((k) => key(k)?.set);
+		if (unset.length) await saveChange({ unset }, `${tpl.label} email is back to Boson’s wording.`, tplId);
+		else drafts[tplId] = { subject: '', body: '' };
 		savingTpl = false;
 	}
 
 	beforeNavigate((nav) => {
-		if (!dirty || savingSettings || savingTpl) return;
+		if (!dirty || savingSettings || savingTpl || savingMj) return;
 		// Closing the tab or leaving the app: the browser asks.
 		if (nav.type === 'leave') nav.cancel();
 		else if (!confirm('Leave the Emails page? Your unsaved email changes will be lost.')) nav.cancel();
@@ -175,8 +408,8 @@
 		const el = lastField === 'subject' ? subjectEl : bodyEl;
 		if (!el) return;
 		const field = lastField;
-		const r = insertAt(drafts[selected][field], el.selectionStart ?? 0, el.selectionEnd ?? 0, `{{${v}}}`);
-		drafts[selected][field] = r.value;
+		const r = insertAt(drafts[tplId][field], el.selectionStart ?? 0, el.selectionEnd ?? 0, `{{${v}}}`);
+		drafts[tplId][field] = r.value;
 		requestAnimationFrame(() => {
 			el.focus();
 			el.setSelectionRange(r.caret, r.caret);
@@ -224,8 +457,13 @@
 	});
 	onDestroy(() => lp.cancel());
 
-	let request = $derived(previewRequest(selected, draft, s, DEFAULT_ACCENT));
+	let mjHtml = $derived(previewHTML(selected, selected === LAYOUT ? 'mjml' : modeOf(selected), compiled));
+	let request = $derived<PreviewRequest>({
+		...previewRequest(tplId, draft, s, DEFAULT_ACCENT),
+		...mjHtml
+	});
 	let lastTemplate = '';
+	let lastHtml = '';
 	$effect(() => {
 		const req = request;
 		if (!loaded) return;
@@ -234,9 +472,13 @@
 			return;
 		}
 		untrack(() => {
-			// Another email: show it at once; typing: wait for a pause.
-			if (req.template !== lastTemplate) {
+			// Another email, or a compile that just finished (the worker
+			// already waited for a pause): show it at once; typing in the
+			// form: wait for a pause.
+			const html = (req.layout_html ?? '') + '\u0000' + (req.html ?? '');
+			if (req.template !== lastTemplate || html !== lastHtml) {
 				lastTemplate = req.template;
+				lastHtml = html;
 				void lp.now(req);
 			} else lp.schedule(req);
 		});
@@ -303,7 +545,7 @@
 		sending = true;
 		try {
 			const r = await api<{ sent: boolean; message?: string }>('POST', '/emails/test', {
-				template: selected,
+				template: tplId,
 				to: to.trim()
 			});
 			toasts.push(r.message || `Sent the ${tpl.label.toLowerCase()} email to ${to.trim()}.`);
@@ -314,7 +556,7 @@
 		}
 	}
 	let configOff = $derived(session.info?.features.config_file === false || view?.enabled === false);
-	let testDirty = $derived(tDirty(selected) || sDirty);
+	let testDirty = $derived(tDirty(tplId) || sDirty || mjDirty);
 </script>
 
 <svelte:head><title>Emails · boson admin</title></svelte:head>
@@ -337,7 +579,7 @@
 {:else if !loaded}
 	<State kind="loading" title="Loading email settings…" />
 {:else}
-	<div class="layout">
+	<div class="layout" class:wide={!!activePart}>
 		<div class="col">
 			<section class="card settings" aria-labelledby="look-h">
 				<div class="card-head">
@@ -422,6 +664,18 @@
 			<section class="card" aria-labelledby="tpl-h">
 				<h2 id="tpl-h" class="sr-only">Messages</h2>
 				<div class="tabs" role="tablist" aria-label="Email">
+					<button
+						type="button"
+						role="tab"
+						id="tab-layout"
+						aria-selected={selected === LAYOUT}
+						aria-controls="tpl-panel"
+						onclick={() => (selected = LAYOUT)}
+					>
+						Layout (MJML)
+						{#if isDirty(mj[LAYOUT])}<span class="dot unsaved" title="Unsaved"></span>
+						{:else if hasOverride(LAYOUT)}<span class="dot edited" title="Custom layout"></span>{/if}
+					</button>
 					{#each EMAIL_TEMPLATES as t (t.id)}
 						<button
 							type="button"
@@ -432,84 +686,242 @@
 							onclick={() => (selected = t.id)}
 						>
 							{t.label}
-							{#if tDirty(t.id)}<span class="dot unsaved" title="Unsaved"></span>
-							{:else if custom(t.id)}<span class="dot edited" title="Custom wording"></span>{/if}
+							{#if partDirty(t.id)}<span class="dot unsaved" title="Unsaved"></span>
+							{:else if custom(t.id) || hasOverride(t.id)}<span class="dot edited" title="Customised"
+								></span>{/if}
 						</button>
 					{/each}
 				</div>
 				<div class="panel" id="tpl-panel" role="tabpanel" aria-labelledby="tab-{selected}">
-					<p class="hint">{tpl.detail}</p>
-					<label class="field">
-						<span>Subject</span>
-						<input
-							bind:this={subjectEl}
-							type="text"
-							bind:value={drafts[selected].subject}
-							onfocus={() => (lastField = 'subject')}
-							maxlength={MAX_SUBJECT}
-							placeholder="Boson’s default subject"
-							disabled={!editable}
-							aria-invalid={!!fieldError('subject')}
-						/>
-						{#if fieldError('subject')}<small class="err" role="alert">{fieldError('subject')}</small>{/if}
-					</label>
-					<div class="field">
-						<span id="vars-l">Insert</span>
-						<div class="chips" role="group" aria-labelledby="vars-l">
-							{#each tpl.vars as v (v)}
+					{#if selected === LAYOUT}
+						<p class="hint">
+							The frame every email is wrapped in, as <a
+								href="https://mjml.io"
+								target="_blank"
+								rel="noreferrer">MJML</a
+							>. <code>{'{{content}}'}</code> is where each email’s text and button go. It’s compiled in your browser;
+							auth sends the HTML. An email with its own MJML doesn’t use the layout.
+						</p>
+						<div class="field inline">
+							<span id="pvwith-l">Preview with</span>
+							<Dropdown
+								options={EMAIL_TEMPLATES.map((t) => ({ value: t.id, label: t.label }))}
+								bind:value={previewTpl}
+								labelledby="pvwith-l"
+								size="small"
+							/>
+						</div>
+						{@render mjmlEditor(LAYOUT)}
+					{:else}
+						<div class="mode-row">
+							<p class="hint">{tpl.detail}</p>
+							<div class="seg" role="group" aria-label="Edit as">
 								<button
 									type="button"
-									class="var"
-									title={VAR_HELP[v]}
-									disabled={!editable}
-									onmousedown={(e) => e.preventDefault()}
-									onclick={() => insertVar(v)}>{`{{${v}}}`}</button
+									aria-pressed={modeOf(selected) === 'text'}
+									onclick={() => (modes[selected] = 'text')}>Text</button
 								>
-							{/each}
+								<button
+									type="button"
+									aria-pressed={modeOf(selected) === 'mjml'}
+									onclick={() => (modes[selected] = 'mjml')}>MJML</button
+								>
+							</div>
 						</div>
-					</div>
-					<label class="field">
-						<span>Message</span>
-						<textarea
-							bind:this={bodyEl}
-							bind:value={drafts[selected].body}
-							onfocus={() => (lastField = 'body')}
-							rows="11"
-							maxlength={MAX_BODY}
-							placeholder="Boson’s default wording. Type to replace it. Blank lines start paragraphs; links become buttons."
-							disabled={!editable}
-							aria-invalid={!!fieldError('body')}></textarea>
-						{#if fieldError('body')}<small class="err" role="alert">{fieldError('body')}</small>
-						{:else}<small
-								>Plain text. A blank line starts a new paragraph and links are made clickable. {draft.body
-									.length}/{MAX_BODY}</small
-							>{/if}
-					</label>
-					{#if unknown.length}
-						<Notice tone="warn">
-							{unknown.map((u) => `{{${u}}}`).join(', ')}
-							{unknown.length === 1 ? 'isn’t' : 'aren’t'} filled in for this email and will show as typed.
-						</Notice>
-					{/if}
-					<div class="row-end">
-						{#if custom(selected) || draft.subject || draft.body}
-							<button
-								type="button"
-								class="btn btn-ghost"
-								disabled={savingTpl || !editable}
-								onclick={resetTemplate}>Reset to default</button
-							>
+						<label class="field">
+							<span>Subject</span>
+							<input
+								bind:this={subjectEl}
+								type="text"
+								bind:value={drafts[tplId].subject}
+								onfocus={() => (lastField = 'subject')}
+								maxlength={MAX_SUBJECT}
+								placeholder="Boson’s default subject"
+								disabled={!editable}
+								aria-invalid={!!fieldError('subject')}
+							/>
+							{#if fieldError('subject')}<small class="err" role="alert">{fieldError('subject')}</small>{/if}
+						</label>
+						{#if modeOf(selected) === 'mjml'}
+							{@render mjmlEditor(selected)}
+						{:else}
+							{#if hasOverride(selected)}
+								<Notice tone="info">
+									This email has its own MJML, so the layout and the message below aren’t used for its HTML.
+									The message is still its plain-text part. Switch to MJML to edit it or go back to the
+									layout.
+								</Notice>
+							{/if}
+							<div class="field">
+								<span id="vars-l">Insert</span>
+								<div class="chips" role="group" aria-labelledby="vars-l">
+									{#each tpl.vars as v (v)}
+										<button
+											type="button"
+											class="var"
+											title={VAR_HELP[v]}
+											disabled={!editable}
+											onmousedown={(e) => e.preventDefault()}
+											onclick={() => insertVar(v)}>{`{{${v}}}`}</button
+										>
+									{/each}
+								</div>
+							</div>
+							<label class="field">
+								<span>Message</span>
+								<textarea
+									bind:this={bodyEl}
+									bind:value={drafts[tplId].body}
+									onfocus={() => (lastField = 'body')}
+									rows="11"
+									maxlength={MAX_BODY}
+									placeholder="Boson’s default wording. Type to replace it. Blank lines start paragraphs; links become buttons."
+									disabled={!editable}
+									aria-invalid={!!fieldError('body')}></textarea>
+								{#if fieldError('body')}<small class="err" role="alert">{fieldError('body')}</small>
+								{:else}<small
+										>Plain text. A blank line starts a new paragraph and links are made clickable. {draft.body
+											.length}/{MAX_BODY}</small
+									>{/if}
+							</label>
+							{#if unknown.length}
+								<Notice tone="warn">
+									{unknown.map((u) => `{{${u}}}`).join(', ')}
+									{unknown.length === 1 ? 'isn’t' : 'aren’t'} filled in for this email and will show as typed.
+								</Notice>
+							{/if}
+							<div class="row-end">
+								{#if custom(tplId) || draft.subject || draft.body}
+									<button
+										type="button"
+										class="btn btn-ghost"
+										disabled={savingTpl || !editable}
+										onclick={resetTemplate}>Reset to default</button
+									>
+								{/if}
+								<button
+									class="btn btn-primary"
+									type="button"
+									disabled={!tDirty(tplId) || savingTpl || !editable}
+									onclick={saveTemplate}>{savingTpl ? 'Saving…' : 'Save email'}</button
+								>
+							</div>
 						{/if}
-						<button
-							class="btn btn-primary"
-							type="button"
-							disabled={!tDirty(selected) || savingTpl || !editable}
-							onclick={saveTemplate}>{savingTpl ? 'Saving…' : 'Save email'}</button
-						>
-					</div>
+					{/if}
 				</div>
 			</section>
 		</div>
+
+		{#snippet mjmlEditor(part: string)}
+			{@const d = mj[part]}
+			<div class="field">
+				<span id="ph-l">Insert</span>
+				<div class="chips" role="group" aria-labelledby="ph-l">
+					{#each placeholdersFor(part) as v (v)}
+						<button
+							type="button"
+							class="var"
+							title={PLACEHOLDER_HELP[v]}
+							disabled={!editable || !d}
+							onmousedown={(e) => e.preventDefault()}
+							onclick={() => editor?.insert(`{{${v}}}`)}>{`{{${v}}}`}</button
+						>
+					{/each}
+				</div>
+			</div>
+			{#if mjLoadError[part]}
+				<Notice tone="bad">{mjLoadError[part]}</Notice>
+			{:else if !d}
+				<p class="muted small">Loading the MJML…</p>
+			{:else}
+				<div class="field">
+					<div class="ed-head">
+						<span id="mj-l">{part === LAYOUT ? 'Layout MJML' : 'Email MJML'}</span>
+						<span class="ed-status" data-testid="mjml-status" aria-live="polite">
+							{#if compileError}
+								<span class="bad">Compiler unavailable</span>
+							{:else if !current || (compiling && !upToDate)}
+								Compiling…
+							{:else if errorCount}
+								<span class="bad">{errorCount} {errorCount === 1 ? 'error' : 'errors'}</span>{warnCount
+									? `, ${warnCount} ${warnCount === 1 ? 'warning' : 'warnings'}`
+									: ''}
+							{:else if warnCount}
+								<span class="warn">{warnCount} {warnCount === 1 ? 'warning' : 'warnings'}</span>
+							{:else}
+								<span class="ok">Compiled</span> · {sizeKB(current.html)} KB of 512
+							{/if}
+						</span>
+					</div>
+					{#key part}
+						<MjmlEditor
+							bind:this={editor}
+							value={d.draft}
+							{diagnostics}
+							readonly={!editable}
+							label={part === LAYOUT ? 'Layout MJML' : `${partLabel(part)} email MJML`}
+							onchange={(v) => setDraft(part, v)}
+						/>
+					{/key}
+					{#if compileError}
+						<small class="err" role="alert">{compileError}</small>
+					{/if}
+					{#if mjError || fieldError('mjml')}
+						<small class="err" role="alert">{mjError || fieldError('mjml')}</small>
+					{/if}
+					{#if diagnostics.length}
+						<ul class="problems" aria-label="MJML problems" data-testid="mjml-problems">
+							{#each diagnostics as p, i (i)}
+								<li class={p.severity}>
+									<button
+										type="button"
+										class="ln"
+										title="Go to line {p.line}"
+										onclick={() => editor?.goToLine(p.line)}>Line {p.line}</button
+									>
+									<span class="sev">{p.severity}</span>
+									<span class="msg">{p.message}</span>
+								</li>
+							{/each}
+						</ul>
+					{:else if part !== LAYOUT}
+						<small
+							>The whole email is yours: it isn’t wrapped in the layout. It must contain <code
+								>{'{{link}}'}</code
+							>. The plain-text part is the Text tab’s message, or text made from this HTML.</small
+						>
+					{/if}
+				</div>
+				<div class="row-end wrap">
+					{#if hasOverride(part)}
+						<button type="button" class="btn btn-ghost" disabled={savingMj || !editable} onclick={removeMjml}
+							>{part === LAYOUT ? 'Use Boson’s layout' : 'Remove own MJML'}</button
+						>
+					{/if}
+					<button
+						type="button"
+						class="btn btn-ghost"
+						disabled={savingMj || !editable}
+						onclick={resetMjml}
+						title="Put Boson’s MJML in the editor (not saved)">Reset to default</button
+					>
+					{#if isDirty(d)}
+						<button type="button" class="btn btn-ghost" disabled={savingMj} onclick={discardMjml}
+							>Discard</button
+						>
+					{/if}
+					<button
+						class="btn btn-primary"
+						type="button"
+						disabled={!editable ||
+							savingMj ||
+							!(isDirty(d) || (part !== LAYOUT && (tDirty(part) || !hasOverride(part)))) ||
+							(upToDate && !current?.ok)}
+						onclick={saveMjml}>{savingMj ? 'Saving…' : part === LAYOUT ? 'Save layout' : 'Save email'}</button
+					>
+				</div>
+			{/if}
+		{/snippet}
 
 		<section class="card preview" aria-labelledby="pv-h">
 			<div class="pv-head">
@@ -606,6 +1018,13 @@
 							Branding changes preview after saving (update auth).
 						</p>
 					{/if}
+					{#if preview.warnings?.length}
+						<Notice tone="warn">
+							<ul class="warnings" data-testid="pv-warnings">
+								{#each preview.warnings as w, i (i)}<li>{w}</li>{/each}
+							</ul>
+						</Notice>
+					{/if}
 					<p class="hint">
 						Example values fill in the variables.{previewMode === 'html' && scale < 1
 							? ` Shown at ${Math.round(scale * 100)}% to fit; the email is ${frameWidth} px wide.`
@@ -699,6 +1118,10 @@
 		grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
 		gap: var(--space-6);
 		align-items: start;
+	}
+	/* an MJML editor wants the room: half and half */
+	.layout.wide {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	}
 	.col {
 		display: grid;
@@ -958,8 +1381,112 @@
 		padding-top: var(--space-4);
 		border-top: 1px solid var(--border-soft);
 	}
+	.mode-row {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-3);
+	}
+	.mode-row .seg {
+		flex: none;
+	}
+	.field.inline {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+	.field.inline :global(.dd) {
+		width: auto;
+		min-width: 200px;
+	}
+	.ed-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+	}
+	.ed-status {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+	}
+	.ed-status .ok {
+		color: var(--success-text);
+	}
+	.ed-status .bad {
+		color: var(--danger-text);
+	}
+	.ed-status .warn {
+		color: var(--warn-text);
+	}
+	.problems {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		max-height: 168px;
+		overflow: auto;
+		font-size: var(--text-sm);
+	}
+	.problems li {
+		display: grid;
+		grid-template-columns: auto auto minmax(0, 1fr);
+		gap: var(--space-2);
+		align-items: baseline;
+		padding: 6px var(--space-3);
+		border-left: 2px solid var(--danger);
+		background: var(--surface-raised);
+	}
+	.problems li + li {
+		border-top: 1px solid var(--border-soft);
+	}
+	.problems li.warning {
+		border-left-color: var(--warn);
+	}
+	.problems .ln {
+		border: 0;
+		background: none;
+		padding: 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--fg);
+		cursor: pointer;
+		text-decoration: underline;
+		text-decoration-color: var(--border-strong);
+		text-underline-offset: 3px;
+		white-space: nowrap;
+	}
+	.problems .ln:hover {
+		text-decoration-color: currentColor;
+	}
+	.problems .sev {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-label);
+		color: var(--danger-text);
+	}
+	.problems .warning .sev {
+		color: var(--warn-text);
+	}
+	.problems .msg {
+		color: var(--fg-2);
+		overflow-wrap: anywhere;
+	}
+	.row-end.wrap {
+		flex-wrap: wrap;
+	}
+	.warnings {
+		margin: 0;
+		padding-left: 1.1em;
+	}
 	@media (max-width: 1100px) {
-		.layout {
+		.layout,
+		.layout.wide {
 			grid-template-columns: minmax(0, 1fr);
 		}
 		.preview {

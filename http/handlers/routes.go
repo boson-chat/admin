@@ -66,6 +66,10 @@ func (h *Handlers) routes() []route {
 		{"GET /api/branding/assets/{file}", "", false, h.brandingAsset},
 		{"POST /api/emails/preview", admin.PermSettingsManage, false, h.emailPreview},
 		{"POST /api/emails/test", admin.PermSettingsManage, true, h.emailTest},
+		{"GET /api/emails/mjml/{part}", admin.PermSettingsManage, false, h.getEmailMJML},
+		{"PUT /api/emails/mjml/{part}", admin.PermSettingsManage, true, h.putEmailMJML},
+		{"DELETE /api/emails/mjml/{part}", admin.PermSettingsManage, true, h.deleteEmailMJML},
+		{"GET /api/emails/default-mjml", admin.PermSettingsManage, false, h.defaultEmailMJML},
 
 		// Nick registration: its settings are nick_claim.* config keys; the
 		// api's status and the mailbox test here.

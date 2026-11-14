@@ -25,6 +25,12 @@ import (
 //	GET    /api/branding/assets/{file}   the stored file (admin.panel)
 //	POST   /api/emails/preview           {template, subject?, body?, email?} (settings.manage)
 //	POST   /api/emails/test              {template, to} (settings.manage)
+//	GET    /api/emails/mjml/{part}       the saved MJML source (settings.manage)
+//	PUT    /api/emails/mjml/{part}       {mjml, html} (settings.manage)
+//	DELETE /api/emails/mjml/{part}       back to Boson's (settings.manage)
+//	GET    /api/emails/default-mjml?part= Boson's MJML from auth (settings.manage)
+//
+// part is "layout" or a template.
 //
 // Image writes answer with the config view, like PATCH /api/config.
 
@@ -124,7 +130,7 @@ func (h *Handlers) emailPreview(w http.ResponseWriter, r *http.Request, s *sessi
 		return
 	}
 	var in authapi.EmailPreviewRequest
-	if err := decode(w, r, &in); err != nil {
+	if err := decodeLimit(w, r, &in, maxMJMLBody); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -151,6 +157,80 @@ func (h *Handlers) emailTest(w http.ResponseWriter, r *http.Request, s *session.
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// maxMJMLBody holds an MJML source and its compiled HTML (512 KB each),
+// JSON-escaped.
+const maxMJMLBody = 3 << 20
+
+func (h *Handlers) getEmailMJML(w http.ResponseWriter, r *http.Request, _ *session.Session) {
+	if !h.brandingOn(w, r) {
+		return
+	}
+	src, err := h.Branding.EmailMJML(r.Context(), r.PathValue("part"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, src)
+}
+
+func (h *Handlers) putEmailMJML(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.brandingOn(w, r) {
+		return
+	}
+	var in struct {
+		MJML *string `json:"mjml"`
+		HTML *string `json:"html"`
+	}
+	if err := decodeLimit(w, r, &in, maxMJMLBody); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if in.MJML == nil || in.HTML == nil {
+		writeError(w, r, apperr.Invalid("send {mjml, html}: the source and the HTML the browser compiled from it"))
+		return
+	}
+	src, err := h.Branding.SaveEmailMJML(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), r.PathValue("part"), *in.MJML, *in.HTML)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	h.writeWithConfig(w, r, s, map[string]any{"source": src})
+}
+
+func (h *Handlers) deleteEmailMJML(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.brandingOn(w, r) {
+		return
+	}
+	if err := h.Branding.RemoveEmailMJML(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), r.PathValue("part")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	h.writeWithConfig(w, r, s, map[string]any{})
+}
+
+// writeWithConfig answers a write with the config view, like PATCH /api/config.
+func (h *Handlers) writeWithConfig(w http.ResponseWriter, r *http.Request, s *session.Session, out map[string]any) {
+	v := h.Config.View(h.can(r, s))
+	if v.ETag != "" {
+		w.Header().Set("ETag", v.ETag)
+	}
+	out["config"] = v
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handlers) defaultEmailMJML(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.brandingOn(w, r) {
+		return
+	}
+	src, err := h.Branding.DefaultMJML(r.Context(), s.Snapshot().Username, h.tokenCall(r, s), r.URL.Query().Get("part"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, src)
 }
 
 // pushBranding updates this network's directory listing with the new

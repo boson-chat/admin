@@ -373,6 +373,9 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		if k.Kind == KindImages {
 			return nil, apperr.Invalid(name + " is written by image uploads (PUT /api/branding/images/{slot})")
 		}
+		if k.Kind == KindEmailFile {
+			return nil, apperr.Invalid(name + " is written by saving the email's MJML (PUT /api/emails/mjml/{part})")
+		}
 		v, err := k.Clean(raw)
 		if err != nil {
 			return nil, apperr.Invalid(err.Error())
@@ -386,6 +389,9 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		}
 		if k.Kind == KindImages {
 			return nil, apperr.Invalid(name + " is written by image uploads (DELETE /api/branding/images/{slot})")
+		}
+		if k.Kind == KindEmailFile {
+			return nil, apperr.Invalid(name + " is removed with the email's MJML (DELETE /api/emails/mjml/{part})")
 		}
 		if _, dup := set[name]; dup {
 			return nil, apperr.Invalid(name + " is both set and reset")

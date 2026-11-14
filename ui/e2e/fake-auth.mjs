@@ -2,6 +2,9 @@
 // the public API to sign in (one legacy admin), and an internal listener
 // whose email preview echoes what it's sent into an MJML-like layout (with
 // a dark-mode media query), so the spec can see unsaved settings arrive.
+// Unsaved compiled MJML (layout_html, html) is filled in like auth does,
+// with a warning per unknown {{placeholder}}; GET default-mjml serves a
+// small default layout.
 //
 //   node e2e/fake-auth.mjs            # public :18680, internal :18681
 //   POST <internal>/__mode {"mode":"old"}  # act like auth 1.10.x: ignore
@@ -81,6 +84,67 @@ const vars = {
 };
 const fillVars = (s) => s.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (m, k) => vars[k] ?? m);
 
+// Boson's default MJML (GET /internal/email/default-mjml): a small layout
+// with {{content}}, and per-email documents built from it.
+const DEFAULT_LAYOUT = `<mjml>
+  <mj-head>
+    <mj-title>{{subject}}</mj-title>
+    <mj-attributes>
+      <mj-all font-family="Helvetica, Arial, sans-serif" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#f1f2f4">
+    <mj-section padding="24px 0 8px">
+      <mj-column>
+        <mj-text font-size="18px" font-weight="600" color="{{accent}}" css-class="banner">{{network}}</mj-text>
+      </mj-column>
+    </mj-section>
+    <mj-section background-color="#ffffff" border-radius="8px" padding="8px 12px">
+      <mj-column>
+        <mj-text font-size="15px" line-height="1.55">{{content}}</mj-text>
+      </mj-column>
+    </mj-section>
+    <mj-section>
+      <mj-column>
+        <mj-text align="center" font-size="12px" color="#6b7280">{{footer}}</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
+`;
+function defaultMJML(part) {
+	if (part === 'layout') return DEFAULT_LAYOUT;
+	const [, body] = defaults[part];
+	const text = esc(body.replace('{{link}}', '').trim()).replace(/\n/g, '<br />');
+	return DEFAULT_LAYOUT.replace(
+		'{{content}}',
+		`${text}</mj-text>\n        <mj-button href="{{link}}" background-color="{{accent}}">Open link</mj-button>\n        <mj-text>`
+	);
+}
+
+const KNOWN = [
+	'content',
+	'subject',
+	'network',
+	'username',
+	'inviter',
+	'expires',
+	'link',
+	'logo_url',
+	'accent',
+	'footer',
+	'sender_name'
+];
+
+/** Fills the placeholders of custom HTML in one pass, noting unknown ones. */
+function fillHTML(html, values, warnings) {
+	return html.replace(/\{\{\s*([A-Za-z_]\w*)\s*\}\}/g, (m, k) => {
+		if (k in values) return values[k];
+		if (!KNOWN.includes(k)) warnings.push(`{{${k}}} isn’t a placeholder; it’s sent as typed`);
+		return m;
+	});
+}
+
 function render(r) {
 	const e = mode === 'old' ? saved : { ...saved, ...(r.email ?? {}) };
 	const [ds, db] = defaults[r.template];
@@ -95,6 +159,28 @@ function render(r) {
 		)
 		.map((p) => `<p>${p}</p>`)
 		.join('');
+	const custom = mode === 'old' ? undefined : (r.html ?? r.layout_html);
+	if (custom) {
+		const warnings = [];
+		const values = {
+			...Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, esc(v)])),
+			subject: esc(subject),
+			accent: e.accent,
+			footer: esc(e.footer || 'Example Chat'),
+			sender_name: esc(e.sender_name || 'Example Chat'),
+			logo_url: 'https://auth.example.com/v1/branding/assets/logo.webp'
+		};
+		if (!r.html) values.content = `<div data-content>${paras}</div>`;
+		const html = fillHTML(custom, values, warnings);
+		const text = `${body}\n\n-- \n${e.footer || 'Example Chat'}`;
+		return {
+			subject,
+			html,
+			text,
+			from: `${e.sender_name || 'Example Chat'} <no-reply@example.com>`,
+			warnings
+		};
+	}
 	const logo = e.logo
 		? `<div class="logo"><span class="mark"></span><strong>Example Chat</strong></div>`
 		: '';
@@ -149,6 +235,14 @@ createServer(async (req, res) => {
 	if (req.method === 'POST' && p === '/__mode') {
 		mode = (await json(req)).mode === 'old' ? 'old' : 'new';
 		return send(res, 200, { mode });
+	}
+	if (req.method === 'GET' && p === '/internal/email/default-mjml') {
+		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		if (mode === 'old') return send(res, 404, { error: 'not_found', message: 'not found' });
+		const part = new URL(req.url, 'http://x').searchParams.get('part');
+		if (part !== 'layout' && !defaults[part])
+			return send(res, 400, { error: 'invalid_request', message: 'unknown part' });
+		return send(res, 200, { mjml: defaultMJML(part) });
 	}
 	if (req.method === 'POST' && p.startsWith('/internal/email/')) {
 		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });

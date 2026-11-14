@@ -14,6 +14,9 @@ export default defineConfig({
 		// Never inline fonts as data: URIs; the BFF's CSP allows `font-src 'self'` only.
 		assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf)$/.test(file) ? false : undefined)
 	},
+	// The MJML worker is a classic script: it loads mjml-browser with
+	// importScripts (see src/lib/mjml/mjml.worker.ts).
+	worker: { format: 'iife' },
 	server: {
 		proxy: {
 			'/api': { target: bff, changeOrigin: true, headers: { origin: bff } }
