@@ -20,7 +20,8 @@ import (
 //     /regenerate-token. The directory stores only sha256(key);
 //   - operator, the stack's own directory only: "X-Internal-Token:
 //     <DIRECTORY_INTERNAL_TOKEN>" on GET /v1/networks?owner=<auth_user_id>
-//     (every status), GET /v1/admin/peers and PATCH /v1/admin/peers/{id}.
+//     (every status), the peers API (/v1/admin/peers…) and, from directory
+//     1.4.0, the runtime settings (GET/PATCH /v1/admin/settings).
 //     X-Acting-User names the panel user for the directory's audit log.
 //
 // Before the directory existed the panel spoke a proposed
@@ -328,8 +329,8 @@ type Peer struct {
 	URL     string `json:"url"`
 	Name    string `json:"name,omitempty"`
 	Enabled bool   `json:"enabled"`
-	// Builtin: the main directory (DIRECTORY_MAIN_PEER), recreated on start
-	// unless DIRECTORY_INCLUDE_MAIN=false; switched off, never deleted.
+	// Builtin: the main directory (setting main_peer_url), kept while the
+	// include_main setting is on; switched off, never deleted.
 	Builtin bool `json:"builtin"`
 	// Active: synced right now (enabled, and for the builtin peer, included).
 	Active       bool       `json:"active"`
@@ -339,23 +340,87 @@ type Peer struct {
 	ListingCount int        `json:"listing_count"`
 }
 
+// DirectorySettingValues are a directory's runtime settings.
+type DirectorySettingValues struct {
+	Name        string `json:"name"`
+	Operator    string `json:"operator"`
+	Contact     string `json:"contact"`
+	IncludeMain bool   `json:"include_main"`
+	MainPeerURL string `json:"main_peer_url"`
+	SyncEvery   string `json:"sync_every"`
+}
+
+// DirectorySettings is GET /v1/admin/settings (directory >= 1.4.0): env
+// values are defaults, overrides live in the directory's database.
+type DirectorySettings struct {
+	Settings   DirectorySettingValues `json:"settings"`
+	Defaults   DirectorySettingValues `json:"defaults"`
+	Overridden []string               `json:"overridden"`
+	// IsMain: this directory is the main directory (main_peer_url is its
+	// own URL); include_main doesn't apply.
+	IsMain bool `json:"is_main"`
+	// MainActive: the builtin main peer is being synced.
+	MainActive bool       `json:"main_active"`
+	MainPeer   *Peer      `json:"main_peer,omitempty"`
+	PublicURL  string     `json:"public_url,omitempty"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
+	UpdatedBy  *string    `json:"updated_by,omitempty"`
+}
+
+// PeerCheck is GET /v1/admin/peers/check: a directory's .well-known.
+type PeerCheck struct {
+	URL       string `json:"url"`
+	WellKnown struct {
+		Name     string `json:"name"`
+		API      string `json:"api"`
+		Operator string `json:"operator,omitempty"`
+		Contact  string `json:"contact,omitempty"`
+	} `json:"well_known"`
+}
+
+// SyncResult is what one peer sync did (POST /v1/admin/peers/{id}/sync).
+type SyncResult struct {
+	Created  int    `json:"created"`
+	Updated  int    `json:"updated"`
+	Deleted  int    `json:"deleted"`
+	Verified int    `json:"verified"`
+	Error    string `json:"error,omitempty"`
+}
+
 type OperatorClientImpl interface {
 	// OwnedNetworks is every listing (any status) a boson account owns.
 	OwnedNetworks(ctx context.Context, authUserID string) ([]Server, error)
 	Peers(ctx context.Context) ([]Peer, error)
 	SetPeerEnabled(ctx context.Context, actor, id string, enabled bool) (*Peer, error)
+	CheckPeer(ctx context.Context, rawURL string) (*PeerCheck, error)
+	AddPeer(ctx context.Context, actor, rawURL string) (*Peer, error)
+	DeletePeer(ctx context.Context, actor, id string) error
+	SyncPeer(ctx context.Context, actor, id string) (*Peer, *SyncResult, error)
+	// Settings / UpdateSettings: unsupported on directories before 1.4.0.
+	Settings(ctx context.Context) (*DirectorySettings, error)
+	UpdateSettings(ctx context.Context, actor string, patch map[string]any) (*DirectorySettings, error)
 }
 
 // OperatorEndpoints is what the operator features need.
 const OperatorEndpoints = "GET /v1/networks?owner=, GET/PATCH /v1/admin/peers"
 
+// SettingsEndpoints is what changing the directory's settings needs.
+const SettingsEndpoints = "GET/PATCH /v1/admin/settings (directory 1.4.0 or newer)"
+
 type OperatorClient struct {
-	c     *Client
+	c *Client
+	// slow is for calls where the directory itself talks to another
+	// directory (peer check/add: its peer timeout is 15 s; sync now: up to 45 s).
+	slow  *Client
 	token string
 }
 
+// SlowTimeout bounds peer check/add/sync calls (the panel's write timeout is 60 s).
+const SlowTimeout = 50 * time.Second
+
 func NewOperatorClient(baseURL, token string, timeout time.Duration, observe Observer) OperatorClientImpl {
-	return &OperatorClient{c: newClient(baseURL, "the stack's directory", timeout, observe), token: token}
+	name := "the stack's directory"
+	return &OperatorClient{c: newClient(baseURL, name, timeout, observe), slow: newClient(baseURL, name, max(timeout, SlowTimeout), observe), token: token}
 }
 
 func (o *OperatorClient) headers(actor string) map[string]string {
@@ -417,7 +482,11 @@ func (o *OperatorClient) SetPeerEnabled(ctx context.Context, actor, id string, e
 	if err != nil {
 		return nil, o.opUnsupported(err)
 	}
-	// {peer: {...}} or the bare peer.
+	return o.peerFrom(raw)
+}
+
+// peerFrom reads {peer: {...}} or the bare peer.
+func (o *OperatorClient) peerFrom(raw json.RawMessage) (*Peer, error) {
 	var wrapped struct {
 		Peer *Peer `json:"peer"`
 	}
@@ -429,4 +498,71 @@ func (o *OperatorClient) SetPeerEnabled(ctx context.Context, actor, id string, e
 		return nil, apperr.New(http.StatusBadGateway, "boson_api_error", o.c.Name+" sent a response the panel can't read")
 	}
 	return &p, nil
+}
+
+func peerPath(id string) string { return "/v1/admin/peers/" + url.PathEscape(id) }
+
+func (o *OperatorClient) CheckPeer(ctx context.Context, rawURL string) (*PeerCheck, error) {
+	var out PeerCheck
+	if err := o.slow.callH(ctx, "directory.peer_check", http.MethodGet, "/v1/admin/peers/check?url="+url.QueryEscape(rawURL), "",
+		o.headers(""), nil, &out); err != nil {
+		return nil, o.opUnsupported(err)
+	}
+	return &out, nil
+}
+
+func (o *OperatorClient) AddPeer(ctx context.Context, actor, rawURL string) (*Peer, error) {
+	var raw json.RawMessage
+	if err := o.slow.callH(ctx, "directory.peer_add", http.MethodPost, "/v1/admin/peers", "", o.headers(actor),
+		map[string]string{"url": rawURL}, &raw); err != nil {
+		return nil, o.opUnsupported(err)
+	}
+	return o.peerFrom(raw)
+}
+
+func (o *OperatorClient) DeletePeer(ctx context.Context, actor, id string) error {
+	return o.opUnsupported(o.c.callH(ctx, "directory.peer_delete", http.MethodDelete, peerPath(id), "", o.headers(actor), nil, nil))
+}
+
+func (o *OperatorClient) SyncPeer(ctx context.Context, actor, id string) (*Peer, *SyncResult, error) {
+	var out struct {
+		Peer   *Peer       `json:"peer"`
+		Result *SyncResult `json:"result"`
+	}
+	if err := o.slow.callH(ctx, "directory.peer_sync", http.MethodPost, peerPath(id)+"/sync", "", o.headers(actor), nil, &out); err != nil {
+		return nil, nil, o.opUnsupported(err)
+	}
+	if out.Peer == nil {
+		return nil, nil, apperr.New(http.StatusBadGateway, "boson_api_error", o.c.Name+" sent a response the panel can't read")
+	}
+	if out.Result == nil {
+		out.Result = &SyncResult{}
+	}
+	return out.Peer, out.Result, nil
+}
+
+func (o *OperatorClient) settingsUnsupported(err error) error {
+	return unsupported(err, "the stack's directory doesn't have "+SettingsEndpoints)
+}
+
+func (o *OperatorClient) Settings(ctx context.Context) (*DirectorySettings, error) {
+	var out DirectorySettings
+	if err := o.c.callH(ctx, "directory.settings", http.MethodGet, "/v1/admin/settings", "", o.headers(""), nil, &out); err != nil {
+		return nil, o.settingsUnsupported(err)
+	}
+	if out.Overridden == nil {
+		out.Overridden = []string{}
+	}
+	return &out, nil
+}
+
+func (o *OperatorClient) UpdateSettings(ctx context.Context, actor string, patch map[string]any) (*DirectorySettings, error) {
+	var out DirectorySettings
+	if err := o.c.callH(ctx, "directory.settings_update", http.MethodPatch, "/v1/admin/settings", "", o.headers(actor), patch, &out); err != nil {
+		return nil, o.settingsUnsupported(err)
+	}
+	if out.Overridden == nil {
+		out.Overridden = []string{}
+	}
+	return &out, nil
 }
