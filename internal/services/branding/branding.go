@@ -80,9 +80,14 @@ type BrandingServiceImpl interface {
 	Bundle(ctx context.Context) (*theme.Bundle, error)
 
 	EmailEnabled() bool
-	Preview(ctx context.Context, actor string, in authapi.EmailPreviewRequest) (*authapi.EmailPreview, error)
-	SendTest(ctx context.Context, actor string, in authapi.EmailTestRequest) (*authapi.EmailTestResult, error)
+	// Preview and SendTest call auth as the signed-in admin: with runs a
+	// call with their access token (admin.AdminServiceImpl.WithToken).
+	Preview(ctx context.Context, actor string, with TokenCall, in authapi.EmailPreviewRequest) (*authapi.EmailPreview, error)
+	SendTest(ctx context.Context, actor string, with TokenCall, in authapi.EmailTestRequest) (*authapi.EmailTestResult, error)
 }
+
+// TokenCall runs fn with a valid access token for the acting admin.
+type TokenCall func(fn func(accessToken string) error) error
 
 type BrandingService struct{ o Options }
 
@@ -340,7 +345,7 @@ func writeAtomic(path string, data []byte) error {
 // ---- email ----
 
 var errEmailOff = apperr.New(http.StatusServiceUnavailable, "email_preview_off",
-	"email previews go through the auth service's internal listener: set AUTH_INTERNAL_URL and INTERNAL_API_TOKEN on the admin service")
+	"email previews go through the auth service's internal listener: set AUTH_INTERNAL_URL on the admin service")
 
 func (b *BrandingService) EmailEnabled() bool { return b.o.Email != nil }
 
@@ -351,7 +356,7 @@ func checkTemplate(t string) error {
 	return nil
 }
 
-func (b *BrandingService) Preview(ctx context.Context, actor string, in authapi.EmailPreviewRequest) (*authapi.EmailPreview, error) {
+func (b *BrandingService) Preview(ctx context.Context, actor string, with TokenCall, in authapi.EmailPreviewRequest) (*authapi.EmailPreview, error) {
 	if b.o.Email == nil {
 		return nil, errEmailOff
 	}
@@ -364,7 +369,12 @@ func (b *BrandingService) Preview(ctx context.Context, actor string, in authapi.
 	if in.Body != nil && len([]rune(*in.Body)) > 5000 {
 		return nil, apperr.Invalid("the body must be at most 5000 characters")
 	}
-	p, err := b.o.Email.Preview(ctx, actor, in)
+	var p *authapi.EmailPreview
+	err := with(func(at string) error {
+		var err error
+		p, err = b.o.Email.Preview(ctx, at, in)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +406,7 @@ func (b *BrandingService) inline(html string) string {
 	})
 }
 
-func (b *BrandingService) SendTest(ctx context.Context, actor string, in authapi.EmailTestRequest) (*authapi.EmailTestResult, error) {
+func (b *BrandingService) SendTest(ctx context.Context, actor string, with TokenCall, in authapi.EmailTestRequest) (*authapi.EmailTestResult, error) {
 	if b.o.Email == nil {
 		return nil, errEmailOff
 	}
@@ -408,7 +418,12 @@ func (b *BrandingService) SendTest(ctx context.Context, actor string, in authapi
 	if err != nil || addr.Name != "" || len(in.To) > 254 || bytes.ContainsAny([]byte(in.To), "\r\n") {
 		return nil, apperr.Invalid("send the test to one email address, like you@example.com")
 	}
-	r, err := b.o.Email.SendTest(ctx, actor, in)
+	var r *authapi.EmailTestResult
+	err = with(func(at string) error {
+		var err error
+		r, err = b.o.Email.SendTest(ctx, at, in)
+		return err
+	})
 	ev := logger.FromCtx(ctx).Info()
 	if err != nil {
 		ev = logger.FromCtx(ctx).Warn().Err(err)

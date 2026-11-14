@@ -169,7 +169,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}
 	var email authapi.EmailClientImpl
-	if up.AuthInternalURL != "" && up.InternalAPIToken != "" {
+	if up.AuthInternalURL != "" {
 		email = authapi.NewEmailClient(up.AuthInternalURL, up.InternalAPIToken, max(up.Timeout, 20*time.Second), upstream("auth_internal"))
 	}
 	brandingSvc := branding.NewBrandingService(branding.Options{Config: stack, Dir: cfg.StackConfig.BrandingDir, Email: email})

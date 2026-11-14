@@ -16,9 +16,9 @@ import (
 // The auth service's email endpoints on its internal listener (branding
 // contract, section 2): the admin panel renders a preview of a template
 // and sends test emails. They're authorised like the rest of auth's
-// internal API, by INTERNAL_API_TOKEN in X-Internal-Token, and name the
-// panel user acting (X-Acting-Account, X-Acting-Via: admin) for auth's
-// audit log; the panel checks settings.manage before calling.
+// admin API: the signed-in admin's Bearer access token, which needs
+// settings.manage (auth checks it, the panel checks it first too).
+// INTERNAL_API_TOKEN, when set, goes along in X-Internal-Token.
 //
 //	POST /internal/email/preview {template, subject?, body?} → {subject, html, text}
 //	POST /internal/email/test    {template, to}              → {sent?, message?}
@@ -51,8 +51,9 @@ type EmailTestResult struct {
 }
 
 type EmailClientImpl interface {
-	Preview(ctx context.Context, actor string, in EmailPreviewRequest) (*EmailPreview, error)
-	SendTest(ctx context.Context, actor string, in EmailTestRequest) (*EmailTestResult, error)
+	// accessToken is the signed-in admin's.
+	Preview(ctx context.Context, accessToken string, in EmailPreviewRequest) (*EmailPreview, error)
+	SendTest(ctx context.Context, accessToken string, in EmailTestRequest) (*EmailTestResult, error)
 }
 
 // EmailEndpoints is what the Emails page needs from auth.
@@ -70,17 +71,17 @@ func NewEmailClient(baseURL, token string, timeout time.Duration, observe Observ
 	return &EmailClient{BaseURL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: &http.Client{Timeout: timeout}, Observe: observe}
 }
 
-func (c *EmailClient) Preview(ctx context.Context, actor string, in EmailPreviewRequest) (*EmailPreview, error) {
+func (c *EmailClient) Preview(ctx context.Context, accessToken string, in EmailPreviewRequest) (*EmailPreview, error) {
 	var out EmailPreview
-	if err := c.post(ctx, "email.preview", "/internal/email/preview", actor, in, &out); err != nil {
+	if err := c.post(ctx, "email.preview", "/internal/email/preview", accessToken, in, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *EmailClient) SendTest(ctx context.Context, actor string, in EmailTestRequest) (*EmailTestResult, error) {
+func (c *EmailClient) SendTest(ctx context.Context, accessToken string, in EmailTestRequest) (*EmailTestResult, error) {
 	var out EmailTestResult
-	if err := c.post(ctx, "email.test", "/internal/email/test", actor, in, &out); err != nil {
+	if err := c.post(ctx, "email.test", "/internal/email/test", accessToken, in, &out); err != nil {
 		return nil, err
 	}
 	if !out.Sent && out.Message == "" {
@@ -89,16 +90,16 @@ func (c *EmailClient) SendTest(ctx context.Context, actor string, in EmailTestRe
 	return &out, nil
 }
 
-func (c *EmailClient) post(ctx context.Context, op, path, actor string, body, out any) error {
+func (c *EmailClient) post(ctx context.Context, op, path, accessToken string, body, out any) error {
 	start := time.Now()
-	status, err := c.roundTrip(ctx, path, actor, body, out)
+	status, err := c.roundTrip(ctx, path, accessToken, body, out)
 	if c.Observe != nil {
 		c.Observe(op, status, err, time.Since(start))
 	}
 	return err
 }
 
-func (c *EmailClient) roundTrip(ctx context.Context, path, actor string, body, out any) (int, error) {
+func (c *EmailClient) roundTrip(ctx context.Context, path, accessToken string, body, out any) (int, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return 0, err
@@ -110,10 +111,9 @@ func (c *EmailClient) roundTrip(ctx context.Context, path, actor string, body, o
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "boson-admin")
-	req.Header.Set("X-Internal-Token", c.Token)
-	req.Header.Set("X-Acting-Via", "admin")
-	if actor != "" {
-		req.Header.Set("X-Acting-Account", actor)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if c.Token != "" {
+		req.Header.Set("X-Internal-Token", c.Token)
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
@@ -148,7 +148,11 @@ func emailError(res *http.Response, data []byte) error {
 	case res.StatusCode == http.StatusServiceUnavailable && code == "internal_api_disabled":
 		return apperr.New(http.StatusServiceUnavailable, code, "the auth service's internal API is off: set INTERNAL_API_TOKEN on auth and the admin panel")
 	case res.StatusCode == http.StatusUnauthorized:
-		return apperr.New(http.StatusBadGateway, "internal_token_rejected", "the auth service rejected the panel's INTERNAL_API_TOKEN")
+		// The access token expired: the caller refreshes and retries
+		// (IsUnauthorized).
+		return apperr.New(http.StatusUnauthorized, "unauthorized", "the auth service didn't accept the session")
+	case res.StatusCode == http.StatusForbidden:
+		return apperr.New(http.StatusForbidden, "missing_permission", "the auth service says your roles don't include settings.manage")
 	case res.StatusCode == http.StatusTooManyRequests:
 		msg := "too many test emails"
 		if ra := res.Header.Get("Retry-After"); ra != "" {

@@ -67,6 +67,10 @@ type AdminServiceImpl interface {
 	Logout(ctx context.Context, s *session.Session) error
 	// Me re-checks the signed-in admin against the auth service.
 	Me(ctx context.Context, s *session.Session) (*authapi.User, error)
+	// WithToken runs fn with the admin's valid access token (refreshed when
+	// needed, retried once on 401), for auth calls made through other
+	// clients (the internal email API).
+	WithToken(ctx context.Context, s *session.Session, fn func(accessToken string) error) error
 	// Access is the signed-in account's permissions (cached for AccessTTL
 	// unless fresh). Without admin.panel it fails with ErrNotAdmin.
 	Access(ctx context.Context, s *session.Session, fresh bool) (*Access, error)
@@ -251,6 +255,10 @@ func (s *AdminService) call(ctx context.Context, sess *session.Session, fn func(
 		return apperr.ErrSessionExpired
 	}
 	return err
+}
+
+func (s *AdminService) WithToken(ctx context.Context, sess *session.Session, fn func(accessToken string) error) error {
+	return s.call(ctx, sess, fn)
 }
 
 func (s *AdminService) Logout(ctx context.Context, sess *session.Session) error {

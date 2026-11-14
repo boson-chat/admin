@@ -21,6 +21,9 @@ func TestEmailClient(t *testing.T) {
 		switch mode {
 		case "old":
 			http.NotFound(w, r)
+		case "unauth":
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		case "limited":
 			w.Header().Set("Retry-After", "30")
 			w.WriteHeader(429)
@@ -40,11 +43,11 @@ func TestEmailClient(t *testing.T) {
 	c := NewEmailClient(srv.URL+"/", "tok", time.Second, nil)
 	ctx := context.Background()
 	s := "Hi"
-	p, err := c.Preview(ctx, "root", EmailPreviewRequest{Template: "invite", Subject: &s})
+	p, err := c.Preview(ctx, "at-1", EmailPreviewRequest{Template: "invite", Subject: &s})
 	if err != nil || p.Subject != "Confirm" || p.HTML != "<p>x</p>" {
 		t.Fatalf("%v %+v", err, p)
 	}
-	if got.Get("X-Internal-Token") != "tok" || got.Get("X-Acting-Account") != "root" || got.Get("X-Acting-Via") != "admin" ||
+	if got.Get("Authorization") != "Bearer at-1" || got.Get("X-Internal-Token") != "tok" ||
 		body["template"] != "invite" || body["subject"] != "Hi" || body["body"] != nil {
 		t.Fatalf("%v %v", got, body)
 	}
@@ -61,6 +64,10 @@ func TestEmailClient(t *testing.T) {
 		t.Fatal("429")
 	} else if e, _ := apperr.As(err); e.Status != 429 || e.Message != "too many test emails; try again in 30 s" {
 		t.Fatalf("429: %v", err)
+	}
+	mode = "unauth"
+	if _, err := c.Preview(ctx, "old-token", EmailPreviewRequest{Template: "invite"}); !IsUnauthorized(err) {
+		t.Fatalf("401 must read as unauthorized (refresh + retry): %v", err)
 	}
 	mode = "bad"
 	if _, err := c.Preview(ctx, "root", EmailPreviewRequest{Template: "x"}); err == nil {

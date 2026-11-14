@@ -117,8 +117,8 @@ type UpstreamConfig struct {
 	AuthURL string `default:"http://auth:8080" env:"AUTH_URL"`
 	// Auth service internal listener (/healthz, /readyz, /metrics). Empty = not checked.
 	AuthInternalURL string `env:"AUTH_INTERNAL_URL"`
-	// auth's INTERNAL_API_TOKEN, for its internal email preview and test
-	// endpoints (the Emails page). Empty = no previews.
+	// auth's INTERNAL_API_TOKEN: sent along to its internal email preview
+	// and test endpoints (which authorise the admin's own access token).
 	InternalAPIToken string `env:"INTERNAL_API_TOKEN"`
 	// Prometheus-compatible query API (VictoriaMetrics, Prometheus). Empty = no live metrics.
 	MetricsURL string `env:"METRICS_URL"`

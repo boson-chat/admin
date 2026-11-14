@@ -128,7 +128,7 @@ func (h *Handlers) emailPreview(w http.ResponseWriter, r *http.Request, s *sessi
 		writeError(w, r, err)
 		return
 	}
-	p, err := h.Branding.Preview(r.Context(), s.Snapshot().Username, in)
+	p, err := h.Branding.Preview(r.Context(), s.Snapshot().Username, h.tokenCall(r, s), in)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -145,7 +145,7 @@ func (h *Handlers) emailTest(w http.ResponseWriter, r *http.Request, s *session.
 		writeError(w, r, err)
 		return
 	}
-	res, err := h.Branding.SendTest(r.Context(), s.Snapshot().Username, in)
+	res, err := h.Branding.SendTest(r.Context(), s.Snapshot().Username, h.tokenCall(r, s), in)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -173,4 +173,9 @@ func (h *Handlers) pushBranding(ctx context.Context, actor string) {
 			logger.FromCtx(ctx).Warn().Str("actor", actor).Str("error", res.Error).Msg("pushing branding to the directory")
 		}
 	}()
+}
+
+// tokenCall runs auth calls with the signed-in admin's access token.
+func (h *Handlers) tokenCall(r *http.Request, s *session.Session) branding.TokenCall {
+	return func(fn func(string) error) error { return h.Admin.WithToken(r.Context(), s, fn) }
 }

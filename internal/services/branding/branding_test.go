@@ -348,6 +348,9 @@ func (f *fakeEmail) SendTest(_ context.Context, actor string, in authapi.EmailTe
 	return &authapi.EmailTestResult{Sent: true}, f.err
 }
 
+// tok is WithToken for a session whose access token is at-1.
+func tok(fn func(string) error) error { return fn("at-1") }
+
 func TestEmailPreviewInlinesImages(t *testing.T) {
 	ctx := context.Background()
 	fe := &fakeEmail{}
@@ -358,11 +361,11 @@ func TestEmailPreviewInlinesImages(t *testing.T) {
 	}
 	fe.html = `<img src="https://auth.example.com/v1/branding/assets/` + logo.File + `?v=abc&amp;x=1" alt=""><img src='https://auth.example.com/v1/branding/assets/gone-0123456789abcdef.webp'><a href="https://example.com">x</a>`
 	subj := "Hello {{network}}"
-	p, err := b.Preview(ctx, "root", authapi.EmailPreviewRequest{Template: "verification", Subject: &subj})
+	p, err := b.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "verification", Subject: &subj})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fe.actor != "root" || fe.preview.Template != "verification" || *fe.preview.Subject != subj {
+	if fe.actor != "at-1" || fe.preview.Template != "verification" || *fe.preview.Subject != subj {
 		t.Fatalf("sent %+v", fe.preview)
 	}
 	if !strings.Contains(p.HTML, `src="data:image/svg+xml;base64,`) || strings.Contains(p.HTML, logo.File) {
@@ -372,25 +375,25 @@ func TestEmailPreviewInlinesImages(t *testing.T) {
 		t.Fatalf("touched other URLs: %s", p.HTML)
 	}
 
-	if _, err := b.Preview(ctx, "root", authapi.EmailPreviewRequest{Template: "welcome"}); err == nil {
+	if _, err := b.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "welcome"}); err == nil {
 		t.Fatal("unknown template")
 	}
 	long := strings.Repeat("x", 5001)
-	if _, err := b.Preview(ctx, "root", authapi.EmailPreviewRequest{Template: "invite", Body: &long}); err == nil {
+	if _, err := b.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "invite", Body: &long}); err == nil {
 		t.Fatal("long body")
 	}
 
-	if _, err := b.SendTest(ctx, "root", authapi.EmailTestRequest{Template: "invite", To: " me@example.com "}); err != nil || fe.test.To != "me@example.com" {
+	if _, err := b.SendTest(ctx, "root", tok, authapi.EmailTestRequest{Template: "invite", To: " me@example.com "}); err != nil || fe.test.To != "me@example.com" {
 		t.Fatalf("test: %v %+v", err, fe.test)
 	}
 	for _, to := range []string{"", "nope", "a@b.c, d@e.f", "Me <me@example.com>", "me@example.com\r\nBcc: x@y.z"} {
-		if _, err := b.SendTest(ctx, "root", authapi.EmailTestRequest{Template: "invite", To: to}); err == nil {
+		if _, err := b.SendTest(ctx, "root", tok, authapi.EmailTestRequest{Template: "invite", To: to}); err == nil {
 			t.Errorf("to %q accepted", to)
 		}
 	}
 
 	off, _, _ := newService(t, "version: 1\n", nil)
-	if _, err := off.Preview(ctx, "root", authapi.EmailPreviewRequest{Template: "invite"}); err == nil || off.EmailEnabled() {
+	if _, err := off.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "invite"}); err == nil || off.EmailEnabled() {
 		t.Fatal("preview without auth's internal API")
 	}
 }
