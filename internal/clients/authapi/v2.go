@@ -17,11 +17,11 @@ import (
 // running auth service doesn't have the endpoint yet ("requires auth ≥ …").
 const (
 	RequiresSettings      = "v1.3.0"
-	RequiresSSO           = "v1.3.0"
 	RequiresUserCreate    = "v1.3.0"
 	RequiresUserEmails    = "v1.3.0"
-	RequiresIdentities    = "v1.3.0"
 	RequiresAuditFilters  = "v1.3.0"
+	RequiresSSO           = "v1.4.0"
+	RequiresIdentities    = "v1.4.0"
 	unsupportedMsgPattern = "%s needs a newer auth service (auth ≥ %s)"
 )
 
@@ -113,15 +113,16 @@ const (
 )
 
 // OIDCConfig is a provider's OpenID Connect settings. ClientSecret is
-// write-only: responses carry HasClientSecret instead.
+// write-only: on update it is sent only when set (the stored one is kept
+// otherwise); responses carry SSOProviderConfig.HasClientSecret instead.
 type OIDCConfig struct {
-	Issuer          string   `json:"issuer"`
-	ClientID        string   `json:"client_id"`
-	ClientSecret    string   `json:"client_secret,omitempty"`
-	HasClientSecret bool     `json:"has_client_secret,omitempty"`
-	Scopes          []string `json:"scopes,omitempty"`
-	UsernameClaim   string   `json:"username_claim,omitempty"`
-	EmailClaim      string   `json:"email_claim,omitempty"`
+	Issuer           string   `json:"issuer"`
+	ClientID         string   `json:"client_id"`
+	ClientSecret     string   `json:"client_secret,omitempty"`
+	Scopes           []string `json:"scopes,omitempty"`
+	UsernameClaim    string   `json:"username_claim,omitempty"`
+	EmailClaim       string   `json:"email_claim,omitempty"`
+	DisplayNameClaim string   `json:"display_name_claim,omitempty"`
 }
 
 // SAMLAttributeMap names the IdP attributes boson reads.
@@ -137,9 +138,14 @@ type SAMLConfig struct {
 	IDPMetadataXML string           `json:"idp_metadata_xml,omitempty"`
 	EntityID       string           `json:"entity_id,omitempty"`
 	AttributeMap   SAMLAttributeMap `json:"attribute_map"`
+	// NameIDFormat: persistent | email | unspecified | a URN; empty = the IdP's default.
+	NameIDFormat string `json:"name_id_format,omitempty"`
+	SignRequests bool   `json:"sign_requests,omitempty"`
 }
 
-// ProviderSettings holds the kind-specific config.
+// ProviderSettings holds the kind-specific config. The panel's own API
+// nests it ({oidc} / {saml}); the auth service takes one flat object whose
+// keys depend on the provider's kind (see wireConfig).
 type ProviderSettings struct {
 	OIDC *OIDCConfig `json:"oidc,omitempty"`
 	SAML *SAMLConfig `json:"saml,omitempty"`
@@ -147,21 +153,54 @@ type ProviderSettings struct {
 
 // SSOProviderConfig is an SSO provider as the admin API returns it.
 type SSOProviderConfig struct {
-	ID          string           `json:"id"`
-	Slug        string           `json:"slug"`
-	Kind        string           `json:"kind"`
-	DisplayName string           `json:"display_name"`
-	Enabled     bool             `json:"enabled"`
-	AllowSignup bool             `json:"allow_signup"`
-	TrustEmail  bool             `json:"trust_email"`
-	Config      ProviderSettings `json:"config"`
-	// Where the IdP sends people back, set by the auth service.
-	CallbackURL   string     `json:"callback_url,omitempty"`
-	SPMetadataURL string     `json:"sp_metadata_url,omitempty"`
+	ID              string           `json:"id"`
+	Slug            string           `json:"slug"`
+	Kind            string           `json:"kind"`
+	DisplayName     string           `json:"display_name"`
+	Enabled         bool             `json:"enabled"`
+	AllowSignup     bool             `json:"allow_signup"`
+	TrustEmail      bool             `json:"trust_email"`
+	Config          ProviderSettings `json:"config"`
+	HasClientSecret bool             `json:"has_client_secret"`
+	// URLs set by the auth service. StartURL begins a sign-in; RedirectURI
+	// (OIDC) and the ACS / SP metadata / entity ID / certificate (SAML) go
+	// to the identity provider.
+	StartURL      string     `json:"start_url,omitempty"`
+	RedirectURI   string     `json:"redirect_uri,omitempty"`
 	ACSURL        string     `json:"acs_url,omitempty"`
+	SPMetadataURL string     `json:"sp_metadata_url,omitempty"`
 	SPEntityID    string     `json:"sp_entity_id,omitempty"`
+	SPCertificate string     `json:"sp_certificate,omitempty"`
 	CreatedAt     *time.Time `json:"created_at,omitempty"`
 	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+}
+
+// wireProvider is the auth service's shape: config is flat.
+type wireProvider struct {
+	SSOProviderConfig
+	Config json.RawMessage `json:"config"`
+}
+
+func (w *wireProvider) decode() (*SSOProviderConfig, error) {
+	p := w.SSOProviderConfig
+	if len(w.Config) > 0 && string(w.Config) != "null" {
+		switch p.Kind {
+		case KindOIDC:
+			var c OIDCConfig
+			if err := json.Unmarshal(w.Config, &c); err != nil {
+				return nil, fmt.Errorf("%w: provider config: %v", apperr.ErrUpstream, err)
+			}
+			c.ClientSecret = ""
+			p.Config = ProviderSettings{OIDC: &c}
+		case KindSAML:
+			var c SAMLConfig
+			if err := json.Unmarshal(w.Config, &c); err != nil {
+				return nil, fmt.Errorf("%w: provider config: %v", apperr.ErrUpstream, err)
+			}
+			p.Config = ProviderSettings{SAML: &c}
+		}
+	}
+	return &p, nil
 }
 
 // SSOProviderInput creates (all of it) or patches (non-nil fields) a provider.
@@ -175,6 +214,64 @@ type SSOProviderInput struct {
 	Config      *ProviderSettings `json:"config,omitempty"`
 }
 
+// wireInput is SSOProviderInput as the auth service takes it.
+type wireInput struct {
+	Slug        *string        `json:"slug,omitempty"`
+	Kind        *string        `json:"kind,omitempty"`
+	DisplayName *string        `json:"display_name,omitempty"`
+	Enabled     *bool          `json:"enabled,omitempty"`
+	AllowSignup *bool          `json:"allow_signup,omitempty"`
+	TrustEmail  *bool          `json:"trust_email,omitempty"`
+	Config      map[string]any `json:"config,omitempty"`
+}
+
+// wireConfig flattens the kind-specific config. The auth service merges a
+// PATCH key by key (a missing key keeps its value, null removes it), so on
+// update every optional key the form owns is sent, empty ones as null; on
+// create empty keys are left out. client_secret is only sent when set.
+func wireConfig(c *ProviderSettings, update bool) map[string]any {
+	if c == nil {
+		return nil
+	}
+	m := map[string]any{}
+	opt := func(k, v string) {
+		switch {
+		case v != "":
+			m[k] = v
+		case update:
+			m[k] = nil
+		}
+	}
+	if o := c.OIDC; o != nil {
+		m["issuer"], m["client_id"] = o.Issuer, o.ClientID
+		if o.ClientSecret != "" {
+			m["client_secret"] = o.ClientSecret
+		}
+		if len(o.Scopes) > 0 {
+			m["scopes"] = o.Scopes
+		} else if update {
+			m["scopes"] = nil
+		}
+		opt("username_claim", o.UsernameClaim)
+		opt("email_claim", o.EmailClaim)
+		opt("display_name_claim", o.DisplayNameClaim)
+	}
+	if sm := c.SAML; sm != nil {
+		opt("idp_metadata_url", sm.IDPMetadataURL)
+		opt("idp_metadata_xml", sm.IDPMetadataXML)
+		opt("entity_id", sm.EntityID)
+		opt("name_id_format", sm.NameIDFormat)
+		m["attribute_map"] = sm.AttributeMap
+		m["sign_requests"] = sm.SignRequests
+	}
+	return m
+}
+
+func (in SSOProviderInput) wire(update bool) wireInput {
+	return wireInput{Slug: in.Slug, Kind: in.Kind, DisplayName: in.DisplayName, Enabled: in.Enabled,
+		AllowSignup: in.AllowSignup, TrustEmail: in.TrustEmail, Config: wireConfig(in.Config, update)}
+}
+
 // SSOTestResult is POST /v1/admin/sso/providers/{id}/test.
 type SSOTestResult struct {
 	OK      bool            `json:"ok"`
@@ -182,7 +279,7 @@ type SSOTestResult struct {
 }
 
 type providerEnvelope struct {
-	Provider SSOProviderConfig `json:"provider"`
+	Provider wireProvider `json:"provider"`
 }
 
 const ssoWhat = "Managing sign-in providers"
@@ -191,15 +288,20 @@ func providerPath(id string) string { return "/v1/admin/sso/providers/" + url.Pa
 
 func (c *AuthClient) ListSSOProviders(ctx context.Context, at string) ([]SSOProviderConfig, error) {
 	var out struct {
-		Providers []SSOProviderConfig `json:"providers"`
+		Providers []wireProvider `json:"providers"`
 	}
 	if err := c.do(ctx, "admin.sso.list", http.MethodGet, "/v1/admin/sso/providers", at, nil, &out); err != nil {
 		return nil, feature(err, ssoWhat, RequiresSSO)
 	}
-	if out.Providers == nil {
-		out.Providers = []SSOProviderConfig{}
+	list := make([]SSOProviderConfig, 0, len(out.Providers))
+	for i := range out.Providers {
+		p, err := out.Providers[i].decode()
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, *p)
 	}
-	return out.Providers, nil
+	return list, nil
 }
 
 func (c *AuthClient) GetSSOProvider(ctx context.Context, at, id string) (*SSOProviderConfig, error) {
@@ -207,23 +309,23 @@ func (c *AuthClient) GetSSOProvider(ctx context.Context, at, id string) (*SSOPro
 	if err := c.do(ctx, "admin.sso.get", http.MethodGet, providerPath(id), at, nil, &out); err != nil {
 		return nil, feature(err, ssoWhat, RequiresSSO)
 	}
-	return &out.Provider, nil
+	return out.Provider.decode()
 }
 
 func (c *AuthClient) CreateSSOProvider(ctx context.Context, at string, in SSOProviderInput) (*SSOProviderConfig, error) {
 	var out providerEnvelope
-	if err := c.do(ctx, "admin.sso.create", http.MethodPost, "/v1/admin/sso/providers", at, in, &out); err != nil {
+	if err := c.do(ctx, "admin.sso.create", http.MethodPost, "/v1/admin/sso/providers", at, in.wire(false), &out); err != nil {
 		return nil, feature(err, ssoWhat, RequiresSSO)
 	}
-	return &out.Provider, nil
+	return out.Provider.decode()
 }
 
 func (c *AuthClient) UpdateSSOProvider(ctx context.Context, at, id string, in SSOProviderInput) (*SSOProviderConfig, error) {
 	var out providerEnvelope
-	if err := c.do(ctx, "admin.sso.update", http.MethodPatch, providerPath(id), at, in, &out); err != nil {
+	if err := c.do(ctx, "admin.sso.update", http.MethodPatch, providerPath(id), at, in.wire(true), &out); err != nil {
 		return nil, feature(err, ssoWhat, RequiresSSO)
 	}
-	return &out.Provider, nil
+	return out.Provider.decode()
 }
 
 func (c *AuthClient) DeleteSSOProvider(ctx context.Context, at, id string) error {
@@ -242,15 +344,15 @@ func (c *AuthClient) TestSSOProvider(ctx context.Context, at, id string) (*SSOTe
 
 // Identity is a linked SSO sign-in of a user.
 type Identity struct {
-	ID           string     `json:"id"`
-	ProviderID   string     `json:"provider_id,omitempty"`
-	ProviderSlug string     `json:"provider_slug,omitempty"`
-	ProviderName string     `json:"provider_name,omitempty"`
-	Kind         string     `json:"kind,omitempty"`
-	Subject      string     `json:"subject"`
-	Email        string     `json:"email,omitempty"`
-	CreatedAt    *time.Time `json:"created_at,omitempty"`
-	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	ID                  string     `json:"id"`
+	ProviderID          string     `json:"provider_id"`
+	ProviderSlug        string     `json:"provider_slug"`
+	ProviderKind        string     `json:"provider_kind"`
+	ProviderDisplayName string     `json:"provider_display_name"`
+	Subject             string     `json:"subject"`
+	Email               *string    `json:"email"`
+	CreatedAt           *time.Time `json:"created_at,omitempty"`
+	LastLoginAt         *time.Time `json:"last_login_at"`
 }
 
 // CreateUser is POST /v1/admin/users. Either Password or SendInviteEmail.
@@ -265,8 +367,8 @@ type CreateUser struct {
 // CreatedUser is the create response.
 type CreatedUser struct {
 	User User `json:"user"`
-	// InviteSent is true when a set-your-password email went out.
-	InviteSent bool `json:"invite_sent,omitempty"`
+	// InviteEmailSent is true when the set-your-password email was queued.
+	InviteEmailSent bool `json:"invite_email_sent"`
 }
 
 func (c *AuthClient) CreateUser(ctx context.Context, at string, in CreateUser) (*CreatedUser, error) {

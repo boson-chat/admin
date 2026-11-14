@@ -49,7 +49,7 @@ func TestProviders(t *testing.T) {
 		}
 	}
 	p, err := svc.CreateSSOProvider(ctx, s, oidc("https://accounts.google.com", "s3cret"))
-	if err != nil || p.Slug != "google" || !p.Config.OIDC.HasClientSecret || p.CallbackURL == "" {
+	if err != nil || p.Slug != "google" || !p.HasClientSecret || p.RedirectURI == "" {
 		t.Fatalf("create: %v %+v", err, p)
 	}
 	if got := f.Providers[0].Config.OIDC.Scopes; len(got) != 2 || got[0] != "openid" || got[1] != "email" {
@@ -58,7 +58,7 @@ func TestProviders(t *testing.T) {
 	// Patching config without a secret keeps the stored one.
 	p, err = svc.UpdateSSOProvider(ctx, s, p.ID, authapi.SSOProviderInput{Enabled: bptr(true),
 		Config: &authapi.ProviderSettings{OIDC: &authapi.OIDCConfig{Issuer: "https://accounts.google.com", ClientID: "cid2"}}})
-	if err != nil || !p.Enabled || p.Config.OIDC.ClientID != "cid2" || !p.Config.OIDC.HasClientSecret {
+	if err != nil || !p.Enabled || p.Config.OIDC.ClientID != "cid2" || !p.HasClientSecret {
 		t.Fatalf("update: %v %+v", err, p)
 	}
 	if _, err := svc.UpdateSSOProvider(ctx, s, p.ID, authapi.SSOProviderInput{Kind: ptr("saml")}); err == nil {
@@ -96,7 +96,7 @@ func TestCreateUserValidation(t *testing.T) {
 		}
 	}
 	u, err := svc.CreateUser(ctx, s, authapi.CreateUser{Username: " ana ", Email: "ana@x.org", SendInviteEmail: true})
-	if err != nil || u.User.Username != "ana" || !u.InviteSent || u.User.Role != "user" {
+	if err != nil || u.User.Username != "ana" || !u.InviteEmailSent || u.User.Role != "user" {
 		t.Fatalf("create: %v %+v", err, u)
 	}
 	if err := svc.SendPasswordReset(ctx, s, u.User.ID); err != nil || f.Emails[0] != "reset:"+u.User.ID {
@@ -104,5 +104,32 @@ func TestCreateUserValidation(t *testing.T) {
 	}
 	if err := svc.ResendVerification(ctx, s, "usr_nope"); err == nil {
 		t.Fatal("unknown user")
+	}
+}
+
+func TestExpandEvents(t *testing.T) {
+	got := expandEvents("sso_provider_*, settings_updated,login,sso_provider_created")
+	want := []string{"sso_provider_created", "sso_provider_updated", "sso_provider_deleted", "settings_updated", "login"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	if len(expandEvents("nope_*")) != 0 || len(expandEvents("")) != 0 {
+		t.Fatal("empty expansions")
+	}
+}
+
+func TestFriendlyErrors(t *testing.T) {
+	err := friendly(apperr.New(400, "no_email", "this account has no email address"))
+	if e, _ := apperr.As(err); e.Code != "no_email" || e.Status != 400 || e.Message == "this account has no email address" {
+		t.Fatalf("got %v", err)
+	}
+	other := apperr.New(400, "invalid_request", "x")
+	if friendly(other) != error(other) {
+		t.Fatal("unknown codes pass through")
 	}
 }

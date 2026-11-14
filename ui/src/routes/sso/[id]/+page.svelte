@@ -10,13 +10,14 @@
 	import ProviderForm from '$lib/components/ProviderForm.svelte';
 	import SetupGuide from '$lib/components/SetupGuide.svelte';
 	import State from '$lib/components/State.svelte';
+	import TestResult from '$lib/components/TestResult.svelte';
 
 	let id = $derived(page.params.id ?? '');
 	let provider = $state<SSOProvider | null>(null);
 	let error = $state('');
 	let unsupported = $state('');
 	let testing = $state(false);
-	let result = $state<{ ok: boolean; details: string } | null>(null);
+	let result = $state<{ ok: boolean; details: unknown } | null>(null);
 	let formKey = $state(0);
 
 	async function load() {
@@ -48,7 +49,9 @@
 	let urls = $derived.by(() => {
 		if (!provider) return [] as UrlRef[];
 		const keys: UrlRef[] =
-			provider.kind === 'oidc' ? ['callback_url'] : ['acs_url', 'sp_entity_id', 'sp_metadata_url'];
+			provider.kind === 'oidc'
+				? ['redirect_uri']
+				: ['acs_url', 'sp_entity_id', 'sp_metadata_url', 'sp_certificate'];
 		return keys.filter((k) => provider?.[k]);
 	});
 
@@ -60,10 +63,7 @@
 				'POST',
 				`/sso/providers/${encodeURIComponent(provider.id)}/test`
 			);
-			result = {
-				ok: r.ok,
-				details: typeof r.details === 'string' ? r.details : JSON.stringify(r.details ?? '')
-			};
+			result = { ok: r.ok, details: r.details };
 		} catch (e) {
 			result = { ok: false, details: errorText(e) };
 		} finally {
@@ -143,10 +143,7 @@
 	</div>
 
 	{#if result}
-		<p class="result" class:ok={result.ok} role="status">
-			<strong>{result.ok ? 'Connection works.' : 'Test failed.'}</strong>
-			{result.details}
-		</p>
+		<div class="res"><TestResult ok={result.ok} details={result.details} /></div>
 	{/if}
 
 	<div class="cols">
@@ -158,7 +155,11 @@
 			</h2>
 			{#if urls.length}
 				<div class="urls">
-					{#each urls as k (k)}<CopyField label={urlLabels[k]} value={provider[k] ?? ''} />{/each}
+					{#each urls as k (k)}<CopyField
+							label={urlLabels[k]}
+							value={provider[k] ?? ''}
+							multiline={k === 'sp_certificate'}
+						/>{/each}
 				</div>
 			{:else}
 				<p class="muted small">The auth service didn’t return the provider’s URLs.</p>
@@ -189,8 +190,8 @@
 		</div>
 		<div class="del">
 			<p>
-				Linked sign-ins are removed with it. Accounts stay, but people who only used {provider.display_name} need
-				a password reset to get back in.
+				Every linked sign-in for it is deleted with it. Accounts stay, but people who only signed in with
+				{provider.display_name} have no password and need a password reset to get back in.
 			</p>
 			<Confirm
 				title="Remove {provider.display_name}?"
@@ -202,7 +203,8 @@
 				{#snippet trigger(open)}<button class="btn btn-small btn-danger" onclick={open}
 						>Remove provider</button
 					>{/snippet}
-				This can’t be undone. Every account’s link to {provider.display_name} is deleted.
+				This can’t be undone. The provider and every account’s linked {provider.display_name} sign-in are deleted;
+				if you add it again, people link their accounts again on their next sign-in.
 			</Confirm>
 		</div>
 	</section>
@@ -276,25 +278,8 @@
 	.howto-body {
 		margin-top: var(--space-4);
 	}
-	.result {
+	.res {
 		margin-bottom: var(--space-6);
-		font-size: var(--text-sm);
-		font-family: var(--font-mono);
-		padding: var(--space-3) var(--space-4);
-		border-left: 3px solid var(--danger);
-		background: color-mix(in oklab, var(--danger), transparent 92%);
-		color: var(--fg-2);
-		overflow-wrap: anywhere;
-	}
-	.result strong {
-		color: var(--danger-text);
-	}
-	.result.ok {
-		border-left-color: var(--success);
-		background: color-mix(in oklab, var(--success), transparent 92%);
-	}
-	.result.ok strong {
-		color: var(--success-text);
 	}
 	.del {
 		display: flex;

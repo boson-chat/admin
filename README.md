@@ -69,7 +69,7 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
 
 Features whose upstream endpoint doesn't exist yet (an older auth release,
 a boson API without the admin profile read) show what they need ("needs
-auth ≥ v1.3.0") instead of an error; see "Upstream work".
+auth ≥ v1.4.0") instead of an error; see "Upstream work".
 
 IRC isn't managed from the panel, but it is monitored: with `IRC_CHECK` set
 the panel connects to the IRC server (Ergo in the stack) every overview poll
@@ -342,17 +342,19 @@ backend on `main`). The panel detects a missing endpoint (Go's plain-text 404
 or a 405) and shows "needs … ≥ version" instead of failing. The versions are
 constants in `internal/clients/authapi/v2.go`.
 
-**auth (≥ v1.3.0 assumed)**
+**auth** (boson-chat/auth `main`: settings, admin users and audit land in
+v1.3.0, SSO providers and identities in v1.4.0). Checked against a locally
+running auth service and Dex, not only against fakes; rerun with
+`AUTH_TEST_URL=http://127.0.0.1:8080 AUTH_TEST_ADMIN=… AUTH_TEST_PASSWORD=… go test -run TestAgainstAuth ./internal/clients/authapi/`.
 
-| Endpoint | Used for |
-|---|---|
-| `GET/PATCH /v1/admin/settings` → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` (flat or under `settings`) | Network settings. `registration`: `open`/`invite`/`closed`; `channel_creation`: `registered`/`admins`; `voice_channel_creation`: `admins`/`founders`/`registered` |
-| `GET/POST /v1/admin/sso/providers` (`{providers}` / `{provider}`), `GET/PATCH/DELETE …/{id}`, `POST …/{id}/test` → `{ok, details}` | Sign-in providers. `client_secret` is write-only; reads return `has_client_secret`. Created with `enabled: false` |
-| `POST /v1/admin/users` `{username, email, role, password? \| send_invite_email?}` → `{user, invite_sent?}` | Create user |
-| `POST /v1/admin/users/{id}/password-reset`, `POST …/verification` | Emails (204) |
-| `identities[]` in `GET /v1/admin/users/{id}` (next to `user` or inside it): `{id, provider_slug, provider_name?, kind?, subject, email?, created_at?, last_login_at?}` | Linked sign-ins. Absent = not reported |
-| `GET /v1/admin/audit?event=&actor=&target=&since=&until=&cursor=&limit=` → `{entries[{…, actor_username, target_user_id, target_username}], next_cursor}` | Audit paging. `next_cursor` must always be present (`null` at the end): that is how the panel tells a filtering release from an old one. `event` takes a trailing `*`; `actor`/`target` take an ID or a username |
-| Audit events `admin_settings_changed`, `admin_sso_provider_{created,updated,deleted}`, `admin_password_reset_sent`, `admin_verification_sent`, `sso_login`, `sso_linked` | Names in the log (unknown events still show) |
+| Endpoint | Release | Used for |
+|---|---|---|
+| `GET/PATCH /v1/admin/settings` → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` | 1.3.0 | Network settings. `updated_*` are null until the first PATCH |
+| `POST /v1/admin/users` `{username, email, role, password \| send_invite_email}` → 201 `{user, invite_email_sent}` | 1.3.0 | Create user |
+| `POST /v1/admin/users/{id}/password-reset`, `…/verification` → 202 | 1.3.0 | Emails. `400 no_email`, `409 already_verified`, `409 account_disabled` (and `409 username_taken` / `email_taken` / `slug_taken`) get panel wording |
+| `GET /v1/admin/audit?event=&actor=&target=&since=&until=&cursor=&limit=` → `{entries[{…, actor_user_id, actor_username, target_user_id, target_username}], next_cursor}` | 1.3.0 | Audit paging. `event` is an exact name or a comma list; the panel expands its `admin_*`-style groups into names. `next_cursor` is always present (`null` at the end), which is how the panel tells it from 1.2 |
+| `GET /v1/admin/users/{id}` → `{user, identities[{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` | 1.4.0 | Linked sign-ins, "SSO only" |
+| `GET/POST /v1/admin/sso/providers`, `GET/PATCH/DELETE …/{id}`, `POST …/{id}/test` → `{ok, details{…}}` | 1.4.0 | Sign-in providers. `config` is one flat object per kind (OIDC: `issuer, client_id, client_secret (write-only), scopes, username_claim, email_claim, display_name_claim`; SAML: `idp_metadata_url \| idp_metadata_xml, entity_id, attribute_map, name_id_format, sign_requests`); the panel's own API nests it as `{oidc}` / `{saml}`. PATCH merges key by key: the panel omits `client_secret` to keep it and sends cleared optional keys as `null`. Responses carry `has_client_secret`, `start_url`, `redirect_uri` (OIDC), `acs_url`, `sp_metadata_url`, `sp_entity_id`, `sp_certificate` (SAML). Deleting a provider deletes its linked identities |
 
 **boson API: `GET /v1/admin/profiles/{auth_user_id}`** (new). The backend
 already verifies auth access tokens; the panel calls it with the signed-in

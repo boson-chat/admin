@@ -14,7 +14,11 @@
 			<p>{step.text}</p>
 			{#if step.url}
 				{#if provider?.[step.url]}
-					<CopyField label={urlLabels[step.url]} value={provider[step.url] ?? ''} />
+					<CopyField
+						label={urlLabels[step.url]}
+						value={provider[step.url] ?? ''}
+						multiline={step.url === 'sp_certificate'}
+					/>
 				{:else}
 					<p class="later">
 						{urlLabels[step.url]}: shown here once the provider is saved.

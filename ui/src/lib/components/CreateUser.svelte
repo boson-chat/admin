@@ -34,16 +34,19 @@
 		busy = true;
 		error = '';
 		try {
-			const r = await api<{ user: User; invite_sent?: boolean }>('POST', '/users', {
+			const r = await api<{ user: User; invite_email_sent?: boolean }>('POST', '/users', {
 				username: username.trim(),
 				email: email.trim() || undefined,
 				role,
 				...(how === 'email' ? { send_invite_email: true } : { password })
 			});
 			toasts.push(
-				r.invite_sent
+				r.invite_email_sent
 					? `Created ${r.user.username} and emailed them a link to set a password.`
-					: `Created ${r.user.username}. Give them the password over a channel you trust.`
+					: how === 'email'
+						? `Created ${r.user.username}, but the set-password email couldn’t be queued. Send a password reset from their page.`
+						: `Created ${r.user.username}. Give them the password over a channel you trust.`,
+				r.invite_email_sent || how === 'password' ? 'ok' : 'bad'
 			);
 			dlg.close();
 			goto(`/users/${encodeURIComponent(r.user.id)}`);

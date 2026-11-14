@@ -31,6 +31,8 @@
 	let scopes = $state(o?.scopes?.join(' ') ?? presets[0].scopes ?? 'openid email profile');
 	let usernameClaim = $state(o?.username_claim ?? '');
 	let emailClaim = $state(o?.email_claim ?? '');
+	let nameClaim = $state(o?.display_name_claim ?? '');
+	const hadSecret = p0?.has_client_secret ?? false;
 
 	const sm = p0?.config.saml;
 	let metaMode = $state<'url' | 'xml'>(sm?.idp_metadata_xml ? 'xml' : 'url');
@@ -40,6 +42,13 @@
 	let attrEmail = $state(sm?.attribute_map.email ?? '');
 	let attrUser = $state(sm?.attribute_map.username ?? '');
 	let attrName = $state(sm?.attribute_map.display_name ?? '');
+	const nameIdFormats: Record<string, string> = {
+		'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent': 'persistent',
+		'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress': 'email',
+		'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified': 'unspecified'
+	};
+	let nameIdFormat = $state(nameIdFormats[sm?.name_id_format ?? ''] ?? sm?.name_id_format ?? '');
+	let signRequests = $state(sm?.sign_requests ?? false);
 
 	let busy = $state(false);
 	let formError = $state('');
@@ -68,7 +77,8 @@
 							...(clientSecret ? { client_secret: clientSecret } : {}),
 							scopes: scopes.split(/[\s,]+/).filter(Boolean),
 							...(usernameClaim.trim() ? { username_claim: usernameClaim.trim() } : {}),
-							...(emailClaim.trim() ? { email_claim: emailClaim.trim() } : {})
+							...(emailClaim.trim() ? { email_claim: emailClaim.trim() } : {}),
+							...(nameClaim.trim() ? { display_name_claim: nameClaim.trim() } : {})
 						}
 					}
 				: {
@@ -77,6 +87,8 @@
 								? { idp_metadata_url: metaURL.trim() }
 								: { idp_metadata_xml: metaXML.trim() }),
 							...(entityID.trim() ? { entity_id: entityID.trim() } : {}),
+							...(nameIdFormat.trim() ? { name_id_format: nameIdFormat.trim() } : {}),
+							sign_requests: signRequests,
 							attribute_map: {
 								email: attrEmail.trim() || undefined,
 								username: attrUser.trim() || undefined,
@@ -157,7 +169,7 @@
 					type="text"
 					bind:value={displayName}
 					required
-					maxlength="60"
+					maxlength="64"
 					oninput={() => {
 						if (!editing && !slugTouched) slug = slugify(displayName);
 					}}
@@ -171,14 +183,15 @@
 					bind:value={slug}
 					required
 					readonly={editing}
-					pattern="[a-z0-9][a-z0-9-]*[a-z0-9]"
+					pattern={'[a-z0-9][a-z0-9\\-]{0,31}'}
+					maxlength="32"
 					spellcheck="false"
 					oninput={() => (slugTouched = true)}
 				/>
 				<small
 					>{editing
 						? 'Part of the callback URL, so it can’t change.'
-						: 'Part of the callback URL: lowercase letters, digits, dashes.'}</small
+						: 'Part of the callback URL: up to 32 lowercase letters, digits, dashes.'}</small
 				>
 			</label>
 		</div>
@@ -209,9 +222,9 @@
 					<input
 						type="password"
 						bind:value={clientSecret}
-						required={!editing || !o?.has_client_secret}
+						required={!editing || !hadSecret}
 						autocomplete="new-password"
-						placeholder={o?.has_client_secret ? 'Saved. Leave empty to keep it' : ''}
+						placeholder={hadSecret ? 'Saved. Leave empty to keep it' : ''}
 					/>
 					<small>Sent to the auth service only; never shown again.</small>
 				</label>
@@ -237,6 +250,10 @@
 						<label class="field">
 							<span>Email claim</span>
 							<input type="text" bind:value={emailClaim} placeholder="email" spellcheck="false" />
+						</label>
+						<label class="field">
+							<span>Display name claim</span>
+							<input type="text" bind:value={nameClaim} placeholder="name" spellcheck="false" />
 						</label>
 					</div>
 				</div>
@@ -306,6 +323,31 @@
 								spellcheck="false"
 							/></label
 						>
+					</div>
+					<div class="row2">
+						<label class="field">
+							<span>NameID format</span>
+							<input
+								type="text"
+								bind:value={nameIdFormat}
+								list="nameid-{uid}"
+								placeholder="The IdP’s default"
+								spellcheck="false"
+							/>
+							<datalist id="nameid-{uid}">
+								<option value="persistent"></option>
+								<option value="email"></option>
+								<option value="unspecified"></option>
+							</datalist>
+							<small>persistent, email, unspecified or a full URN.</small>
+						</label>
+						<div class="field sign">
+							<Toggle
+								label="Sign requests"
+								detail="Sign AuthnRequests with boson’s SP key; give the IdP the SP certificate."
+								bind:checked={signRequests}
+							/>
+						</div>
 					</div>
 					<label class="field">
 						<span>IdP entity ID</span>
@@ -452,6 +494,9 @@
 	input[readonly] {
 		color: var(--fg-quiet);
 		background: var(--bg);
+	}
+	.sign {
+		padding-top: var(--space-5);
 	}
 	.adv {
 		border-top: 1px solid var(--border-soft);

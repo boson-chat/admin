@@ -315,7 +315,11 @@ func (s *AdminService) ListAudit(ctx context.Context, sess *session.Session, f A
 	if limit <= 0 || limit > MaxAuditFetch {
 		limit = 100
 	}
-	q := authapi.AuditQuery{Event: f.Event, Actor: strings.TrimSpace(f.Actor), Target: strings.TrimSpace(f.Target),
+	events := expandEvents(f.Event)
+	if f.Event != "" && len(events) == 0 {
+		return &AuditResult{Entries: []AuditEntry{}, ServerFiltered: true}, nil // a prefix nothing matches
+	}
+	q := authapi.AuditQuery{Event: strings.Join(events, ","), Actor: strings.TrimSpace(f.Actor), Target: strings.TrimSpace(f.Target),
 		Since: f.Since, Until: f.Until, Cursor: f.Cursor, Limit: limit}
 	var page *authapi.AuditPage
 	err := s.call(ctx, sess, func(at string) (err error) { page, err = s.Client.QueryAudit(ctx, at, q); return })
@@ -381,14 +385,17 @@ func filterEntries(in []AuditEntry, keep func(AuditEntry) bool) []AuditEntry {
 	return out
 }
 
+// eventMatches applies an expanded comma list (see expandEvents) locally.
 func eventMatches(filter, event string) bool {
 	if filter == "" {
 		return true
 	}
-	if p, ok := strings.CutSuffix(filter, "*"); ok {
-		return strings.HasPrefix(event, p)
+	for _, f := range strings.Split(filter, ",") {
+		if f == event {
+			return true
+		}
 	}
-	return event == filter
+	return false
 }
 
 // resolveNames fills usernames for actors and targets, best effort.

@@ -3,6 +3,7 @@ package authapitest
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -119,9 +120,8 @@ func apply(p *authapi.SSOProviderConfig, in authapi.SSOProviderInput) {
 	}
 	if in.Config != nil {
 		if o := in.Config.OIDC; o != nil {
-			had := p.Config.OIDC != nil && p.Config.OIDC.HasClientSecret
 			c := *o
-			c.HasClientSecret = had || c.ClientSecret != ""
+			p.HasClientSecret = p.HasClientSecret || c.ClientSecret != ""
 			c.ClientSecret = ""
 			p.Config.OIDC = &c
 		}
@@ -131,10 +131,12 @@ func apply(p *authapi.SSOProviderConfig, in authapi.SSOProviderInput) {
 		}
 	}
 	base := "https://auth.example.com/v1/sso/" + p.Slug
+	p.StartURL = base + "/start"
 	if p.Kind == authapi.KindSAML {
-		p.ACSURL, p.SPMetadataURL, p.SPEntityID, p.CallbackURL = base+"/acs", base+"/metadata", base+"/metadata", ""
+		p.ACSURL, p.SPMetadataURL, p.SPEntityID, p.RedirectURI = base+"/saml/acs", base+"/saml/metadata", base+"/saml/metadata", ""
+		p.SPCertificate = "-----BEGIN CERTIFICATE-----\nMIIB…\n-----END CERTIFICATE-----\n"
 	} else {
-		p.CallbackURL, p.ACSURL, p.SPMetadataURL, p.SPEntityID = base+"/callback", "", "", ""
+		p.RedirectURI, p.ACSURL, p.SPMetadataURL, p.SPEntityID = base+"/callback", "", "", ""
 	}
 }
 
@@ -240,7 +242,7 @@ func (f *Fake) CreateUser(_ context.Context, at string, in authapi.CreateUser) (
 	if in.Password != nil {
 		f.Passwords[in.Username] = *in.Password
 	}
-	return &authapi.CreatedUser{User: *u, InviteSent: in.SendInviteEmail}, nil
+	return &authapi.CreatedUser{User: *u, InviteEmailSent: in.SendInviteEmail}, nil
 }
 
 func (f *Fake) userEmail(at, id, kind string) error {
@@ -294,7 +296,8 @@ func (f *Fake) QueryAudit(_ context.Context, at string, q authapi.AuditQuery) (*
 			continue
 		}
 		if !f.Legacy {
-			if q.Event != "" && !(e.Event == q.Event || (strings.HasSuffix(q.Event, "*") && strings.HasPrefix(e.Event, strings.TrimSuffix(q.Event, "*")))) {
+			// Like auth 1.3: event is an exact name or a comma list of them.
+			if q.Event != "" && !slices.Contains(strings.Split(q.Event, ","), e.Event) {
 				continue
 			}
 			if q.Target != "" && e.TargetUserID != q.Target {

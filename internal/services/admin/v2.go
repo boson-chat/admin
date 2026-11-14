@@ -72,7 +72,8 @@ func (s *AdminService) UpdateSettings(ctx context.Context, sess *session.Session
 
 // ---- SSO ----
 
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$`)
+// The auth service's rule: 1–32 of a-z, 0-9, -, starting with a letter or digit.
+var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 func httpsURL(v, name string) error {
 	u, err := url.Parse(v)
@@ -87,15 +88,15 @@ func validateProvider(in *authapi.SSOProviderInput, create bool) error {
 	if in.Slug != nil {
 		*in.Slug = strings.ToLower(strings.TrimSpace(*in.Slug))
 		if !slugRe.MatchString(*in.Slug) {
-			return apperr.Invalid("slug must be 2–40 lowercase letters, digits or dashes, e.g. google or acme-okta")
+			return apperr.Invalid("slug must be 1–32 lowercase letters, digits or dashes, e.g. google or acme-okta")
 		}
 	} else if create {
 		return apperr.Invalid("slug is required")
 	}
 	if in.DisplayName != nil {
 		*in.DisplayName = strings.TrimSpace(*in.DisplayName)
-		if *in.DisplayName == "" || len(*in.DisplayName) > 60 {
-			return apperr.Invalid("display name must be 1–60 characters")
+		if *in.DisplayName == "" || len([]rune(*in.DisplayName)) > 64 {
+			return apperr.Invalid("display name must be 1–64 characters")
 		}
 	} else if create {
 		return apperr.Invalid("display name is required")
@@ -129,7 +130,6 @@ func validateProvider(in *authapi.SSOProviderInput, create bool) error {
 		if create && o.ClientSecret == "" {
 			return apperr.Invalid("client secret is required")
 		}
-		o.HasClientSecret = false // response-only
 		scopes := o.Scopes[:0]
 		for _, sc := range o.Scopes {
 			if sc = strings.TrimSpace(sc); sc != "" && !slices.Contains(scopes, sc) {
@@ -185,7 +185,7 @@ func (s *AdminService) CreateSSOProvider(ctx context.Context, sess *session.Sess
 	}
 	var out *authapi.SSOProviderConfig
 	err := s.call(ctx, sess, func(at string) (err error) { out, err = s.Client.CreateSSOProvider(ctx, at, in); return })
-	return out, err
+	return out, friendly(err)
 }
 
 func (s *AdminService) UpdateSSOProvider(ctx context.Context, sess *session.Session, id string, in authapi.SSOProviderInput) (*authapi.SSOProviderConfig, error) {
@@ -206,7 +206,7 @@ func (s *AdminService) UpdateSSOProvider(ctx context.Context, sess *session.Sess
 	in.Kind = nil
 	var out *authapi.SSOProviderConfig
 	err := s.call(ctx, sess, func(at string) (err error) { out, err = s.Client.UpdateSSOProvider(ctx, at, id, in); return })
-	return out, err
+	return out, friendly(err)
 }
 
 func (s *AdminService) DeleteSSOProvider(ctx context.Context, sess *session.Session, id string) error {
@@ -248,15 +248,34 @@ func (s *AdminService) CreateUser(ctx context.Context, sess *session.Session, in
 	}
 	var out *authapi.CreatedUser
 	err := s.call(ctx, sess, func(at string) (err error) { out, err = s.Client.CreateUser(ctx, at, in); return })
-	return out, err
+	return out, friendly(err)
 }
 
 func (s *AdminService) SendPasswordReset(ctx context.Context, sess *session.Session, id string) error {
-	return s.call(ctx, sess, func(at string) error { return s.Client.SendPasswordReset(ctx, at, id) })
+	return friendly(s.call(ctx, sess, func(at string) error { return s.Client.SendPasswordReset(ctx, at, id) }))
 }
 
 func (s *AdminService) ResendVerification(ctx context.Context, sess *session.Session, id string) error {
-	return s.call(ctx, sess, func(at string) error { return s.Client.ResendVerification(ctx, at, id) })
+	return friendly(s.call(ctx, sess, func(at string) error { return s.Client.ResendVerification(ctx, at, id) }))
+}
+
+// friendlyMessages rewrite the auth service's admin errors for the panel.
+var friendlyMessages = map[string]string{
+	"no_email":         "This account has no email address, so there is nowhere to send the link. Add one or set a password instead.",
+	"already_verified": "Their email address is already verified; there is nothing to resend.",
+	"account_disabled": "This account is disabled. Enable it first, then send the email.",
+	"slug_taken":       "Another provider already uses that slug. Pick a different one; it becomes part of the callback URL.",
+	"username_taken":   "That username is taken. Usernames are also IRC nicks, so they must be unique.",
+	"email_taken":      "Another account already uses that email address.",
+}
+
+func friendly(err error) error {
+	if e, ok := apperr.As(err); ok && e.Status < 500 {
+		if msg, ok := friendlyMessages[e.Code]; ok {
+			return apperr.New(e.Status, e.Code, msg)
+		}
+	}
+	return err
 }
 
 func (s *AdminService) AccessToken(ctx context.Context, sess *session.Session) (string, error) {

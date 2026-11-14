@@ -66,7 +66,7 @@ func TestV2WireFormat(t *testing.T) {
 		case "PATCH /v1/admin/settings":
 			_, _ = w.Write([]byte(`{"registration":"closed","require_email_verification":true,"channel_creation":"admins","voice_channel_creation":"founders","updated_at":"2026-11-13T10:00:00Z","updated_by":"usr_1"}`))
 		case "GET /v1/admin/sso/providers":
-			_, _ = w.Write([]byte(`{"providers":[{"id":"idp_1","slug":"google","kind":"oidc","display_name":"Google","enabled":true,"config":{"oidc":{"issuer":"https://accounts.google.com","client_id":"cid","has_client_secret":true,"scopes":["openid","email"]}},"callback_url":"https://auth.example.com/v1/sso/google/callback"}]}`))
+			_, _ = w.Write([]byte(`{"providers":[{"id":"idp_1","slug":"google","kind":"oidc","display_name":"Google","enabled":true,"config":{"issuer":"https://accounts.google.com","client_id":"cid","has_client_secret":true,"scopes":["openid","email"]},"has_client_secret":true,"redirect_uri":"https://auth.example.com/v1/sso/google/callback"},{"id":"idp_2","slug":"okta","kind":"saml","display_name":"Okta","config":{"idp_metadata_url":"https://o.example/md","attribute_map":{"email":"email"},"sign_requests":true},"sp_certificate":"PEM"}]}`))
 		case "POST /v1/admin/sso/providers/idp_1/test":
 			_, _ = w.Write([]byte(`{"ok":false,"details":"issuer unreachable"}`))
 		case "GET /v1/admin/users/usr_1":
@@ -95,8 +95,11 @@ func TestV2WireFormat(t *testing.T) {
 		t.Fatalf("patch body %s", got)
 	}
 	list, err := c.ListSSOProviders(ctx, "t")
-	if err != nil || len(list) != 1 || !list[0].Config.OIDC.HasClientSecret || list[0].Config.OIDC.ClientSecret != "" {
+	if err != nil || len(list) != 2 || !list[0].HasClientSecret || list[0].Config.OIDC.Issuer != "https://accounts.google.com" || list[0].RedirectURI == "" {
 		t.Fatalf("providers: %v %+v", err, list)
+	}
+	if sm := list[1].Config.SAML; sm == nil || !sm.SignRequests || sm.AttributeMap.Email != "email" || list[1].SPCertificate != "PEM" {
+		t.Fatalf("saml provider: %+v", list[1])
 	}
 	res, err := c.TestSSOProvider(ctx, "t", "idp_1")
 	if err != nil || res.OK || string(res.Details) != `"issuer unreachable"` {
@@ -115,13 +118,20 @@ func TestV2WireFormat(t *testing.T) {
 	if err != nil || !p.Supported || p.NextCursor != "c2" || p.Entries[0].ActorUsername != "ana" {
 		t.Fatalf("audit: %v %+v", err, p)
 	}
-	var secret struct {
-		Config ProviderSettings `json:"config"`
-	}
+	// The auth service takes a flat config; a PATCH sends cleared optional
+	// keys as null and leaves client_secret out unless it changes.
 	in := SSOProviderInput{Config: &ProviderSettings{OIDC: &OIDCConfig{Issuer: "i", ClientID: "c", ClientSecret: "s"}}}
-	b, _ := json.Marshal(in)
-	_ = json.Unmarshal(b, &secret)
-	if secret.Config.OIDC.ClientSecret != "s" {
-		t.Fatalf("client_secret not sent on write: %s", b)
+	b, _ := json.Marshal(in.wire(false))
+	if string(b) != `{"config":{"client_id":"c","client_secret":"s","issuer":"i"}}` {
+		t.Fatalf("create body: %s", b)
+	}
+	in.Config.OIDC.ClientSecret = ""
+	b, _ = json.Marshal(in.wire(true))
+	if string(b) != `{"config":{"client_id":"c","display_name_claim":null,"email_claim":null,"issuer":"i","scopes":null,"username_claim":null}}` {
+		t.Fatalf("patch body: %s", b)
+	}
+	b, _ = json.Marshal(SSOProviderInput{Config: &ProviderSettings{SAML: &SAMLConfig{IDPMetadataXML: "<x/>"}}}.wire(true))
+	if string(b) != `{"config":{"attribute_map":{},"entity_id":null,"idp_metadata_url":null,"idp_metadata_xml":"\u003cx/\u003e","name_id_format":null,"sign_requests":false}}` {
+		t.Fatalf("saml patch body: %s", b)
 	}
 }

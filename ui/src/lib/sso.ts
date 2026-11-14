@@ -1,7 +1,7 @@
 import type { ProviderKind } from './types';
 
 /** Where a guide step needs one of the URLs the auth service hands out. */
-export type UrlRef = 'callback_url' | 'acs_url' | 'sp_entity_id' | 'sp_metadata_url';
+export type UrlRef = 'redirect_uri' | 'acs_url' | 'sp_entity_id' | 'sp_metadata_url' | 'sp_certificate';
 
 export interface GuideStep {
 	text: string;
@@ -40,7 +40,7 @@ export const presets: Preset[] = [
 				text: 'In the Google Cloud console open APIs & Services → OAuth consent screen and set it up (External for any Google account, Internal for your Workspace only).'
 			},
 			{ text: 'Go to Credentials → Create credentials → OAuth client ID, application type Web application.' },
-			{ text: 'Add this as an authorised redirect URI:', url: 'callback_url' },
+			{ text: 'Add this as an authorised redirect URI:', url: 'redirect_uri' },
 			{ text: 'Copy the client ID and client secret into this form.' }
 		]
 	},
@@ -57,7 +57,7 @@ export const presets: Preset[] = [
 			{
 				text: 'In the admin interface open Applications → Providers → Create, and pick OAuth2/OpenID Provider.'
 			},
-			{ text: 'Client type Confidential. Add this redirect URI (strict):', url: 'callback_url' },
+			{ text: 'Client type Confidential. Add this redirect URI (strict):', url: 'redirect_uri' },
 			{
 				text: 'Create an Application that uses the provider. Its slug is part of the issuer: https://<authentik>/application/o/<slug>/.'
 			},
@@ -75,7 +75,7 @@ export const presets: Preset[] = [
 		scopes: 'openid email profile',
 		guide: [
 			{ text: 'In your project choose New → Application → Web, authentication method Code.' },
-			{ text: 'Add this redirect URI:', url: 'callback_url' },
+			{ text: 'Add this redirect URI:', url: 'redirect_uri' },
 			{
 				text: 'Copy the client ID and secret. The issuer is your instance domain, e.g. https://example-abc123.zitadel.cloud.'
 			}
@@ -94,7 +94,7 @@ export const presets: Preset[] = [
 			{ text: 'In your realm open Clients → Create client, type OpenID Connect.' },
 			{
 				text: 'Turn on Client authentication and keep Standard flow on. Add this as a valid redirect URI:',
-				url: 'callback_url'
+				url: 'redirect_uri'
 			},
 			{ text: 'Copy the secret from the Credentials tab. The issuer is https://<keycloak>/realms/<realm>.' }
 		]
@@ -110,7 +110,7 @@ export const presets: Preset[] = [
 		scopes: 'openid email profile',
 		guide: [
 			{ text: 'Register a confidential web client (authorisation code flow) with your provider.' },
-			{ text: 'Use this redirect URI:', url: 'callback_url' },
+			{ text: 'Use this redirect URI:', url: 'redirect_uri' },
 			{
 				text: 'The issuer must serve /.well-known/openid-configuration. Copy the client ID and secret into this form.'
 			}
@@ -188,7 +188,8 @@ export const presets: Preset[] = [
 ];
 
 export const urlLabels: Record<UrlRef, string> = {
-	callback_url: 'Redirect (callback) URL',
+	redirect_uri: 'Redirect URI',
+	sp_certificate: 'SP certificate',
 	acs_url: 'ACS URL',
 	sp_entity_id: 'SP entity ID',
 	sp_metadata_url: 'SP metadata URL'
@@ -204,6 +205,18 @@ export function slugify(name: string): string {
 		.replace(/^-+|-+$/g, '')
 		.slice(0, 40)
 		.replace(/-+$/, '');
+}
+
+/** Readable lines for a provider test's details (a string or an object). */
+export function detailLines(d: unknown): [string, string][] {
+	if (d === undefined || d === null || d === '') return [];
+	if (typeof d !== 'object') return [['', String(d)]];
+	return Object.entries(d as Record<string, unknown>)
+		.filter(([, v]) => v !== '' && v !== null && v !== undefined)
+		.map(([k, v]) => [
+			k.replaceAll('_', ' '),
+			Array.isArray(v) ? v.join(', ') : typeof v === 'object' ? JSON.stringify(v) : String(v)
+		]);
 }
 
 /** Picks the preset that best matches a saved provider (for its guide). */

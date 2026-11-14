@@ -43,7 +43,7 @@ func TestUserEndpoints(t *testing.T) {
 	h := newHarness(t)
 	c, csrf := h.login()
 	w := h.do("POST", "/api/users", map[string]any{"username": "ana", "email": "ana@example.com", "send_invite_email": true}, withCookie(c), withHeader(CSRFHeader, csrf))
-	if w.Code != 201 || !strings.Contains(w.Body.String(), `"invite_sent":true`) {
+	if w.Code != 201 || !strings.Contains(w.Body.String(), `"invite_email_sent":true`) {
 		t.Fatalf("create user: %d %s", w.Code, w.Body)
 	}
 	if w := h.do("POST", "/api/users/usr_bob/password-reset", nil, withCookie(c), withHeader(CSRFHeader, csrf)); w.Code != 204 {

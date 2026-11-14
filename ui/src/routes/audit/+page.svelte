@@ -46,17 +46,17 @@
 	let eventOptions = $derived<DropdownOption[]>([
 		{ value: '', label: 'All events', group: 'Groups' },
 		{
-			value: 'admin_*',
+			value: 'admin_*,settings_updated,sso_provider_*',
 			label: 'Admin actions',
-			description: 'Roles, disables, invites, settings, providers',
+			description: 'Accounts, roles, invites, settings, sign-in providers',
 			group: 'Groups'
 		},
-		{ value: 'login*', label: 'Sign-ins and failures', group: 'Groups' },
-		{ value: 'sso_*', label: 'SSO sign-ins and links', group: 'Groups' },
-		{ value: 'password_*', label: 'Password changes and resets', group: 'Groups' },
+		{ value: 'login,login_failed,sso_login_failed', label: 'Sign-ins and failures', group: 'Groups' },
+		{ value: 'sso_identity_*,sso_login_failed', label: 'SSO links and failures', group: 'Groups' },
+		{ value: 'password_*,admin_password_reset_sent', label: 'Password changes and resets', group: 'Groups' },
 		...events.map((ev) => ({ value: ev, label: eventName(ev), description: ev, group: 'Single event' })),
 		// keep a filter from the URL selectable before the event list loads
-		...(event && !event.endsWith('*') && !events.includes(event)
+		...(event && !event.includes('*') && !event.includes(',') && !events.includes(event)
 			? [{ value: event, label: eventName(event), description: event, group: 'Single event' }]
 			: [])
 	]);

@@ -164,6 +164,13 @@
 					{user.username}
 					{#if user.role === 'admin'}<span class="tag tag-accent">Admin</span>{/if}
 					{#if user.disabled_at}<span class="tag tag-bad">Disabled</span>{/if}
+					{#if user.has_password === false}
+						{#if user.identities?.length}<span class="tag" title="Signs in only through a sign-in provider"
+								>SSO only</span
+							>{:else}<span class="tag tag-warn" title="No password and no linked sign-in yet"
+								>No password yet</span
+							>{/if}
+					{/if}
 					{#if self}<span class="tag">You</span>{/if}
 				</h1>
 				{#if user.display_name && user.display_name !== user.username}<p>{user.display_name}</p>{/if}
@@ -347,11 +354,24 @@
 		</div>
 		{#if user.identities === undefined}
 			<State kind="unsupported" title="Not reported by this auth service">
-				Linked SSO accounts are listed once the auth service is updated (auth ≥ v1.3.0).
+				Linked SSO accounts are listed once the auth service is updated (auth ≥ v1.4.0).
 			</State>
 		{:else if user.identities.length === 0}
-			<p class="muted small">None. {user.username} signs in with a password only.</p>
+			<p class="muted small">
+				{#if user.has_password === false}
+					None, and no password yet: {user.username} can sign in once they set one from the emailed link or a password
+					reset.
+				{:else}
+					None. {user.username} signs in with a password only.
+				{/if}
+			</p>
 		{:else}
+			{#if user.has_password === false}
+				<p class="small sso-only">
+					SSO only: {user.username} has no password. Removing these sign-ins or their provider locks them out until
+					they reset one.
+				</p>
+			{/if}
 			<div class="table-wrap">
 				<table>
 					<thead>
@@ -366,11 +386,13 @@
 						{#each user.identities as ident (ident.id)}
 							<tr>
 								<td>
-									{ident.provider_name || ident.provider_slug || 'Provider'}
-									{#if ident.kind}<span class="tag">{ident.kind.toUpperCase()}</span>{/if}
+									<a href="/sso/{encodeURIComponent(ident.provider_id)}"
+										>{ident.provider_display_name || ident.provider_slug}</a
+									>
+									{#if ident.provider_kind}<span class="tag">{ident.provider_kind.toUpperCase()}</span>{/if}
 								</td>
 								<td class="hide-s mono">
-									{ident.email || ident.subject}
+									{ident.email ?? ident.subject}
 									{#if ident.email}<div class="muted small">{ident.subject}</div>{/if}
 								</td>
 								<td><Time at={ident.last_login_at} empty="Never" /></td>
@@ -505,6 +527,11 @@
 	.sub {
 		margin: var(--space-6) 0 var(--space-3);
 		font-size: var(--text-sm);
+	}
+	.sso-only {
+		margin-bottom: var(--space-3);
+		color: var(--warn-text);
+		font-family: var(--font-mono);
 	}
 	.servers {
 		list-style: none;

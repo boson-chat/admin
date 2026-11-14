@@ -7,20 +7,22 @@ export interface User {
 	role: 'user' | 'admin';
 	created_at: string;
 	disabled_at?: string;
-	/** Linked SSO sign-ins; absent on auth releases that don't report them. */
+	/** Linked SSO sign-ins; absent on auth releases that don't report them (< 1.4.0). */
 	identities?: Identity[];
+	/** False for SSO-only accounts; absent on auth < 1.4.0. */
+	has_password?: boolean;
 }
 
 export interface Identity {
 	id: string;
-	provider_id?: string;
-	provider_slug?: string;
-	provider_name?: string;
-	kind?: string;
+	provider_id: string;
+	provider_slug: string;
+	provider_kind: 'oidc' | 'saml' | string;
+	provider_display_name: string;
 	subject: string;
-	email?: string;
+	email: string | null;
 	created_at?: string;
-	last_login_at?: string;
+	last_login_at: string | null;
 }
 
 export interface Features {
@@ -102,11 +104,12 @@ export interface NetworkSettings {
 export interface OIDCConfig {
 	issuer: string;
 	client_id: string;
+	/** Write-only; sent only when changed. */
 	client_secret?: string;
-	has_client_secret?: boolean;
 	scopes?: string[];
 	username_claim?: string;
 	email_claim?: string;
+	display_name_claim?: string;
 }
 
 export interface SAMLConfig {
@@ -114,6 +117,8 @@ export interface SAMLConfig {
 	idp_metadata_xml?: string;
 	entity_id?: string;
 	attribute_map: { email?: string; username?: string; display_name?: string };
+	name_id_format?: string;
+	sign_requests?: boolean;
 }
 
 export type ProviderKind = 'oidc' | 'saml';
@@ -127,10 +132,15 @@ export interface SSOProvider {
 	allow_signup: boolean;
 	trust_email: boolean;
 	config: { oidc?: OIDCConfig; saml?: SAMLConfig };
-	callback_url?: string;
+	has_client_secret: boolean;
+	start_url?: string;
+	/** OIDC: the redirect (callback) URI to register at the IdP. */
+	redirect_uri?: string;
 	sp_metadata_url?: string;
 	acs_url?: string;
 	sp_entity_id?: string;
+	/** SAML: the SP signing certificate (PEM), for IdPs that want it. */
+	sp_certificate?: string;
 	created_at?: string;
 	updated_at?: string;
 }

@@ -19,6 +19,8 @@ type User struct {
 	// Identities are linked SSO sign-ins. nil = the auth release doesn't
 	// report them (older than RequiresIdentities); empty = none linked.
 	Identities *[]Identity `json:"identities,omitempty"`
+	// HasPassword: false for SSO-only accounts (auth >= 1.4.0 reports it).
+	HasPassword *bool `json:"has_password,omitempty"`
 }
 
 // Tokens is the login / refresh response.

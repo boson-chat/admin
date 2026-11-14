@@ -232,13 +232,17 @@ func (c *AuthClient) ListUsers(ctx context.Context, at, query string, limit, off
 
 type userEnvelope struct {
 	User User `json:"user"`
-	// Identities may sit next to the user or inside it.
-	Identities *[]Identity `json:"identities"`
+	// Identities and HasPassword sit next to the user (auth >= 1.4.0).
+	Identities  *[]Identity `json:"identities"`
+	HasPassword *bool       `json:"has_password"`
 }
 
 func (e *userEnvelope) merge() *User {
 	if e.User.Identities == nil && e.Identities != nil {
 		e.User.Identities = e.Identities
+	}
+	if e.User.HasPassword == nil {
+		e.User.HasPassword = e.HasPassword
 	}
 	return &e.User
 }

@@ -5,11 +5,12 @@
 	import type { SSOProvider } from '$lib/types';
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
+	import TestResult from '$lib/components/TestResult.svelte';
 
 	let providers = $state<SSOProvider[] | null>(null);
 	let error = $state('');
 	let unsupported = $state('');
-	let tests = $state<Record<string, { busy: boolean; ok?: boolean; details?: string }>>({});
+	let tests = $state<Record<string, { busy: boolean; ok?: boolean; details?: unknown }>>({});
 
 	async function load() {
 		error = '';
@@ -22,11 +23,6 @@
 	}
 	onMount(load);
 
-	function detailText(d: unknown): string {
-		if (d === undefined || d === null) return '';
-		return typeof d === 'string' ? d : JSON.stringify(d);
-	}
-
 	async function test(p: SSOProvider) {
 		tests[p.id] = { busy: true };
 		try {
@@ -34,7 +30,7 @@
 				'POST',
 				`/sso/providers/${encodeURIComponent(p.id)}/test`
 			);
-			tests[p.id] = { busy: false, ok: r.ok, details: detailText(r.details) };
+			tests[p.id] = { busy: false, ok: r.ok, details: r.details };
 		} catch (e) {
 			tests[p.id] = { busy: false, ok: false, details: errorText(e) };
 		}
@@ -116,10 +112,7 @@
 					<a class="btn btn-small btn-ghost" href="/sso/{encodeURIComponent(p.id)}">Edit</a>
 				</div>
 				{#if t && !t.busy}
-					<p class="result" class:ok={t.ok} role="status">
-						<strong>{t.ok ? 'Works.' : 'Failed.'}</strong>
-						{t.details}
-					</p>
+					<div class="res"><TestResult ok={!!t.ok} details={t.details} /></div>
 				{/if}
 			</li>
 		{/each}
@@ -181,25 +174,8 @@
 		flex-wrap: wrap;
 		justify-content: flex-end;
 	}
-	.result {
+	.res {
 		grid-column: 1 / -1;
-		font-size: var(--text-sm);
-		font-family: var(--font-mono);
-		padding: var(--space-2) var(--space-3);
-		border-left: 3px solid var(--danger);
-		background: color-mix(in oklab, var(--danger), transparent 92%);
-		color: var(--fg-2);
-		overflow-wrap: anywhere;
-	}
-	.result strong {
-		color: var(--danger-text);
-	}
-	.result.ok {
-		border-left-color: var(--success);
-		background: color-mix(in oklab, var(--success), transparent 92%);
-	}
-	.result.ok strong {
-		color: var(--success-text);
 	}
 	@media (max-width: 640px) {
 		li {

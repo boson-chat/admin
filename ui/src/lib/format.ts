@@ -89,14 +89,15 @@ const eventNames: Record<string, string> = {
 	admin_session_revoked: 'Revoked a user session',
 	admin_invite_created: 'Created an invite',
 	admin_invite_revoked: 'Revoked an invite',
-	admin_settings_changed: 'Changed network settings',
-	admin_sso_provider_created: 'Added a sign-in provider',
-	admin_sso_provider_updated: 'Changed a sign-in provider',
-	admin_sso_provider_deleted: 'Removed a sign-in provider',
+	settings_updated: 'Changed network settings',
+	sso_provider_created: 'Added a sign-in provider',
+	sso_provider_updated: 'Changed a sign-in provider',
+	sso_provider_deleted: 'Removed a sign-in provider',
 	admin_password_reset_sent: 'Sent a password reset',
 	admin_verification_sent: 'Resent a verification email',
-	sso_login: 'Signed in with SSO',
-	sso_linked: 'Linked an SSO identity',
+	sso_identity_linked: 'Linked an SSO sign-in',
+	sso_identity_unlinked: 'Unlinked an SSO sign-in',
+	sso_login_failed: 'Failed SSO sign-in',
 	signing_key_created: 'Created a signing key'
 };
 export function eventName(e: string): string {
@@ -105,8 +106,14 @@ export function eventName(e: string): string {
 
 /** Tone of an audit event for its marker. */
 export function eventTone(e: string): 'bad' | 'admin' | 'plain' {
-	if (e === 'login_failed' || e === 'refresh_token_reuse') return 'bad';
-	if (e.startsWith('admin_') || e === 'signing_key_created') return 'admin';
+	if (e === 'login_failed' || e === 'refresh_token_reuse' || e === 'sso_login_failed') return 'bad';
+	if (
+		e.startsWith('admin_') ||
+		e.startsWith('sso_provider_') ||
+		e === 'settings_updated' ||
+		e === 'signing_key_created'
+	)
+		return 'admin';
 	return 'plain';
 }
 
