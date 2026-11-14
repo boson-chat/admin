@@ -82,3 +82,50 @@ describe('network settings: channel registration', () => {
 		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { channel_creation: 'admins' });
 	});
 });
+
+describe('network settings: guest access', () => {
+	beforeEach(() => api.mockReset());
+	const guestSwitch = () => screen.getByRole('switch', { name: /Guest access/ });
+
+	it('turns guest access off and sends only guest_access', async () => {
+		serve({ ...base, channel_auto_register: true, channel_expiry_days: 0, guest_access: true });
+		const user = userEvent.setup();
+		render(Page);
+		const sw = (await screen.findByRole('switch', { name: /Guest access/ })) as HTMLInputElement;
+		expect(sw.checked).toBe(true);
+		expect(sw.hasAttribute('disabled')).toBe(false);
+		expect(screen.queryByText(/Requires auth 1.8/)).toBeNull();
+
+		await user.click(sw);
+		expect(screen.getByText(/refuse connections that don’t sign in/)).toBeTruthy();
+		expect(screen.getByText('One unsaved change')).toBeTruthy();
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: false });
+		expect((guestSwitch() as HTMLInputElement).checked).toBe(false);
+	});
+
+	it('shows a stored false and turns guests back on', async () => {
+		serve({ ...base, guest_access: false });
+		const user = userEvent.setup();
+		render(Page);
+		const sw = (await screen.findByRole('switch', { name: /Guest access/ })) as HTMLInputElement;
+		expect(sw.checked).toBe(false);
+		expect(screen.getByText(/IRC refuses connections that don’t sign in/)).toBeTruthy();
+		await user.click(sw);
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: true });
+	});
+
+	it('disables the toggle on auth older than 1.8 and never sends it', async () => {
+		serve({ ...base, channel_auto_register: true, channel_expiry_days: 0 });
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByText(/Requires auth 1.8 or newer/)).toBeTruthy();
+		expect(guestSwitch().hasAttribute('disabled')).toBe(true);
+		expect((guestSwitch() as HTMLInputElement).checked).toBe(true);
+
+		await user.click(screen.getByRole('switch', { name: /Require a verified email/ }));
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { require_email_verification: true });
+	});
+});

@@ -63,6 +63,11 @@ func (f *Fake) UpdateSettings(_ context.Context, at string, p authapi.SettingsPa
 		v := *p.ChannelExpiryDays
 		f.Settings.ChannelExpiryDays = &v
 	}
+	// An auth < 1.8 ignores guest_access.
+	if p.GuestAccess != nil && f.Settings.GuestAccess != nil {
+		v := *p.GuestAccess
+		f.Settings.GuestAccess = &v
+	}
 	now := time.Now().UTC()
 	uid := f.access[at]
 	f.Settings.UpdatedAt, f.Settings.UpdatedBy = &now, &uid

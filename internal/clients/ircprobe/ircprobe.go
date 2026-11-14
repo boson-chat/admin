@@ -1,6 +1,7 @@
 // Package ircprobe checks that an IRC server answers: it connects (TLS or
 // plaintext), asks for the server's capabilities (CAP LS 302) and, if that
 // works, registers briefly to read the server version from RPL_MYINFO (004).
+// A server that requires a login (no guests) is up, without a version.
 package ircprobe
 
 import (
@@ -131,6 +132,13 @@ func (p *IRCProber) Probe(ctx context.Context, address, serverName string, useTL
 			}
 			quit(conn, r, send)
 			return res
+		case "FAIL":
+			// Ergo with guests off (accounts.require-sasl): the probe has no
+			// account, so it can't register. The server is up all the same.
+			if len(m.params) >= 2 && m.params[1] == "ACCOUNT_REQUIRED" {
+				res.Detail = "connected; no version (guests are off, the server requires a login)"
+				return res
+			}
 		case "ERROR", "432", "433", "465":
 			res.Detail = "connected; registration refused (" + m.command + ")"
 			return res

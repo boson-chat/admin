@@ -36,8 +36,15 @@
 	let lifecycleSupported = $derived(autoSupported || expirySupported);
 	let customError = $derived(expirySupported && expiry === 'custom' ? customDaysError(customDays) : '');
 
+	// Guest access (auth ≥ 1.8). Older auth doesn't send it: IRC follows its
+	// own default (guests allowed unless IRC_REQUIRE_SASL), and the toggle is
+	// disabled and never sent.
+	let guestAccess = $state(true);
+	let guestSupported = $derived(typeof saved?.guest_access === 'boolean');
+
 	function reset(s: NetworkSettings) {
 		draft = { ...s };
+		guestAccess = s.guest_access ?? true;
 		autoRegister = s.channel_auto_register ?? true;
 		const days = s.channel_expiry_days ?? 0;
 		expiry = expiryChoice(days);
@@ -117,6 +124,7 @@
 		for (const k of keys) if (draft[k] !== saved[k]) Object.assign(out, { [k]: draft[k] });
 		if (autoSupported && autoRegister !== saved.channel_auto_register)
 			out.channel_auto_register = autoRegister;
+		if (guestSupported && guestAccess !== saved.guest_access) out.guest_access = guestAccess;
 		const days = expiryDays(expiry, customDays);
 		if (expirySupported && days !== null && days !== saved.channel_expiry_days)
 			out.channel_expiry_days = days;
@@ -186,6 +194,32 @@
 					detail="New accounts must click the link in their verification email before they can sign in."
 					bind:checked={draft.require_email_verification}
 				/>
+			</div>
+			<div class="guest" class:off={guestSupported && !guestAccess}>
+				<div class="toggle-row">
+					<Toggle
+						label="Guest access: let people join without an account"
+						detail="Anyone can connect to IRC with just a nickname. Guests can chat in channels, but can’t register channels or use voice rooms and roles. Turn this off to require everyone to sign in."
+						disabled={!guestSupported}
+						bind:checked={guestAccess}
+					/>
+				</div>
+				{#if !guestSupported}
+					<Notice tone="info">
+						Requires auth 1.8 or newer. Until then IRC follows the stack’s
+						<code>IRC_REQUIRE_SASL</code> setting, which allows guests unless it’s set.
+					</Notice>
+				{:else if !guestAccess}
+					<p class="hint" aria-live="polite">
+						{#if saved?.guest_access}
+							IRC will refuse connections that don’t sign in, within about 30 seconds of saving. Guests
+							already connected stay until they leave.
+						{:else}
+							IRC refuses connections that don’t sign in.
+						{/if}
+						People with an account sign in as usual from the app, web and IRC clients.
+					</p>
+				{/if}
 			</div>
 		</section>
 
@@ -316,6 +350,10 @@
 	section {
 		display: grid;
 		gap: var(--space-8);
+	}
+	.guest {
+		display: grid;
+		gap: var(--space-2);
 	}
 	.toggle-row {
 		padding: var(--space-4);

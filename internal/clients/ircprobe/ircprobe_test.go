@@ -131,6 +131,32 @@ func TestProbeUpWithoutVersion(t *testing.T) {
 	}
 }
 
+func TestProbeLoginRequired(t *testing.T) {
+	// Ergo with accounts.require-sasl (guest access off): CAP LS works, then
+	// registration is refused with FAIL ACCOUNT_REQUIRED and ERROR.
+	addr, _ := fakeIRC(t, false, func(r *bufio.Reader, w net.Conn) {
+		write := func(s string) { _, _ = w.Write([]byte(s + "\r\n")) }
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "CAP LS"):
+				write(":irc.test CAP * LS :sasl=PLAIN server-time")
+			case strings.HasPrefix(line, "USER"):
+				write(":irc.test FAIL * ACCOUNT_REQUIRED :You must log in with SASL to join this server")
+				write("ERROR :You must log in with SASL to join this server")
+				return
+			}
+		}
+	})
+	r := NewIRCProber(2*time.Second).Probe(context.Background(), addr, "", false)
+	if !r.OK || r.Version != "" || !strings.Contains(r.Detail, "requires a login") {
+		t.Fatalf("got %+v", r)
+	}
+}
+
 func TestProbeSilentServer(t *testing.T) {
 	addr, _ := fakeIRC(t, false, func(r *bufio.Reader, _ net.Conn) { _, _ = r.ReadString(0) })
 	r := NewIRCProber(200*time.Millisecond).Probe(context.Background(), addr, "", false)

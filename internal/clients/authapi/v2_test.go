@@ -192,3 +192,41 @@ func TestSettingsChannelLifecycle(t *testing.T) {
 		t.Fatalf("invalid: %v", err)
 	}
 }
+
+// auth 1.8 adds guest_access; 1.7 and older don't send it, which must read
+// as "unknown", not false (false would mean "no guests").
+func TestSettingsGuestAccess(t *testing.T) {
+	var get, patched string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(get))
+		case http.MethodPatch:
+			b, _ := io.ReadAll(r.Body)
+			patched = string(b)
+			_, _ = w.Write([]byte(`{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","guest_access":false}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewAuthClient(srv.URL, time.Second, nil)
+	ctx := context.Background()
+
+	get = `{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","guest_access":true}`
+	s, err := c.GetSettings(ctx, "t")
+	if err != nil || s.GuestAccess == nil || !*s.GuestAccess {
+		t.Fatalf("auth 1.8 settings: %v %+v", err, s)
+	}
+	get = `{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","channel_auto_register":true}`
+	s, err = c.GetSettings(ctx, "t")
+	if err != nil || s.GuestAccess != nil {
+		t.Fatalf("auth 1.7 settings: %v %+v", err, s)
+	}
+	if b, _ := json.Marshal(s); strings.Contains(string(b), "guest_access") {
+		t.Fatalf("unknown guest_access re-encoded: %s", b)
+	}
+	// false is a real value and must be sent.
+	s, err = c.UpdateSettings(ctx, "t", SettingsPatch{GuestAccess: new(false)})
+	if err != nil || patched != `{"guest_access":false}` || s.GuestAccess == nil || *s.GuestAccess {
+		t.Fatalf("patch: %v %s %+v", err, patched, s)
+	}
+}
