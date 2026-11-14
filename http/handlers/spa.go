@@ -62,6 +62,9 @@ func (s *SPA) CSP(connect ...string) string {
 		"style-src 'self' 'unsafe-inline'",
 		"img-src " + img,
 		"font-src 'self'",
+		// The Emails page compiles MJML in a bundled worker file
+		// (no blob: workers, no eval).
+		"worker-src 'self'",
 		"connect-src " + conn,
 		"frame-ancestors 'none'",
 		"base-uri 'none'",

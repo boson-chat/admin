@@ -172,7 +172,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	if up.AuthInternalURL != "" {
 		email = authapi.NewEmailClient(up.AuthInternalURL, up.InternalAPIToken, max(up.Timeout, 20*time.Second), upstream("auth_internal"))
 	}
-	brandingSvc := branding.NewBrandingService(branding.Options{Config: stack, Dir: cfg.StackConfig.BrandingDir, Email: email,
+	brandingSvc := branding.NewBrandingService(branding.Options{Config: stack, Dir: cfg.StackConfig.BrandingDir, EmailsDir: cfg.StackConfig.EmailsDir, Email: email,
 		Public: authapi.NewBrandingClient(up.AuthURL, up.Timeout, observe)})
 	h.Branding = brandingSvc
 	if bc.DirectoryURL != "" {

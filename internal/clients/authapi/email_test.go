@@ -126,6 +126,60 @@ func TestEmailPreviewOverrides(t *testing.T) {
 	}
 }
 
+// The default MJML comes as JSON {mjml} or as the source itself; the
+// unsaved HTML goes along with a preview and warnings come back.
+func TestEmailDefaultMJMLAndCustomHTML(t *testing.T) {
+	var got *http.Request
+	var body map[string]any
+	ct, reply, status := "application/json", `{"mjml":"<mjml>a</mjml>"}`, 200
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		body = nil
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", ct)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(reply))
+	}))
+	defer srv.Close()
+	c := NewEmailClient(srv.URL, "tok", time.Second, nil)
+	ctx := context.Background()
+	src, err := c.DefaultMJML(ctx, "at-1", "password_reset")
+	if err != nil || src != "<mjml>a</mjml>" || got.Method != "GET" || got.URL.Path != "/internal/email/default-mjml" ||
+		got.URL.Query().Get("part") != "password_reset" || got.Header.Get("Authorization") != "Bearer at-1" || got.Header.Get("X-Internal-Token") != "tok" {
+		t.Fatalf("%v %q %v", err, src, got)
+	}
+	ct, reply = "application/xml; charset=utf-8", "<mjml>raw</mjml>"
+	if src, err := c.DefaultMJML(ctx, "at", "layout"); err != nil || src != "<mjml>raw</mjml>" {
+		t.Fatalf("%v %q", err, src)
+	}
+	ct, reply = "application/json", `{"nope":1}`
+	if _, err := c.DefaultMJML(ctx, "at", "layout"); err == nil {
+		t.Fatal("unreadable JSON")
+	}
+	ct, reply, status = "application/json", `{"error":"not_found"}`, 404
+	if _, err := c.DefaultMJML(ctx, "at", "layout"); !apperr.IsUnsupported(err) {
+		t.Fatalf("old auth: %v", err)
+	}
+
+	status = 200
+	reply = `{"subject":"S","html":"<p>x</p>","text":"x","from":"E <a@b.c>","warnings":["{{nope}} isn't a placeholder",{"message":"second"}]}`
+	h := "<p>{{content}}</p>"
+	p, err := c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite", LayoutHTML: &h})
+	if err != nil || len(p.Warnings) != 2 || p.Warnings[0] != "{{nope}} isn't a placeholder" || p.Warnings[1] != "second" {
+		t.Fatalf("%v %+v", err, p)
+	}
+	if body["layout_html"] != h || body["html"] != nil {
+		t.Fatalf("%v", body)
+	}
+	status = 400
+	reply = `{"error":"invalid_request","message":"no {{content}}","field":"layout_html"}`
+	if _, err := c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite"}); err == nil {
+		t.Fatal("400")
+	} else if e, _ := apperr.As(err); e.Field != "layout_html" {
+		t.Fatalf("field: %+v", e)
+	}
+}
+
 func TestBrandingDocument(t *testing.T) {
 	mode := "ok"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

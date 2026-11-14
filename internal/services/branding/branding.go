@@ -47,6 +47,9 @@ type Options struct {
 	Config *stackconfig.Service
 	// Dir is config/branding/ (default: next to the config file).
 	Dir string
+	// EmailsDir is config/emails/, the MJML and compiled HTML files
+	// (default: next to the config file).
+	EmailsDir string
 	// Email is auth's internal email API; nil when AUTH_INTERNAL_URL or
 	// INTERNAL_API_TOKEN isn't set.
 	Email authapi.EmailClientImpl
@@ -92,6 +95,12 @@ type BrandingServiceImpl interface {
 	// call with their access token (admin.AdminServiceImpl.WithToken).
 	Preview(ctx context.Context, actor string, with TokenCall, in authapi.EmailPreviewRequest) (*authapi.EmailPreview, error)
 	SendTest(ctx context.Context, actor string, with TokenCall, in authapi.EmailTestRequest) (*authapi.EmailTestResult, error)
+
+	// Raw MJML (mjml.go): part is "layout" or a template.
+	EmailMJML(ctx context.Context, part string) (*EmailSource, error)
+	SaveEmailMJML(ctx context.Context, actor, ifMatch, part, mjml, html string) (*EmailSource, error)
+	RemoveEmailMJML(ctx context.Context, actor, ifMatch, part string) error
+	DefaultMJML(ctx context.Context, actor string, with TokenCall, part string) (*EmailSource, error)
 }
 
 // TokenCall runs fn with a valid access token for the acting admin.
@@ -102,6 +111,9 @@ type BrandingService struct{ o Options }
 func NewBrandingService(o Options) BrandingServiceImpl {
 	if o.Dir == "" && o.Config != nil && o.Config.Path() != "" {
 		o.Dir = filepath.Join(filepath.Dir(o.Config.Path()), "branding")
+	}
+	if o.EmailsDir == "" && o.Config != nil && o.Config.Path() != "" {
+		o.EmailsDir = filepath.Join(filepath.Dir(o.Config.Path()), "emails")
 	}
 	return &BrandingService{o: o}
 }
@@ -391,6 +403,9 @@ func (b *BrandingService) Preview(ctx context.Context, actor string, with TokenC
 		return nil, apperr.InvalidField("body", "the body must be at most 5000 characters")
 	}
 	if err := cleanOverrides(in.Email); err != nil {
+		return nil, err
+	}
+	if err := checkPreviewHTML(&in); err != nil {
 		return nil, err
 	}
 	var p *authapi.EmailPreview

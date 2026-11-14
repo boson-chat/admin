@@ -215,6 +215,7 @@ stack's `.env` and recreate the service.
 | `BOSON_CONFIG` | – | the stack config file, e.g. `/config/boson.yaml` (see below). Its directory must be writable: saves are atomic renames. Empty = everything from the env, as before |
 | `CONFIG_STATUS_TARGETS` | – | `name=url,…` of each service's `GET /internal/config/status`; names are compose services (the Restart button uses them), e.g. `auth=http://auth:8081/internal/config/status,ergo=http://ergo:8098/internal/config/status` |
 | `BOSON_CONFIG_POLL` | `10s` | how often the file is re-read when no change event arrives |
+| `EMAILS_DIR` | `emails/` next to `BOSON_CONFIG` | where the Emails page writes the MJML sources and compiled HTML (`emails/<part>-<hash>.{mjml,html}`, named by `auth.email.layout` and `auth.email.templates.*.{mjml,html}`). Auth reads the same directory (`BOSON_EMAILS_DIR`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | – | enable OTLP/HTTP metrics push in addition to `/metrics` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | only `http/protobuf` is supported |
 | `OTEL_METRICS_EXPORTER` | – | `none` turns OTLP push off |

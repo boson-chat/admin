@@ -50,6 +50,15 @@ func (f *fakeEmail) SendTest(_ context.Context, actor string, in authapi.EmailTe
 	return &authapi.EmailTestResult{Sent: true}, nil
 }
 
+func (f *fakeEmail) DefaultMJML(_ context.Context, actor, part string) (string, error) {
+	f.actor = actor
+	f.got = append(f.got, "default:"+part)
+	if f.err != nil {
+		return "", f.err
+	}
+	return "<mjml><mj-body><!-- " + part + " --></mj-body></mjml>", nil
+}
+
 func (h *harness) withBranding(content string) (string, *fakeEmail) {
 	path := h.withConfigFile(content)
 	fe := &fakeEmail{}

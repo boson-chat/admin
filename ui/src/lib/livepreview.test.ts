@@ -153,6 +153,8 @@ describe('email preview helpers', () => {
 		expect(previewField('email.accent')).toBe('accent');
 		expect(previewField('email.sender_name')).toBe('sender_name');
 		expect(previewField('subject')).toBe('subject');
+		expect(previewField('layout_html')).toBe('mjml');
+		expect(previewField('html')).toBe('mjml');
 		expect(previewField('template')).toBeUndefined();
 		expect(previewField(undefined)).toBeUndefined();
 	});

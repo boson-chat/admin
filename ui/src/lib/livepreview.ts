@@ -67,8 +67,18 @@ export type PreviewRequest = {
 	subject?: string;
 	body?: string;
 	email: { sender_name: string; accent: string; footer: string; logo: boolean };
+	/** Compiled MJML not saved yet: the layout, or this email's own. */
+	layout_html?: string;
+	html?: string;
 };
-export type EmailPreview = { subject: string; html: string; text: string; from?: string };
+export type EmailPreview = {
+	subject: string;
+	html: string;
+	text: string;
+	from?: string;
+	/** auth's notes on custom HTML (an unknown placeholder, say). */
+	warnings?: string[];
+};
 
 /**
  * The preview request for what's on screen. The settings always go along
@@ -99,12 +109,16 @@ export function previewRequest(
 export const brandingPreviews = (p: EmailPreview) => !!p.from;
 
 /** Preview request fields → the input they belong to. */
-export type PreviewField = 'subject' | 'body' | 'sender_name' | 'accent' | 'footer' | 'logo';
+export type PreviewField = 'subject' | 'body' | 'sender_name' | 'accent' | 'footer' | 'logo' | 'mjml';
 export function previewField(f: string | undefined): PreviewField | undefined {
 	switch (f) {
 		case 'subject':
 		case 'body':
 			return f;
+		// The compiled MJML on screen: the message goes under the editor.
+		case 'layout_html':
+		case 'html':
+			return 'mjml';
 		case 'email.sender_name':
 		case 'email.accent':
 		case 'email.footer':

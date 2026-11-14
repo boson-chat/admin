@@ -339,6 +339,14 @@ func (f *fakeEmail) SendTest(_ context.Context, actor string, in authapi.EmailTe
 	return &authapi.EmailTestResult{Sent: true}, f.err
 }
 
+func (f *fakeEmail) DefaultMJML(_ context.Context, actor, part string) (string, error) {
+	f.actor = actor
+	if f.err != nil {
+		return "", f.err
+	}
+	return "<mjml><!-- " + part + " --></mjml>", nil
+}
+
 // tok is WithToken for a session whose access token is at-1.
 func tok(fn func(string) error) error { return fn("at-1") }
 

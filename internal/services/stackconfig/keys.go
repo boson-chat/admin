@@ -32,6 +32,9 @@ const (
 	KindText     Kind = "text"     // multi-line string (email bodies)
 	KindTheme    Kind = "theme"    // branding.theme: a boson-theme/1 document
 	KindImages   Kind = "images"   // branding.images: slot → file (written by uploads)
+	// KindEmailFile is an email's MJML source or compiled HTML file in
+	// config/emails/, written by PUT /api/emails/mjml/{part}.
+	KindEmailFile Kind = "email_file"
 )
 
 // Key is one setting in the file (schema v1, the stack's config contract).
@@ -194,14 +197,46 @@ func emailKeys() []Key {
 		{Key: "auth.email.accent", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: color},
 		{Key: "auth.email.footer", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: optionalText(200)},
 		{Key: "auth.email.logo", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
+		{Key: EmailFileKey(EmailLayout, "mjml"), Kind: KindEmailFile, Perm: admin.PermSettingsManage, Services: []string{auth}},
+		{Key: EmailFileKey(EmailLayout, "html"), Kind: KindEmailFile, Perm: admin.PermSettingsManage, Services: []string{auth}},
 	}
 	for _, t := range EmailTemplates {
 		out = append(out,
 			Key{Key: "auth.email.templates." + t + ".subject", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: text(200)},
 			Key{Key: "auth.email.templates." + t + ".body", Kind: KindText, Max: 5000, Perm: admin.PermSettingsManage, Services: []string{auth}, item: multiline(5000)},
+			Key{Key: EmailFileKey(t, "mjml"), Kind: KindEmailFile, Perm: admin.PermSettingsManage, Services: []string{auth}},
+			Key{Key: EmailFileKey(t, "html"), Kind: KindEmailFile, Perm: admin.PermSettingsManage, Services: []string{auth}},
 		)
 	}
 	return out
+}
+
+// EmailLayout is the MJML part every email without its own override is
+// wrapped in; the other parts are EmailTemplates.
+const EmailLayout = "layout"
+
+// EmailFileKey is the config key naming part's MJML source (ext "mjml")
+// or compiled HTML (ext "html") file.
+func EmailFileKey(part, ext string) string {
+	if part == EmailLayout {
+		return "auth.email.layout." + ext
+	}
+	return "auth.email.templates." + part + "." + ext
+}
+
+// EmailsPrefix starts every email file value: the files live in
+// config/emails/ (auth's BOSON_EMAILS_DIR).
+const EmailsPrefix = "emails/"
+
+// EmailFileName checks an email file value (emails/<name>: a plain .mjml
+// or .html name, no traversal) and returns the bare file name.
+func EmailFileName(v string) (string, error) {
+	name := strings.TrimPrefix(v, EmailsPrefix)
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") || len(name) > 128 ||
+		(!strings.HasSuffix(name, ".mjml") && !strings.HasSuffix(name, ".html")) {
+		return "", fmt.Errorf("%q must be a .mjml or .html file in config/emails/, like emails/layout-0123abcd.html", v)
+	}
+	return name, nil
 }
 
 // Branding keys.
@@ -364,6 +399,15 @@ func (k Key) Clean(v any) (any, error) {
 			return fail("%v", err)
 		}
 		return t, nil
+	case KindEmailFile:
+		s, ok := v.(string)
+		if !ok {
+			return fail("must be a file name")
+		}
+		if _, err := EmailFileName(s); err != nil {
+			return fail("%v", err)
+		}
+		return s, nil
 	case KindImages:
 		m, err := theme.CleanImages(v)
 		if err != nil {
@@ -483,7 +527,7 @@ func (k Key) FromNode(n *yaml.Node) (any, error) {
 		if err := json.Unmarshal(b, &raw); err != nil {
 			return nil, fmt.Errorf("%s: %v", k.Key, err)
 		}
-	case KindString, KindEnum, KindDuration, KindText:
+	case KindString, KindEnum, KindDuration, KindText, KindEmailFile:
 		var s string
 		if n.Kind != yaml.ScalarNode || n.Tag == "!!null" || n.Decode(&s) != nil {
 			return nil, fmt.Errorf("%s: must be text", k.Key)
