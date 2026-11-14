@@ -1,0 +1,99 @@
+package handlers
+
+import (
+	"net/http"
+
+	"github.com/boson-chat/admin/internal/services/admin"
+	"github.com/boson-chat/admin/internal/session"
+)
+
+// route is one gated /api endpoint.
+type route struct {
+	Pattern string
+	// Perm is needed on top of admin.panel ("" = admin.panel alone).
+	Perm string
+	// Fresh re-checks the account against /v1/me on every call instead of
+	// the AccessTTL cache: Docker and the directory aren't authorised by the
+	// auth service, so a demoted admin's still-valid cookie must not drive them.
+	Fresh bool
+	fn    authedFunc
+}
+
+// routes is the panel's permission table. The auth service enforces its
+// own rules (and the role hierarchy) on top for everything it serves.
+func (h *Handlers) routes() []route {
+	return []route{
+		{"GET /api/overview", admin.PermServicesView, false, h.overview},
+
+		{"GET /api/users", admin.PermUsersView, false, h.listUsers},
+		{"POST /api/users", admin.PermUsersManage, false, h.createUser},
+		{"POST /api/users/{id}/password-reset", admin.PermUsersManage, false, h.sendPasswordReset},
+		{"POST /api/users/{id}/verification", admin.PermUsersManage, false, h.resendVerification},
+		{"GET /api/users/{id}/profile", admin.PermUsersView, false, h.userProfile},
+		{"GET /api/users/{id}", admin.PermUsersView, false, h.getUser},
+		{"PATCH /api/users/{id}", admin.PermUsersManage, false, h.updateUser},
+		{"POST /api/users/{id}/disable", admin.PermUsersModerate, false, h.setDisabled(true)},
+		{"POST /api/users/{id}/enable", admin.PermUsersModerate, false, h.setDisabled(false)},
+		{"GET /api/users/{id}/sessions", admin.PermUsersView, false, h.listUserSessions},
+		{"GET /api/users/{id}/audit", admin.PermUsersView, false, h.userAudit},
+		{"PUT /api/users/{id}/roles", admin.PermRolesManage, false, h.setUserRoles},
+		{"DELETE /api/sessions/{id}", admin.PermUsersModerate, false, h.revokeSession},
+
+		{"GET /api/invites", admin.PermInvitesManage, false, h.listInvites},
+		{"POST /api/invites", admin.PermInvitesManage, false, h.createInvite},
+		{"DELETE /api/invites/{id}", admin.PermInvitesManage, false, h.revokeInvite},
+
+		{"GET /api/audit", admin.PermAuditView, false, h.audit},
+
+		{"GET /api/settings", admin.PermSettingsManage, false, h.getSettings},
+		{"PATCH /api/settings", admin.PermSettingsManage, false, h.updateSettings},
+
+		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
+		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
+		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},
+		{"PATCH /api/sso/providers/{id}", admin.PermSSOManage, false, h.updateProvider},
+		{"DELETE /api/sso/providers/{id}", admin.PermSSOManage, false, h.deleteProvider},
+		{"POST /api/sso/providers/{id}/test", admin.PermSSOManage, false, h.testProvider},
+
+		{"GET /api/services", admin.PermServicesView, true, h.listServices},
+		{"GET /api/services/{name}", admin.PermServicesView, true, h.getService},
+		{"POST /api/services/{name}/{action}", admin.PermServicesManage, true, h.serviceAction},
+		{"GET /api/services/{name}/logs", admin.PermServicesView, true, h.serviceLogs},
+
+		{"GET /api/directory", admin.PermDirectoryManage, true, h.directoryStatus},
+		{"POST /api/directory", admin.PermDirectoryManage, true, h.directorySubmit},
+		{"PATCH /api/directory/{id}", admin.PermDirectoryManage, true, h.directoryUpdate},
+		{"POST /api/directory/{id}/verify", admin.PermDirectoryManage, true, h.directoryVerify},
+		{"POST /api/directory/{id}/regenerate-token", admin.PermDirectoryManage, true, h.directoryRegenerate},
+		{"DELETE /api/directory/{id}", admin.PermDirectoryManage, true, h.directoryUnlist},
+
+		// The catalog labels effective permissions on user pages.
+		{"GET /api/permissions", "", false, h.listPermissions},
+		{"GET /api/roles", admin.PermRolesManage, false, h.listRoles},
+		{"POST /api/roles", admin.PermRolesManage, false, h.createRole},
+		{"POST /api/roles/reorder", admin.PermRolesManage, false, h.reorderRoles},
+		{"PATCH /api/roles/{id}", admin.PermRolesManage, false, h.updateRole},
+		{"DELETE /api/roles/{id}", admin.PermRolesManage, false, h.deleteRole},
+		{"GET /api/roles/{id}/members", admin.PermRolesManage, false, h.roleMembers},
+		{"PUT /api/roles/{id}/members/{user}", admin.PermRolesManage, false, h.addRoleMember},
+		{"DELETE /api/roles/{id}/members/{user}", admin.PermRolesManage, false, h.removeRoleMember},
+	}
+}
+
+// gate authenticates (authed), then checks admin.panel and perm. Without
+// admin.panel the panel session ends (403 not_admin); a missing perm is a
+// 403 missing_permission that leaves it alone.
+func (h *Handlers) gate(perm string, fresh bool, next authedFunc) http.HandlerFunc {
+	return h.authed(func(w http.ResponseWriter, r *http.Request, s *session.Session) {
+		a, err := h.Admin.Access(r.Context(), s, fresh)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if perm != "" && !a.Can(perm) {
+			writeError(w, r, admin.MissingPermission(perm))
+			return
+		}
+		next(w, r, s)
+	})
+}

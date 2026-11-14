@@ -136,6 +136,7 @@ func TestServicesEndpoints(t *testing.T) {
 	}
 	// A demoted admin's cookie no longer drives Docker.
 	h.fake.Users["usr_admin"].Role = "user"
+	h.fake.SetRoles("usr_admin")
 	if w := h.do("POST", "/api/services/boson-auth-1/restart", map[string]string{}, withCookie(c), withHeader(CSRFHeader, csrf)); w.Code != 403 {
 		t.Fatalf("demoted admin: %d %s", w.Code, w.Body)
 	}

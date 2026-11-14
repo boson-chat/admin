@@ -7,11 +7,6 @@ import (
 )
 
 func (h *Handlers) overview(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	// Confirms the session is still live and admin upstream before showing
-	// infrastructure details.
-	if _, err := h.Admin.Me(r.Context(), s); err != nil {
-		writeError(w, r, err)
-		return
-	}
+	// gate has confirmed the session is live and may see services.
 	writeJSON(w, http.StatusOK, h.Overview.Overview(r.Context()))
 }

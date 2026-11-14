@@ -21,6 +21,10 @@ type User struct {
 	Identities *[]Identity `json:"identities,omitempty"`
 	// HasPassword: false for SSO-only accounts (auth >= 1.4.0 reports it).
 	HasPassword *bool `json:"has_password,omitempty"`
+	// Roles and Permissions (effective) come with auth >= 1.5.0; nil = the
+	// auth release has no roles.
+	Roles       *[]RoleRef `json:"roles,omitempty"`
+	Permissions *[]string  `json:"permissions,omitempty"`
 }
 
 // Tokens is the login / refresh response.
