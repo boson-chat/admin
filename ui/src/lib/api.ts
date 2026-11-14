@@ -10,10 +10,17 @@ export class ApiError extends Error {
 	constructor(
 		public status: number,
 		public code: string,
-		message: string
+		message: string,
+		/** The request field a 400 is about ("email.accent"), when the BFF says. */
+		public field?: string
 	) {
 		super(message);
 	}
+}
+
+/** fetch() gave up because the caller aborted it. */
+export function isAbort(e: unknown): boolean {
+	return e instanceof DOMException && e.name === 'AbortError';
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -26,7 +33,8 @@ export async function api<T>(
 	method: Method,
 	path: string,
 	body?: unknown,
-	extraHeaders?: Record<string, string>
+	extraHeaders?: Record<string, string>,
+	signal?: AbortSignal
 ): Promise<T> {
 	const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders };
 	if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -40,9 +48,11 @@ export async function api<T>(
 			method,
 			headers,
 			body: body === undefined ? undefined : JSON.stringify(body),
-			credentials: 'same-origin'
+			credentials: 'same-origin',
+			signal
 		});
-	} catch {
+	} catch (e) {
+		if (isAbort(e)) throw e;
 		throw new ApiError(0, 'network', 'The admin panel server is unreachable. Check your connection.');
 	}
 	if (res.status === 204) return undefined as T;
@@ -53,8 +63,13 @@ export async function api<T>(
 		/* non-JSON error page from a proxy */
 	}
 	if (!res.ok) {
-		const e = (data ?? {}) as { error?: string; message?: string };
-		const err = new ApiError(res.status, e.error ?? 'http_' + res.status, e.message ?? res.statusText);
+		const e = (data ?? {}) as { error?: string; message?: string; field?: string };
+		const err = new ApiError(
+			res.status,
+			e.error ?? 'http_' + res.status,
+			e.message ?? res.statusText,
+			e.field || undefined
+		);
 		if (res.status === 401 && path !== '/login' && path !== '/session') {
 			session.clear(err.message);
 			goto('/login?next=' + encodeURIComponent(location.pathname + location.search));

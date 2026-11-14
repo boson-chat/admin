@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/authapi"
 	"github.com/boson-chat/admin/internal/services/admin"
 	"github.com/boson-chat/admin/internal/services/branding"
@@ -21,12 +22,26 @@ import (
 type fakeEmail struct {
 	got   []string
 	actor string
+	last  authapi.EmailPreviewRequest
+	// tokens are the access tokens previews were called with; rejected
+	// ones answer 401 (like an expired access token).
+	tokens    []string
+	rejected  map[string]bool
+	rejectAll bool
+	err       error
 }
 
 func (f *fakeEmail) Preview(_ context.Context, actor string, in authapi.EmailPreviewRequest) (*authapi.EmailPreview, error) {
-	f.actor = actor
+	f.actor, f.last = actor, in
+	f.tokens = append(f.tokens, actor)
+	if f.rejectAll || f.rejected[actor] {
+		return nil, apperr.New(http.StatusUnauthorized, "unauthorized", "expired")
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
 	f.got = append(f.got, "preview:"+in.Template)
-	return &authapi.EmailPreview{Subject: "s", HTML: "<p>hi</p>", Text: "hi"}, nil
+	return &authapi.EmailPreview{Subject: "s", HTML: "<p>hi</p>", Text: "hi", From: "Example <no-reply@example.com>"}, nil
 }
 
 func (f *fakeEmail) SendTest(_ context.Context, actor string, in authapi.EmailTestRequest) (*authapi.EmailTestResult, error) {
@@ -194,5 +209,55 @@ func TestEmailRoutes(t *testing.T) {
 	h.h.Branding = nil
 	if w := h.do("POST", "/api/emails/test", map[string]any{"template": "invite", "to": "me@example.com"}, opts...); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("off: %d", w.Code)
+	}
+}
+
+// The preview passes the unsaved email settings through, answers with a
+// field on a validation error, and refreshes the session once when auth
+// says 401.
+func TestEmailPreviewLive(t *testing.T) {
+	h := newHarness(t)
+	_, fe := h.withBranding("version: 1\n")
+	c, csrf := h.login()
+	opts := []reqOpt{withCookie(c), withHeader(CSRFHeader, csrf)}
+	w := h.do("POST", "/api/emails/preview", map[string]any{"template": "invite", "subject": "Hi",
+		"email": map[string]any{"sender_name": "Example", "accent": "#7C3AED", "footer": "Bye", "logo": false}}, opts...)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"from":"Example \u003cno-reply@example.com\u003e"`) {
+		t.Fatalf("preview: %d %s", w.Code, w.Body)
+	}
+	o := fe.last.Email
+	if o == nil || *o.SenderName != "Example" || *o.Accent != "#7c3aed" || *o.Footer != "Bye" || *o.Logo {
+		t.Fatalf("overrides: %+v", o)
+	}
+
+	w = h.do("POST", "/api/emails/preview", map[string]any{"template": "invite", "email": map[string]any{"accent": "red"}}, opts...)
+	var eb struct{ Error, Message, Field string }
+	_ = json.Unmarshal(w.Body.Bytes(), &eb)
+	if w.Code != 400 || eb.Field != "email.accent" || eb.Error != "invalid_request" {
+		t.Fatalf("bad accent: %d %s", w.Code, w.Body)
+	}
+	fe.err = apperr.InvalidField("email.footer", "the footer can't hold HTML")
+	w = h.do("POST", "/api/emails/preview", map[string]any{"template": "invite", "email": map[string]any{"footer": "<b>"}}, opts...)
+	_ = json.Unmarshal(w.Body.Bytes(), &eb)
+	if w.Code != 400 || eb.Field != "email.footer" || eb.Message != "the footer can't hold HTML" {
+		t.Fatalf("auth's field error: %d %s", w.Code, w.Body)
+	}
+	fe.err = nil
+
+	// The access token expires: one 401, a refresh, the retry succeeds.
+	first := fe.tokens[len(fe.tokens)-1]
+	fe.rejected = map[string]bool{first: true}
+	fe.tokens = nil
+	refreshes := h.fake.RefreshCalls.Load()
+	w = h.do("POST", "/api/emails/preview", map[string]any{"template": "invite"}, opts...)
+	if w.Code != 200 || len(fe.tokens) != 2 || fe.tokens[0] != first || fe.tokens[1] == first || h.fake.RefreshCalls.Load() != refreshes+1 {
+		t.Fatalf("retry: %d %s tokens=%v refreshes=%d", w.Code, w.Body, fe.tokens, h.fake.RefreshCalls.Load()-refreshes)
+	}
+	// Still 401 after the refresh: the session is over (no second retry).
+	fe.tokens = nil
+	fe.rejectAll = true
+	w = h.do("POST", "/api/emails/preview", map[string]any{"template": "invite"}, opts...)
+	if w.Code != 401 || len(fe.tokens) != 2 {
+		t.Fatalf("second 401: %d %s tokens=%v", w.Code, w.Body, fe.tokens)
 	}
 }

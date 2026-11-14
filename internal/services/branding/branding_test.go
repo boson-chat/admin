@@ -389,6 +389,49 @@ func TestEmailPreviewInlinesImages(t *testing.T) {
 	}
 }
 
+func TestEmailPreviewOverrides(t *testing.T) {
+	ctx := context.Background()
+	fe := &fakeEmail{}
+	b, _, _ := newService(t, "version: 1\n", fe)
+	name, accent, footer, logo := "  Example Chat ", "#7C3AED", " Example · example.com ", false
+	in := authapi.EmailPreviewRequest{Template: "invite", Email: &authapi.EmailOverrides{SenderName: &name, Accent: &accent, Footer: &footer, Logo: &logo}}
+	if _, err := b.Preview(ctx, "root", tok, in); err != nil {
+		t.Fatal(err)
+	}
+	o := fe.preview.Email
+	if o == nil || *o.SenderName != "Example Chat" || *o.Accent != "#7c3aed" || *o.Footer != "Example · example.com" || *o.Logo {
+		t.Fatalf("sent %+v", o)
+	}
+	str := func(s string) *string { return &s }
+	for field, ov := range map[string]authapi.EmailOverrides{
+		"email.accent":      {Accent: str("purple")},
+		"email.sender_name": {SenderName: str(strings.Repeat("x", 65))},
+		"email.footer":      {Footer: str("two\nlines")},
+	} {
+		fe.preview = authapi.EmailPreviewRequest{}
+		_, err := b.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "invite", Email: &ov})
+		if e, ok := apperr.As(err); !ok || e.Status != 400 || e.Field != field {
+			t.Errorf("%s: %v", field, err)
+		}
+		if fe.preview.Template != "" {
+			t.Errorf("%s: auth called", field)
+		}
+	}
+	long := strings.Repeat("x", 201)
+	if _, err := b.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "invite", Subject: &long}); err == nil {
+		t.Fatal("long subject")
+	} else if e, _ := apperr.As(err); e.Field != "subject" {
+		t.Fatalf("subject field: %+v", e)
+	}
+	// auth's own field error comes through untouched.
+	fe.err = apperr.InvalidField("email.footer", "auth says no")
+	if _, err := b.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "invite"}); err == nil {
+		t.Fatal("auth error")
+	} else if e, _ := apperr.As(err); e.Field != "email.footer" || e.Message != "auth says no" {
+		t.Fatalf("auth field error: %+v", e)
+	}
+}
+
 type fakePublic struct {
 	doc map[string]any
 	ok  bool

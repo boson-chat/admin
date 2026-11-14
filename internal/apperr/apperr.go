@@ -7,11 +7,15 @@ import (
 	"net/http"
 )
 
-// Error is rendered as {"error": Code, "message": Message} with Status.
+// Error is rendered as {"error": Code, "message": Message} with Status
+// (and "field" when Field is set).
 type Error struct {
 	Status  int
 	Code    string
 	Message string
+	// Field names the request field the error is about ("email.accent"),
+	// so the UI can show it next to that input.
+	Field string
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -31,6 +35,13 @@ func As(err error) (*Error, bool) {
 
 // Invalid is a 400 invalid_request.
 func Invalid(msg string) *Error { return New(http.StatusBadRequest, "invalid_request", msg) }
+
+// InvalidField is a 400 invalid_request about one request field.
+func InvalidField(field, msg string) *Error {
+	e := Invalid(msg)
+	e.Field = field
+	return e
+}
 
 var (
 	// ErrUnauthenticated: no (valid) panel session.

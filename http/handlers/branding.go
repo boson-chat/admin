@@ -23,7 +23,7 @@ import (
 //	PUT    /api/branding/images/{slot}   raw image body (settings.manage)
 //	DELETE /api/branding/images/{slot}   (settings.manage)
 //	GET    /api/branding/assets/{file}   the stored file (admin.panel)
-//	POST   /api/emails/preview           {template, subject?, body?} (settings.manage)
+//	POST   /api/emails/preview           {template, subject?, body?, email?} (settings.manage)
 //	POST   /api/emails/test              {template, to} (settings.manage)
 //
 // Image writes answer with the config view, like PATCH /api/config.

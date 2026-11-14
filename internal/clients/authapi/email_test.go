@@ -77,6 +77,55 @@ func TestEmailClient(t *testing.T) {
 	}
 }
 
+// The email overrides go to auth as sent; a newer auth's from comes back;
+// a 400 naming a field keeps the field (an unknown one is dropped).
+func TestEmailPreviewOverrides(t *testing.T) {
+	var body map[string]any
+	reply := `{"subject":"S","html":"<p>x</p>","text":"x","from":"Example <no-reply@example.com>"}`
+	status := 200
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body = nil
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(reply))
+	}))
+	defer srv.Close()
+	c := NewEmailClient(srv.URL, "", time.Second, nil)
+	ctx := context.Background()
+	name, accent, footer, logo := "Example", "#7c3aed", "", false
+	p, err := c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite",
+		Email: &EmailOverrides{SenderName: &name, Accent: &accent, Footer: &footer, Logo: &logo}})
+	if err != nil || p.From != "Example <no-reply@example.com>" {
+		t.Fatalf("%v %+v", err, p)
+	}
+	em, _ := body["email"].(map[string]any)
+	if em["sender_name"] != "Example" || em["accent"] != "#7c3aed" || em["footer"] != "" || em["logo"] != false {
+		t.Fatalf("email overrides: %v", body)
+	}
+	if _, err := c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite"}); err != nil {
+		t.Fatal(err)
+	} else if _, ok := body["email"]; ok {
+		t.Fatalf("no overrides must send no email object: %v", body)
+	}
+	// auth 1.10.x: no from.
+	reply = `{"subject":"S","html":"<p>x</p>","text":"x"}`
+	if p, err := c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite"}); err != nil || p.From != "" {
+		t.Fatalf("old auth: %v %+v", err, p)
+	}
+	status = 400
+	reply = `{"error":"invalid_request","message":"accent must be #rrggbb","field":"email.accent"}`
+	_, err = c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite"})
+	if e, ok := apperr.As(err); !ok || e.Status != 400 || e.Field != "email.accent" || e.Message != "accent must be #rrggbb" {
+		t.Fatalf("field error: %v %+v", err, e)
+	}
+	reply = `{"error":"invalid_request","message":"no","field":"something.else"}`
+	if _, err := c.Preview(ctx, "at", EmailPreviewRequest{Template: "invite"}); err == nil {
+		t.Fatal("400")
+	} else if e, _ := apperr.As(err); e.Field != "" {
+		t.Fatalf("unknown field kept: %q", e.Field)
+	}
+}
+
 func TestBrandingDocument(t *testing.T) {
 	mode := "ok"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
