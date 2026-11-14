@@ -9,6 +9,7 @@ import (
 
 	"github.com/boson-chat/admin/config"
 	"github.com/boson-chat/admin/internal/clients/health"
+	"github.com/boson-chat/admin/internal/clients/ircprobe"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/clients/tlsprobe"
 )
@@ -54,7 +55,27 @@ type Overview struct {
 	Certificates []Certificate `json:"certificates"`
 	Metrics      MetricsView   `json:"metrics"`
 	GrafanaURL   string        `json:"grafana_url,omitempty"`
+	// Edge names the reverse proxy that terminates TLS (EDGE_NAME).
+	Edge EdgeInfo `json:"edge"`
+	// IRC is the IRC_CHECK probe; it is also listed in Services as "irc".
+	IRC IRCInfo `json:"irc"`
+	// PublicProbes are endpoints the browser times itself
+	// (PUBLIC_PROBE_TARGETS), plus the panel's own /healthz as "admin".
+	PublicProbes []config.PublicProbe `json:"public_probes"`
 }
+
+type EdgeInfo struct {
+	Name string `json:"name"`
+}
+
+// IRCInfo says whether IRC is probed and where.
+type IRCInfo struct {
+	Configured bool   `json:"configured"`
+	Target     string `json:"target,omitempty"`
+}
+
+// IRCServiceName is the Services entry the IRC probe reports under.
+const IRCServiceName = "irc"
 
 type PanelInfo struct {
 	Version string `json:"version"`
@@ -73,7 +94,14 @@ type OverviewService struct {
 	Certs    []config.TLSTarget
 	Grafana  string
 	Version  string
+	IRCProbe ircprobe.IRCProberImpl
+	IRC      *config.IRCTarget // nil = IRC not checked
+	Edge     string
+	Public   []config.PublicProbe
 	Now      func() time.Time
+	// IRCTTL caches the IRC probe: each probe is a connection the IRC
+	// server logs, and several open panels poll every 15 s.
+	IRCTTL time.Duration
 	// CertTTL caches certificate probes; they change rarely and dialing
 	// public hostnames on every poll is wasteful.
 	CertTTL time.Duration
@@ -81,6 +109,8 @@ type OverviewService struct {
 	mu        sync.Mutex
 	certCache []Certificate
 	certAt    time.Time
+	ircCache  *Service
+	ircAt     time.Time
 }
 
 type Options struct {
@@ -92,6 +122,10 @@ type Options struct {
 	Certs    []config.TLSTarget
 	Grafana  string
 	Version  string
+	IRCProbe ircprobe.IRCProberImpl
+	IRC      *config.IRCTarget
+	Edge     string
+	Public   []config.PublicProbe
 	Now      func() time.Time
 }
 
@@ -99,18 +133,84 @@ func NewOverviewService(o Options) *OverviewService {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
+	if o.Edge == "" {
+		o.Edge = "Traefik"
+	}
 	return &OverviewService{Health: o.Health, TLS: o.TLS, Prom: o.Prom, Targets: o.Targets, Versions: o.Versions,
-		Certs: o.Certs, Grafana: o.Grafana, Version: o.Version, Now: o.Now, CertTTL: 5 * time.Minute}
+		Certs: o.Certs, Grafana: o.Grafana, Version: o.Version, IRCProbe: o.IRCProbe, IRC: o.IRC, Edge: o.Edge,
+		Public: withSelfProbe(o.Public), Now: o.Now, CertTTL: 5 * time.Minute, IRCTTL: 30 * time.Second}
+}
+
+// withSelfProbe adds the panel's own /healthz (same origin, through the
+// edge) as "admin" unless PUBLIC_PROBE_TARGETS already names one.
+func withSelfProbe(in []config.PublicProbe) []config.PublicProbe {
+	for _, p := range in {
+		if p.Name == "admin" {
+			return in
+		}
+	}
+	return append([]config.PublicProbe{{Name: "admin", URL: "/healthz", Kind: "http"}}, in...)
 }
 
 func (s *OverviewService) Overview(ctx context.Context) *Overview {
-	out := &Overview{CheckedAt: s.Now().UTC(), Panel: PanelInfo{Version: s.Version}, GrafanaURL: s.Grafana}
+	out := &Overview{CheckedAt: s.Now().UTC(), Panel: PanelInfo{Version: s.Version}, GrafanaURL: s.Grafana,
+		Edge: EdgeInfo{Name: s.Edge}, PublicProbes: s.Public}
+	var irc *Service
 	var wg sync.WaitGroup
 	wg.Go(func() { out.Services = s.services(ctx) })
 	wg.Go(func() { out.Certificates = s.certificates(ctx) })
 	wg.Go(func() { out.Metrics = s.metrics(ctx) })
+	if s.IRC != nil && s.IRCProbe != nil {
+		out.IRC = IRCInfo{Configured: true, Target: s.IRC.Label}
+		wg.Go(func() { irc = s.irc(ctx) })
+	}
 	wg.Wait()
+	if irc != nil {
+		out.Services = mergeIRC(out.Services, *irc)
+	}
 	return out
+}
+
+// irc probes IRC_CHECK (cached for IRCTTL).
+func (s *OverviewService) irc(ctx context.Context) *Service {
+	s.mu.Lock()
+	if s.ircCache != nil && s.Now().Sub(s.ircAt) < s.IRCTTL {
+		c := *s.ircCache
+		s.mu.Unlock()
+		return &c
+	}
+	s.mu.Unlock()
+
+	t := s.IRC
+	r := s.IRCProbe.Probe(ctx, t.Address, t.ServerName, t.TLS)
+	check := health.Result{URL: t.Label, OK: r.OK, Latency: r.Latency, Detail: r.Detail}
+	check.LatencyMS = float64(r.Latency.Microseconds()) / 1000
+	sv := &Service{Name: IRCServiceName, Version: r.Version, Checks: []health.Result{check}}
+	sv.Status = rollup(sv.Checks)
+
+	s.mu.Lock()
+	s.ircCache, s.ircAt = sv, s.Now()
+	s.mu.Unlock()
+	c := *sv
+	return &c
+}
+
+// mergeIRC adds the IRC probe to a HEALTH_TARGETS service of the same name
+// (if someone configured one) or appends it.
+func mergeIRC(services []Service, irc Service) []Service {
+	for i := range services {
+		sv := &services[i]
+		if sv.Name != IRCServiceName {
+			continue
+		}
+		sv.Checks = append(append([]health.Result{}, sv.Checks...), irc.Checks...)
+		if sv.Version == "" {
+			sv.Version = irc.Version
+		}
+		sv.Status = rollup(sv.Checks)
+		return services
+	}
+	return append(services, irc)
 }
 
 func (s *OverviewService) services(ctx context.Context) []Service {

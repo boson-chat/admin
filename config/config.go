@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -30,14 +31,14 @@ type AppConfig struct {
 }
 
 type HTTPConfig struct {
-	// Public listener: the UI and /api (behind Caddy).
+	// Public listener: the UI and /api (behind the reverse proxy).
 	Addr string `default:":8080" env:"HTTP_ADDR"`
 	// Internal listener: /metrics, /healthz. Never publish it. Empty disables it.
 	InternalAddr string `default:":8081" env:"INTERNAL_ADDR"`
 	// Externally visible URL of the panel, e.g. https://admin.example.com.
 	// State-changing requests must come from this origin.
 	PublicURL string `default:"http://localhost:8080" env:"PUBLIC_URL"`
-	// Comma-separated CIDRs/IPs whose X-Forwarded-For is trusted (the Caddy container network).
+	// Comma-separated CIDRs/IPs whose X-Forwarded-For is trusted (the reverse proxy's container network).
 	TrustedProxies string `env:"TRUSTED_PROXIES"`
 }
 
@@ -67,6 +68,18 @@ type UpstreamConfig struct {
 	VersionTargets string `env:"VERSION_TARGETS"`
 	// Comma-separated host:port[@dial-host:dial-port] whose TLS certificates are checked.
 	TLSCheckHosts string `env:"TLS_CHECK_HOSTS"`
+	// IRC server to probe: ircs://host:port (TLS) or irc://host:port. Empty = not checked.
+	IRCCheck string `env:"IRC_CHECK"`
+	// SNI for the IRC TLS handshake (the public IRC host when IRC_CHECK dials
+	// the container). Defaults to IRC_CHECK's host.
+	IRCCheckServerName string `env:"IRC_CHECK_SERVER_NAME"`
+	// Comma-separated name=url public endpoints the admin's browser times
+	// (https://, http://, wss://, ws://). Their origins are added to the CSP's
+	// connect-src. Names match HEALTH_TARGETS services (auth, api,
+	// quicvoiced) or irc; the panel itself is always timed.
+	PublicProbeTargets string `env:"PUBLIC_PROBE_TARGETS"`
+	// What the stack overview calls the TLS edge (the reverse proxy).
+	EdgeName string `default:"Traefik" env:"EDGE_NAME"`
 	// Timeout for each upstream request.
 	Timeout time.Duration `default:"5s" env:"UPSTREAM_TIMEOUT"`
 }
@@ -119,6 +132,12 @@ func (c Config) Validate() error {
 		return err
 	}
 	if _, err := c.UpstreamConfig.TLSTargets(); err != nil {
+		return err
+	}
+	if _, err := c.UpstreamConfig.IRC(); err != nil {
+		return err
+	}
+	if _, err := c.UpstreamConfig.PublicProbes(); err != nil {
 		return err
 	}
 	for name, v := range map[string]string{"AUTH_URL": c.UpstreamConfig.AuthURL, "AUTH_INTERNAL_URL": c.UpstreamConfig.AuthInternalURL,
@@ -272,6 +291,92 @@ func splitHostPort(s string) (string, string, error) {
 		}
 	}
 	return strings.Trim(host, "[]"), port, nil
+}
+
+// PublicProbe is an endpoint the browser times (PUBLIC_PROBE_TARGETS).
+type PublicProbe struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	// Kind is "http" (a no-cors GET) or "ws" (a WebSocket open).
+	Kind string `json:"kind"`
+	// Origin is scheme://host[:port], for the CSP.
+	Origin string `json:"-"`
+}
+
+// PublicProbes parses PUBLIC_PROBE_TARGETS.
+func (c UpstreamConfig) PublicProbes() ([]PublicProbe, error) {
+	var out []PublicProbe
+	for _, item := range SplitList(c.PublicProbeTargets) {
+		name, raw, ok := strings.Cut(item, "=")
+		name, raw = strings.TrimSpace(name), strings.TrimSpace(raw)
+		if !ok || name == "" || raw == "" {
+			return nil, fmt.Errorf("PUBLIC_PROBE_TARGETS: %q must be name=url", item)
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
+			return nil, fmt.Errorf("PUBLIC_PROBE_TARGETS: %s: %q is not a URL", name, raw)
+		}
+		kind := "http"
+		switch u.Scheme {
+		case "https", "http":
+		case "wss", "ws":
+			kind = "ws"
+		default:
+			return nil, fmt.Errorf("PUBLIC_PROBE_TARGETS: %s: %q must be https://, http://, wss:// or ws://", name, raw)
+		}
+		out = append(out, PublicProbe{Name: name, URL: raw, Kind: kind, Origin: u.Scheme + "://" + u.Host})
+	}
+	return out, nil
+}
+
+// IRCTarget is the IRC server the overview probes.
+type IRCTarget struct {
+	Address    string // host:port to dial
+	ServerName string // SNI
+	TLS        bool
+	Label      string // ircs://host:port as configured
+}
+
+// IRC parses IRC_CHECK: ircs://host[:6697] (TLS), irc://host[:6667]
+// (plaintext) or a bare host:port (TLS). nil when unset.
+func (c UpstreamConfig) IRC() (*IRCTarget, error) {
+	raw := strings.TrimSpace(c.IRCCheck)
+	if raw == "" {
+		return nil, nil
+	}
+	useTLS, port, rest := true, "6697", raw
+	switch {
+	case strings.HasPrefix(raw, "ircs://"):
+		rest = strings.TrimPrefix(raw, "ircs://")
+	case strings.HasPrefix(raw, "irc://"):
+		useTLS, port, rest = false, "6667", strings.TrimPrefix(raw, "irc://")
+	case strings.Contains(raw, "://"):
+		return nil, fmt.Errorf("IRC_CHECK: %q must be ircs://host:port or irc://host:port", raw)
+	}
+	rest = strings.TrimRight(rest, "/")
+	if rest == "" || strings.ContainsAny(rest, "/?#@ ") {
+		return nil, fmt.Errorf("IRC_CHECK: %q must be ircs://host:port or irc://host:port", raw)
+	}
+	host := strings.Trim(rest, "[]")
+	if !strings.HasSuffix(rest, "]") && strings.Contains(rest, ":") {
+		h, p, err := splitHostPort(rest)
+		if err != nil {
+			return nil, fmt.Errorf("IRC_CHECK: %w", err)
+		}
+		host, port = h, p
+	}
+	scheme := "ircs"
+	if !useTLS {
+		scheme = "irc"
+	}
+	sni := strings.TrimSpace(c.IRCCheckServerName)
+	if sni == "" {
+		sni = host
+	}
+	return &IRCTarget{
+		Address: net.JoinHostPort(host, port), ServerName: sni, TLS: useTLS,
+		Label: scheme + "://" + net.JoinHostPort(host, port),
+	}, nil
 }
 
 // SplitList splits a comma/space/newline-separated env value.

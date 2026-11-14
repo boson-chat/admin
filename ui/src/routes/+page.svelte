@@ -7,21 +7,42 @@
 	import SignalPath from '$lib/components/SignalPath.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
 	import Notice from '$lib/components/Notice.svelte';
+	import { due, measure, type BrowserLatency } from '$lib/probe';
 
 	let data = $state<Overview | null>(null);
 	let error = $state('');
 	let loading = $state(false);
 	let now = $state(Date.now());
+	// Latency from this browser to each public endpoint, by service name.
+	let browser = $state<Record<string, BrowserLatency>>({});
+	let probing = false;
 
-	async function load() {
+	async function load(forced = false) {
 		loading = true;
 		try {
 			data = await api<Overview>('GET', '/overview');
 			error = '';
+			probe(forced);
 		} catch (e) {
 			error = errorText(e);
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function probe(forced: boolean) {
+		if (probing || !data?.public_probes?.length) return;
+		const todo = due(data.public_probes, browser, Date.now(), forced);
+		if (!todo.length) return;
+		probing = true;
+		try {
+			await Promise.all(
+				todo.map(async (p) => {
+					browser[p.name] = await measure(p);
+				})
+			);
+		} finally {
+			probing = false;
 		}
 	}
 
@@ -103,7 +124,7 @@
 		{#if data}
 			<span class="muted checked">Checked {relative(data.checked_at, now)}</span>
 		{/if}
-		<button class="btn btn-small" onclick={load} disabled={loading}
+		<button class="btn btn-small" onclick={() => load(true)} disabled={loading}
 			>{loading ? 'Checking…' : 'Check now'}</button
 		>
 		{#if grafana()}
@@ -119,7 +140,14 @@
 {#if data}
 	<section aria-labelledby="svc-h">
 		<h2 id="svc-h" class="sr-only">Services</h2>
-		<SignalPath services={data.services} certificates={data.certificates} />
+		<SignalPath
+			services={data.services}
+			certificates={data.certificates}
+			edgeName={data.edge?.name || 'Traefik'}
+			ircConfigured={data.irc?.configured ?? false}
+			probes={data.public_probes ?? []}
+			{browser}
+		/>
 	</section>
 
 	<section class="section" aria-labelledby="cert-h">

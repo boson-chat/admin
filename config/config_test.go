@@ -76,3 +76,56 @@ func TestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIRCTarget(t *testing.T) {
+	cases := []struct {
+		in, sni, addr, serverName, label string
+		tls                              bool
+	}{
+		{"ircs://ergo:6697", "irc.example.com", "ergo:6697", "irc.example.com", "ircs://ergo:6697", true},
+		{"ircs://irc.example.com", "", "irc.example.com:6697", "irc.example.com", "ircs://irc.example.com:6697", true},
+		{"irc://ergo", "", "ergo:6667", "ergo", "irc://ergo:6667", false},
+		{"ergo:7000", "", "ergo:7000", "ergo", "ircs://ergo:7000", true},
+		{"ircs://[::1]:6697/", "", "[::1]:6697", "::1", "ircs://[::1]:6697", true},
+		{"ircs://[::1]", "", "[::1]:6697", "::1", "ircs://[::1]:6697", true},
+	}
+	for _, c := range cases {
+		got, err := UpstreamConfig{IRCCheck: c.in, IRCCheckServerName: c.sni}.IRC()
+		if err != nil {
+			t.Errorf("%s: %v", c.in, err)
+			continue
+		}
+		if got.Address != c.addr || got.ServerName != c.serverName || got.TLS != c.tls || got.Label != c.label {
+			t.Errorf("%s: %+v", c.in, got)
+		}
+	}
+	if got, err := (UpstreamConfig{}).IRC(); got != nil || err != nil {
+		t.Fatalf("empty: %+v %v", got, err)
+	}
+	for _, bad := range []string{"http://ergo:6697", "ircs://", "ergo:", "ergo:abc", "ircs://ergo:6697/#chan", "ircs://user@ergo"} {
+		if _, err := (UpstreamConfig{IRCCheck: bad}).IRC(); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	c := valid()
+	c.UpstreamConfig.IRCCheck = "http://ergo"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "IRC_CHECK") {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestPublicProbes(t *testing.T) {
+	got, err := UpstreamConfig{PublicProbeTargets: "auth=https://auth.example.com/healthz, irc=wss://irc.example.com/webirc,dev=http://localhost:8080/healthz"}.PublicProbes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Kind != "http" || got[0].Origin != "https://auth.example.com" ||
+		got[1].Kind != "ws" || got[1].Origin != "wss://irc.example.com" || got[2].Origin != "http://localhost:8080" {
+		t.Fatalf("%+v", got)
+	}
+	for _, bad := range []string{"auth", "auth=ftp://x/y", "auth=https://", "auth=https://u:p@x/", "auth=/healthz"} {
+		if _, err := (UpstreamConfig{PublicProbeTargets: bad}).PublicProbes(); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}

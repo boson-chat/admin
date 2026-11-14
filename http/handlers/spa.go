@@ -44,11 +44,21 @@ func NewSPA(fsys fs.FS) (*SPA, error) {
 	return s, nil
 }
 
-// CSP returns the Content-Security-Policy for the app.
-func (s *SPA) CSP() string {
+// CSP returns the Content-Security-Policy for the app. connect lists extra
+// origins the browser may contact (the public latency probes), exactly.
+func (s *SPA) CSP(connect ...string) string {
 	script := "'self'"
 	if len(s.ScriptHashes) > 0 {
 		script += " " + strings.Join(s.ScriptHashes, " ")
+	}
+	conn := "'self'"
+	seen := map[string]bool{}
+	for _, o := range connect {
+		if o == "" || seen[o] || strings.ContainsAny(o, " ;,'*") {
+			continue
+		}
+		seen[o] = true
+		conn += " " + o
 	}
 	return strings.Join([]string{
 		"default-src 'self'",
@@ -57,7 +67,7 @@ func (s *SPA) CSP() string {
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data:",
 		"font-src 'self'",
-		"connect-src 'self'",
+		"connect-src " + conn,
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
 		"form-action 'self'",
