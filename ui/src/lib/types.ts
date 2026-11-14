@@ -164,6 +164,10 @@ export interface NetworkSettings {
 	require_email_verification: boolean;
 	channel_creation: TextCreators;
 	voice_channel_creation: VoiceCreators;
+	/** auth ≥ 1.7: register a channel to its creator with ChanServ. Absent on older auth. */
+	channel_auto_register?: boolean;
+	/** auth ≥ 1.7: unregister channels idle this many days; 0 = never. Absent on older auth. */
+	channel_expiry_days?: number;
 	updated_at?: string;
 	updated_by?: string;
 	updated_by_username?: string;

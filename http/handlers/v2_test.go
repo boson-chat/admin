@@ -39,6 +39,35 @@ func TestSettingsAndSSOEndpoints(t *testing.T) {
 	}
 }
 
+func TestSettingsChannelLifecycle(t *testing.T) {
+	h := newHarness(t)
+	c, csrf := h.login()
+	// auth ≥ 1.7: the fields round-trip, false and 0 included.
+	w := h.do("PATCH", "/api/settings", map[string]any{"channel_auto_register": false, "channel_expiry_days": 0}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"channel_auto_register":false`) || !strings.Contains(w.Body.String(), `"channel_expiry_days":0`) {
+		t.Fatalf("patch channel settings: %d %s", w.Code, w.Body)
+	}
+	w = h.do("PATCH", "/api/settings", map[string]any{"channel_expiry_days": 45}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"channel_expiry_days":45`) {
+		t.Fatalf("patch expiry: %d %s", w.Code, w.Body)
+	}
+	w = h.do("PATCH", "/api/settings", map[string]any{"channel_expiry_days": 3651}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 400 || !strings.Contains(w.Body.String(), `"invalid_request"`) || !strings.Contains(w.Body.String(), "channel_expiry_days") {
+		t.Fatalf("out of range expiry: %d %s", w.Code, w.Body)
+	}
+
+	// auth ≤ 1.6: no such fields, and the panel doesn't invent them.
+	h.fake.Settings.ChannelAutoRegister, h.fake.Settings.ChannelExpiryDays = nil, nil
+	w = h.do("GET", "/api/settings", nil, withCookie(c))
+	if w.Code != 200 || strings.Contains(w.Body.String(), "channel_auto_register") || strings.Contains(w.Body.String(), "channel_expiry_days") {
+		t.Fatalf("older auth settings: %d %s", w.Code, w.Body)
+	}
+	w = h.do("PATCH", "/api/settings", map[string]any{"registration": "open"}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"registration":"open"`) || strings.Contains(w.Body.String(), "channel_expiry_days") {
+		t.Fatalf("older auth patch: %d %s", w.Code, w.Body)
+	}
+}
+
 func TestUserEndpoints(t *testing.T) {
 	h := newHarness(t)
 	c, csrf := h.login()

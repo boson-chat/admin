@@ -54,6 +54,15 @@ func (f *Fake) UpdateSettings(_ context.Context, at string, p authapi.SettingsPa
 	if p.VoiceChannelCreation != nil {
 		f.Settings.VoiceChannelCreation = *p.VoiceChannelCreation
 	}
+	// An auth < 1.7 (nil fields) ignores the channel lifecycle keys.
+	if p.ChannelAutoRegister != nil && f.Settings.ChannelAutoRegister != nil {
+		v := *p.ChannelAutoRegister
+		f.Settings.ChannelAutoRegister = &v
+	}
+	if p.ChannelExpiryDays != nil && f.Settings.ChannelExpiryDays != nil {
+		v := *p.ChannelExpiryDays
+		f.Settings.ChannelExpiryDays = &v
+	}
 	now := time.Now().UTC()
 	uid := f.access[at]
 	f.Settings.UpdatedAt, f.Settings.UpdatedBy = &now, &uid

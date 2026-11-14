@@ -44,7 +44,11 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   stderr only, download). Through a locked-down Docker socket proxy; see
   "Services control" below.
 - **Network settings:** registration (open, invite only, closed), required
-  email verification, and who may create text channels and voice rooms.
+  email verification, and who may create text channels and voice rooms. With
+  auth ≥ 1.7.0 also channel registration: register new channels to their
+  creator automatically, and unregister channels idle for a chosen number of
+  days (never, presets or 1–3,650). On older auth that group is disabled with
+  a note and its fields are never sent.
 - **Directory:** whether the network is listed in the boson.chat directory,
   and (once api.boson.chat supports it) submitting it with a DNS TXT proof.
   See "Directory" below.
@@ -366,6 +370,7 @@ running auth service and Dex, not only against fakes; rerun with
 | Endpoint | Release | Used for |
 |---|---|---|
 | `GET/PATCH /v1/admin/settings` → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` | 1.3.0 | Network settings. `updated_*` are null until the first PATCH |
+| `GET/PATCH /v1/admin/settings` add `channel_auto_register` (bool) and `channel_expiry_days` (0–3650, 0 = never) | 1.7.0 | Channel registration group. Absent on older auth: the panel leaves them out of its own JSON and never PATCHes them |
 | `POST /v1/admin/users` `{username, email, role, password \| send_invite_email}` → 201 `{user, invite_email_sent}` | 1.3.0 | Create user |
 | `POST /v1/admin/users/{id}/password-reset`, `…/verification` → 202 | 1.3.0 | Emails. `400 no_email`, `409 already_verified`, `409 account_disabled` (and `409 username_taken` / `email_taken` / `slug_taken`) get panel wording |
 | `GET /v1/admin/audit?event=&actor=&target=&since=&until=&cursor=&limit=` → `{entries[{…, actor_user_id, actor_username, target_user_id, target_username}], next_cursor}` | 1.3.0 | Audit paging. `event` is an exact name or a comma list; the panel expands its `admin_*`-style groups into names. `next_cursor` is always present (`null` at the end), which is how the panel tells it from 1.2 |

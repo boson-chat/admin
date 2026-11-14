@@ -135,3 +135,60 @@ func TestV2WireFormat(t *testing.T) {
 		t.Fatalf("saml patch body: %s", b)
 	}
 }
+
+// auth 1.7 adds channel_auto_register and channel_expiry_days; 1.6 and
+// older don't send them, which must read as "unknown", not false / 0.
+func TestSettingsChannelLifecycle(t *testing.T) {
+	var get, patched string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(get))
+		case http.MethodPatch:
+			b, _ := io.ReadAll(r.Body)
+			patched = string(b)
+			if strings.Contains(patched, `"channel_expiry_days":9999`) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":"invalid_request","message":"channel_expiry_days must be 0..3650"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"settings":{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","channel_auto_register":false,"channel_expiry_days":0}}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewAuthClient(srv.URL, time.Second, nil)
+	ctx := context.Background()
+
+	get = `{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","channel_auto_register":true,"channel_expiry_days":90}`
+	s, err := c.GetSettings(ctx, "t")
+	if err != nil || s.ChannelAutoRegister == nil || !*s.ChannelAutoRegister || s.ChannelExpiryDays == nil || *s.ChannelExpiryDays != 90 {
+		t.Fatalf("auth 1.7 settings: %v %+v", err, s)
+	}
+
+	get = `{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders"}`
+	s, err = c.GetSettings(ctx, "t")
+	if err != nil || s.ChannelAutoRegister != nil || s.ChannelExpiryDays != nil {
+		t.Fatalf("auth 1.6 settings: %v %+v", err, s)
+	}
+	if b, _ := json.Marshal(s); strings.Contains(string(b), "channel_auto_register") || strings.Contains(string(b), "channel_expiry_days") {
+		t.Fatalf("unknown fields re-encoded: %s", b)
+	}
+
+	// false and 0 are real values and must be sent.
+	s, err = c.UpdateSettings(ctx, "t", SettingsPatch{ChannelAutoRegister: new(false), ChannelExpiryDays: new(0)})
+	if err != nil || patched != `{"channel_auto_register":false,"channel_expiry_days":0}` {
+		t.Fatalf("patch: %v %s", err, patched)
+	}
+	if s.ChannelAutoRegister == nil || *s.ChannelAutoRegister || s.ChannelExpiryDays == nil || *s.ChannelExpiryDays != 0 {
+		t.Fatalf("patched settings: %+v", s)
+	}
+	if _, err := c.UpdateSettings(ctx, "t", SettingsPatch{Registration: new("open")}); err != nil || patched != `{"registration":"open"}` {
+		t.Fatalf("patch without channel fields: %v %s", err, patched)
+	}
+
+	// A 400 that only carries "code" keeps the code and message.
+	_, err = c.UpdateSettings(ctx, "t", SettingsPatch{ChannelExpiryDays: new(9999)})
+	if e, ok := apperr.As(err); !ok || e.Status != 400 || e.Code != "invalid_request" || !strings.Contains(e.Message, "0..3650") {
+		t.Fatalf("invalid: %v", err)
+	}
+}

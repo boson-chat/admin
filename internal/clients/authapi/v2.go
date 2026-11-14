@@ -22,6 +22,7 @@ const (
 	RequiresAuditFilters  = "v1.3.0"
 	RequiresSSO           = "v1.4.0"
 	RequiresIdentities    = "v1.4.0"
+	RequiresChannelExpiry = "v1.7.0"
 	unsupportedMsgPattern = "%s needs a newer auth service (auth ≥ %s)"
 )
 
@@ -56,14 +57,22 @@ const (
 	CreateRegistered = "registered"
 	CreateAdmins     = "admins"
 	CreateFounders   = "founders"
+
+	// MaxChannelExpiryDays bounds channel_expiry_days (0 = never expire).
+	MaxChannelExpiryDays = 3650
 )
 
 // NetworkSettings is GET /v1/admin/settings.
+//
+// ChannelAutoRegister and ChannelExpiryDays arrive with auth 1.7.0; they
+// stay nil (and are left out of the panel's own JSON) on older releases.
 type NetworkSettings struct {
 	Registration             string     `json:"registration"`
 	RequireEmailVerification bool       `json:"require_email_verification"`
 	ChannelCreation          string     `json:"channel_creation"`
 	VoiceChannelCreation     string     `json:"voice_channel_creation"`
+	ChannelAutoRegister      *bool      `json:"channel_auto_register,omitempty"`
+	ChannelExpiryDays        *int       `json:"channel_expiry_days,omitempty"`
 	UpdatedAt                *time.Time `json:"updated_at,omitempty"`
 	UpdatedBy                *string    `json:"updated_by,omitempty"`
 }
@@ -74,6 +83,8 @@ type SettingsPatch struct {
 	RequireEmailVerification *bool   `json:"require_email_verification,omitempty"`
 	ChannelCreation          *string `json:"channel_creation,omitempty"`
 	VoiceChannelCreation     *string `json:"voice_channel_creation,omitempty"`
+	ChannelAutoRegister      *bool   `json:"channel_auto_register,omitempty"`
+	ChannelExpiryDays        *int    `json:"channel_expiry_days,omitempty"`
 }
 
 // settingsEnvelope accepts both {"registration":…} and {"settings":{…}}.

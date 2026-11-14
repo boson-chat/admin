@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/mail"
 	"net/url"
 	"regexp"
@@ -59,6 +60,9 @@ func (s *AdminService) UpdateSettings(ctx context.Context, sess *session.Session
 	}
 	if err := oneOf(p.VoiceChannelCreation, voiceCreators, "voice_channel_creation"); err != nil {
 		return nil, err
+	}
+	if d := p.ChannelExpiryDays; d != nil && (*d < 0 || *d > authapi.MaxChannelExpiryDays) {
+		return nil, apperr.Invalid(fmt.Sprintf("channel_expiry_days must be between 0 (never) and %d", authapi.MaxChannelExpiryDays))
 	}
 	if p == (authapi.SettingsPatch{}) {
 		return nil, apperr.Invalid("nothing to update")

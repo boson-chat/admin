@@ -24,6 +24,15 @@ func TestSettings(t *testing.T) {
 	if err != nil || st.Registration != "closed" || !st.RequireEmailVerification || st.UpdatedByUsername != "root" || st.VoiceChannelCreation != "founders" {
 		t.Fatalf("update: %v %+v", err, st)
 	}
+	for _, d := range []int{-1, authapi.MaxChannelExpiryDays + 1} {
+		if _, err := svc.UpdateSettings(ctx, s, authapi.SettingsPatch{ChannelExpiryDays: new(d)}); err == nil {
+			t.Fatalf("channel_expiry_days %d accepted", d)
+		}
+	}
+	st, err = svc.UpdateSettings(ctx, s, authapi.SettingsPatch{ChannelAutoRegister: bptr(false), ChannelExpiryDays: new(180)})
+	if err != nil || st.ChannelAutoRegister == nil || *st.ChannelAutoRegister || st.ChannelExpiryDays == nil || *st.ChannelExpiryDays != 180 {
+		t.Fatalf("channel lifecycle: %v %+v", err, st)
+	}
 	f.Legacy = true
 	if _, err := svc.GetSettings(ctx, s); !apperr.IsUnsupported(err) {
 		t.Fatalf("legacy: %v", err)

@@ -30,7 +30,9 @@ type Fake struct {
 
 	// Legacy makes the fake an auth v1.2: none of the newer admin
 	// endpoints exist and audit filters are ignored.
-	Legacy    bool
+	Legacy bool
+	// Settings starts as an auth 1.7 (with the channel lifecycle fields);
+	// set ChannelAutoRegister / ChannelExpiryDays to nil for an older one.
 	Settings  authapi.NetworkSettings
 	Providers []authapi.SSOProviderConfig
 	// Emails records password-reset / verification sends as "kind:userID".
@@ -63,8 +65,9 @@ func New() *Fake {
 	return &Fake{
 		Users: map[string]*authapi.User{}, Passwords: map[string]string{},
 		access: map[string]string{}, refresh: map[string]string{}, used: map[string]bool{},
-		Settings: authapi.NetworkSettings{Registration: "invite", ChannelCreation: "registered", VoiceChannelCreation: "founders"},
-		Roles:    defaultRoles(), UserRoles: map[string][]string{},
+		Settings: authapi.NetworkSettings{Registration: "invite", ChannelCreation: "registered", VoiceChannelCreation: "founders",
+			ChannelAutoRegister: new(true), ChannelExpiryDays: new(0)},
+		Roles: defaultRoles(), UserRoles: map[string][]string{},
 	}
 }
 
