@@ -164,6 +164,9 @@ func (h *Handlers) pushBranding(ctx context.Context, actor string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
+		// The directory gets auth's /v1/branding: wait until auth has
+		// loaded the file just written.
+		h.Branding.WaitApplied(ctx, 30*time.Second)
 		res, err := h.Directory.PushBranding(ctx, actor)
 		if err != nil {
 			logger.FromCtx(ctx).Warn().Err(err).Str("actor", actor).Msg("pushing branding to the directory")

@@ -76,3 +76,36 @@ func TestEmailClient(t *testing.T) {
 		t.Fatalf("400: %v", err)
 	}
 }
+
+func TestBrandingDocument(t *testing.T) {
+	mode := "ok"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/branding" {
+			http.NotFound(w, r)
+			return
+		}
+		switch mode {
+		case "none":
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":"no_branding","message":"no branding"}`))
+		case "old":
+			http.NotFound(w, r)
+		default:
+			_, _ = w.Write([]byte(`{"version":1,"base":"dark","logo":"https://auth.example.com/v1/branding/assets/logo.svg"}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewBrandingClient(srv.URL, time.Second, nil)
+	doc, ok, err := c.Document(context.Background())
+	if err != nil || !ok || doc["base"] != "dark" {
+		t.Fatalf("%v %v %v", err, ok, doc)
+	}
+	mode = "none"
+	if doc, ok, err := c.Document(context.Background()); doc != nil || ok || err != nil {
+		t.Fatalf("none: %v %v %v", doc, ok, err)
+	}
+	mode = "old"
+	if _, _, err := c.Document(context.Background()); !apperr.IsUnsupported(err) {
+		t.Fatalf("old: %v", err)
+	}
+}

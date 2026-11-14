@@ -12,7 +12,8 @@
 //   - the files themselves, for the panel's preview;
 //   - email previews (images inlined, for a sandboxed srcdoc iframe) and test
 //     sends through auth's internal listener;
-//   - the bundle the directory sync pushes to this network's listing.
+//   - auth's public theme document (/v1/branding, absolute image URLs),
+//     which the directory sync puts on this network's listing.
 package branding
 
 import (
@@ -49,6 +50,8 @@ type Options struct {
 	// Email is auth's internal email API; nil when AUTH_INTERNAL_URL or
 	// INTERNAL_API_TOKEN isn't set.
 	Email authapi.EmailClientImpl
+	// Public is auth's GET /v1/branding (AUTH_URL).
+	Public authapi.BrandingClientImpl
 }
 
 // Image is one stored image.
@@ -76,8 +79,13 @@ type BrandingServiceImpl interface {
 	Upload(ctx context.Context, actor, ifMatch, slot string, data []byte) (*Image, error)
 	Remove(ctx context.Context, actor, ifMatch, slot string) error
 	Asset(name string) (*Asset, error)
-	// Bundle is the theme and its images as the directory takes them.
-	Bundle(ctx context.Context) (*theme.Bundle, error)
+	// DirectoryDocument is auth's public theme document (absolute image
+	// URLs on auth's host) ready for the directory listing; ok is false
+	// when the network has no branding.
+	DirectoryDocument(ctx context.Context) (doc map[string]any, ok bool, err error)
+	// WaitApplied waits (up to max) until auth has loaded the config file
+	// the panel just wrote, so its /v1/branding is current.
+	WaitApplied(ctx context.Context, max time.Duration)
 
 	EmailEnabled() bool
 	// Preview and SendTest call auth as the signed-in admin: with runs a
@@ -288,25 +296,38 @@ func (b *BrandingService) Asset(name string) (*Asset, error) {
 	return &Asset{Name: name, ContentType: ct, Data: data, ModTime: fi.ModTime(), Immutable: ours}, nil
 }
 
-// Bundle is the stored theme with its image files, for the directory.
-func (b *BrandingService) Bundle(ctx context.Context) (*theme.Bundle, error) {
-	if !b.enabled() {
-		return nil, errOff
+func (b *BrandingService) DirectoryDocument(ctx context.Context) (map[string]any, bool, error) {
+	if b.o.Public == nil {
+		return nil, false, apperr.Unsupported("no auth service to read the branding from")
 	}
-	out := &theme.Bundle{Theme: theme.Default(), Images: map[string]theme.BundleImage{}}
-	if v, ok := b.o.Config.FileValue(stackconfig.KeyBrandingTheme); ok {
-		out.Theme = v.(theme.Theme)
+	doc, ok, err := b.o.Public.Document(ctx)
+	if err != nil || !ok {
+		return nil, ok, err
 	}
-	for slot, file := range b.current() {
-		a, err := b.Asset(file)
-		if err != nil {
-			logger.FromCtx(ctx).Warn().Str("slot", slot).Str("file", file).Msg("branding image named in the config is missing")
-			continue
+	return theme.ForDirectory(doc), true, nil
+}
+
+func (b *BrandingService) WaitApplied(ctx context.Context, max time.Duration) {
+	if b.o.Config == nil || !b.o.Config.Enabled() {
+		return
+	}
+	deadline := time.Now().Add(max)
+	for {
+		pending := false
+		for _, st := range b.o.Config.Statuses(ctx) {
+			if st.Name == "auth" && st.State == stackconfig.StatePending {
+				pending = true
+			}
 		}
-		sum := sha256.Sum256(a.Data)
-		out.Images[slot] = theme.BundleImage{ContentType: a.ContentType, Data: a.Data, Hash: hex.EncodeToString(sum[:])}
+		if !pending || time.Now().After(deadline) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
 	}
-	return out, nil
 }
 
 // writeAtomic writes data to path through a temp file in the same

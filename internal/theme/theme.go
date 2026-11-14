@@ -267,10 +267,6 @@ func FileStem(slot string) string {
 	return slot
 }
 
-// DirectorySlot is the slot's name in the directory's theme-images API
-// (logo, logo_wide, login_background, pane-<name>).
-func DirectorySlot(slot string) string { return FileStem(slot) }
-
 // FileRe matches the files the panel writes: <stem>-<hash>.<ext>.
 var FileRe = regexp.MustCompile(`^[a-z_]+(-[a-z]+)?-[0-9a-f]{12,64}\.(webp|svg)$`)
 
@@ -328,17 +324,37 @@ func CleanImages(v any) (map[string]string, error) {
 	return out, nil
 }
 
-// Bundle is a stored theme with its image files (slot → file), what the
-// directory sync pushes.
-type Bundle struct {
-	Theme  Theme
-	Images map[string]BundleImage
-}
-
-// BundleImage is one image file.
-type BundleImage struct {
-	ContentType string
-	Data        []byte
-	// Hash is the hex sha256 of Data.
-	Hash string
+// ForDirectory prepares auth's public document (GET /v1/branding) for the
+// directory's PUT /v1/networks/{id}/theme: an image the network doesn't
+// have is sent as "" (remove), since an omitted one keeps the directory's.
+func ForDirectory(doc map[string]any) map[string]any {
+	out := make(map[string]any, len(doc)+3)
+	for k, v := range doc {
+		out[k] = v
+	}
+	for _, k := range []string{"logo", "logo_wide", "login_background"} {
+		if s, _ := out[k].(string); s == "" {
+			out[k] = ""
+		}
+	}
+	panes := map[string]any{}
+	if p, ok := out["panes"].(map[string]any); ok {
+		for k, v := range p {
+			panes[k] = v
+		}
+	}
+	for _, name := range Panes {
+		pane := map[string]any{}
+		if p, ok := panes[name].(map[string]any); ok {
+			for k, v := range p {
+				pane[k] = v
+			}
+		}
+		if s, _ := pane["image"].(string); s == "" {
+			pane["image"] = ""
+		}
+		panes[name] = pane
+	}
+	out["panes"] = panes
+	return out
 }
