@@ -103,7 +103,8 @@ type BrandingSync struct {
 	// Unsupported: the directory has no theme API yet (not an error).
 	Unsupported bool   `json:"unsupported,omitempty"`
 	Error       string `json:"error,omitempty"`
-	Images      int    `json:"images"`
+	// Cleared: the network has no branding, so the listing's theme was removed.
+	Cleared bool `json:"cleared,omitempty"`
 }
 
 // UnmarshalJSON takes {network, verification} or a bare network (with
@@ -196,12 +197,11 @@ type DirectoryClientImpl interface {
 	Verify(ctx context.Context, key, id string) (*VerifyResult, error)
 	RegenerateToken(ctx context.Context, key, id string) (*Listing, error)
 	Unlist(ctx context.Context, key, id string) error
-	// The listing's theme (branding contract, section 3): the
-	// boson-theme/1 document without image URLs, and its images by slot
-	// (logo, logo_wide, login_background, pane-<name>).
+	// The listing's theme (branding contract, section 3): a boson-theme/1
+	// document whose https image URLs the directory hot-links ("" removes
+	// an image, omitted keeps it). DeleteTheme clears it.
 	PutTheme(ctx context.Context, key, id string, theme any) error
-	PutThemeImage(ctx context.Context, key, id, slot, contentType string, data []byte) error
-	DeleteThemeImage(ctx context.Context, key, id, slot string) error
+	DeleteTheme(ctx context.Context, key, id string) error
 }
 
 // DirectoryEndpoints is what network registration needs.
@@ -340,27 +340,25 @@ func (d *DirectoryClient) Unlist(ctx context.Context, key, id string) error {
 }
 
 // ThemeEndpoints is what pushing the branding needs.
-const ThemeEndpoints = "PUT /v1/networks/{id}/theme and /theme-images/{slot}"
+const ThemeEndpoints = "PUT/DELETE /v1/networks/{id}/theme"
 
-func (d *DirectoryClient) themeUnsupported(err error) error {
+func (d *DirectoryClient) themeError(err error) error {
+	if e, ok := apperr.As(err); ok && e.Code == "not_local" {
+		return apperr.New(http.StatusConflict, "not_local", "the listing was imported from another directory; edit its theme there")
+	}
 	return unsupported(err, d.c.Name+" doesn't have "+ThemeEndpoints+" (an older directory)")
 }
 
 func (d *DirectoryClient) PutTheme(ctx context.Context, key, id string, theme any) error {
-	return d.themeUnsupported(d.c.call(ctx, "directory.theme", http.MethodPut, netPath(id)+"/theme", keyAuth(key), theme, nil))
+	return d.themeError(d.c.call(ctx, "directory.theme", http.MethodPut, netPath(id)+"/theme", keyAuth(key), theme, nil))
 }
 
-func (d *DirectoryClient) PutThemeImage(ctx context.Context, key, id, slot, contentType string, data []byte) error {
-	return d.themeUnsupported(d.c.call(ctx, "directory.theme_image", http.MethodPut, netPath(id)+"/theme-images/"+url.PathEscape(slot),
-		keyAuth(key), RawBody{ContentType: contentType, Data: data}, nil))
-}
-
-func (d *DirectoryClient) DeleteThemeImage(ctx context.Context, key, id, slot string) error {
-	err := d.c.call(ctx, "directory.theme_image_delete", http.MethodDelete, netPath(id)+"/theme-images/"+url.PathEscape(slot), keyAuth(key), nil, nil)
+func (d *DirectoryClient) DeleteTheme(ctx context.Context, key, id string) error {
+	err := d.c.call(ctx, "directory.theme_delete", http.MethodDelete, netPath(id)+"/theme", keyAuth(key), nil, nil)
 	if isNotFound(err) {
-		return nil // nothing there
+		return nil // no theme there
 	}
-	return d.themeUnsupported(err)
+	return d.themeError(err)
 }
 
 // ---- operator API (the stack's own directory) ----

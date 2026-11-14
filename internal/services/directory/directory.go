@@ -35,7 +35,6 @@ import (
 	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/logger"
-	"github.com/boson-chat/admin/internal/theme"
 )
 
 type Options struct {
@@ -52,9 +51,10 @@ type Options struct {
 	// Defaults for the form (the public IRC host).
 	Hostname string
 	Port     int
-	// Branding, when set, is the stack's theme and images: pushed to the
-	// listing after every submit and edit, and by PushBranding.
-	Branding func(ctx context.Context) (*theme.Bundle, error)
+	// Branding, when set, is the stack's theme document (auth's
+	// /v1/branding, absolute image URLs): pushed to the listing after
+	// every submit and edit, and by PushBranding. ok=false: no branding.
+	Branding func(ctx context.Context) (doc map[string]any, ok bool, err error)
 }
 
 // Status is GET /api/directory.
@@ -90,16 +90,16 @@ type DirectoryService struct {
 	o Options
 
 	mu sync.Mutex
-	// pushed: per listing, what the directory last accepted (theme JSON
-	// hash and image hashes by slot), so unchanged images aren't re-sent.
-	pushed map[string]map[string]string
+	// pushed: per listing, the hash of the document the directory last
+	// accepted ("-" for cleared), so an unchanged theme isn't re-sent.
+	pushed map[string]string
 }
 
 func NewDirectoryService(o Options) DirectoryServiceImpl {
 	if o.Port == 0 {
 		o.Port = 6697
 	}
-	return &DirectoryService{o: o, pushed: map[string]map[string]string{}}
+	return &DirectoryService{o: o, pushed: map[string]string{}}
 }
 
 func (d *DirectoryService) registration() bool {
@@ -319,82 +319,45 @@ func (d *DirectoryService) PushBranding(ctx context.Context, actor string) (*bos
 	return d.syncBranding(ctx, actor, host, l.Network.ID), nil
 }
 
-// syncBranding pushes the theme (JSON, without image URLs) and each image
-// slot to the listing: changed images are uploaded, removed ones deleted.
-// A directory without the theme API is reported, not an error.
+// syncBranding puts the stack's theme document on the listing (the
+// directory hot-links auth's image URLs), or clears it when the network
+// has no branding. A directory without the theme API is reported, not an
+// error.
 func (d *DirectoryService) syncBranding(ctx context.Context, actor, hostname, id string) *bosonapi.BrandingSync {
 	if d.o.Branding == nil || id == "" {
 		return nil
 	}
-	b, err := d.o.Branding(ctx)
+	doc, ok, err := d.o.Branding(ctx)
 	if err != nil {
-		if e, ok := apperr.As(err); ok && e.Code == "config_file_off" {
-			return nil // no stack config file: no branding to push
-		}
-		return &bosonapi.BrandingSync{Error: errMsg(err)}
+		return &bosonapi.BrandingSync{Unsupported: apperr.IsUnsupported(err), Error: errMsg(err)}
+	}
+	sum := "-"
+	if ok {
+		b, _ := json.Marshal(doc)
+		h := sha256.Sum256(b)
+		sum = base64.RawURLEncoding.EncodeToString(h[:])
+	}
+	res := &bosonapi.BrandingSync{OK: true, Cleared: !ok}
+	d.mu.Lock()
+	same := d.pushed[id] == sum
+	d.mu.Unlock()
+	if same {
+		return res
 	}
 	key := d.Key(hostname)
-	d.mu.Lock()
-	last := d.pushed[id]
-	d.mu.Unlock()
-	next := map[string]string{}
-	res := &bosonapi.BrandingSync{}
-	fail := func(err error) *bosonapi.BrandingSync {
-		if apperr.IsUnsupported(err) {
-			res.Unsupported, res.Error = true, errMsg(err)
-		} else {
-			res.Error = errMsg(err)
-		}
+	if ok {
+		err = d.o.Client.PutTheme(ctx, key, id, doc)
+	} else {
+		err = d.o.Client.DeleteTheme(ctx, key, id)
+	}
+	if err != nil {
+		res = &bosonapi.BrandingSync{Unsupported: apperr.IsUnsupported(err), Error: errMsg(err)}
 		logger.FromCtx(ctx).Warn().Err(err).Str("actor", actor).Str("action", "directory.branding").Str("hostname", hostname).Msg("directory action")
 		return res
 	}
-
-	themeJSON, _ := json.Marshal(b.Theme)
-	sum := sha256.Sum256(themeJSON)
-	next["theme"] = base64.RawURLEncoding.EncodeToString(sum[:])
-	if last == nil || last["theme"] != next["theme"] {
-		if err := d.o.Client.PutTheme(ctx, key, id, b.Theme); err != nil {
-			return fail(err)
-		}
-	}
-	var problems []string
-	for _, slot := range theme.Slots {
-		ds := theme.DirectorySlot(slot)
-		img, has := b.Images[slot]
-		switch {
-		case has && last != nil && last[slot] == img.Hash:
-			next[slot] = img.Hash
-		case has:
-			if err := d.o.Client.PutThemeImage(ctx, key, id, ds, img.ContentType, img.Data); err != nil {
-				if apperr.IsUnsupported(err) {
-					return fail(err)
-				}
-				problems = append(problems, ds+": "+errMsg(err))
-				continue
-			}
-			next[slot] = img.Hash
-			res.Images++
-		case last == nil || last[slot] != "":
-			if err := d.o.Client.DeleteThemeImage(ctx, key, id, ds); err != nil {
-				if apperr.IsUnsupported(err) {
-					return fail(err)
-				}
-				// logo_wide is a panel addition a directory may not know.
-				if slot != "logo_wide" {
-					problems = append(problems, ds+": "+errMsg(err))
-				}
-			}
-		}
-	}
 	d.mu.Lock()
-	d.pushed[id] = next
+	d.pushed[id] = sum
 	d.mu.Unlock()
-	if len(problems) > 0 {
-		res.Error = "some images weren't accepted: " + strings.Join(problems, "; ")
-		logger.FromCtx(ctx).Warn().Str("actor", actor).Str("action", "directory.branding").Str("hostname", hostname).Strs("problems", problems).Msg("directory action")
-		return res
-	}
-	res.OK = true
 	d.log(ctx, actor, "branding", hostname, nil)
 	return res
 }

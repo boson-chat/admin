@@ -119,11 +119,6 @@ func TestUploadReplaceRemove(t *testing.T) {
 		}
 	}
 
-	bundle, err := b.Bundle(ctx)
-	if err != nil || len(bundle.Images) != 2 || bundle.Images["logo"].ContentType != "image/svg+xml" || bundle.Theme.Base != "dark" {
-		t.Fatalf("bundle: %v %+v", err, bundle)
-	}
-
 	if err := b.Remove(ctx, "root", "", "panes.messages.image"); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +195,7 @@ func TestHandWrittenImages(t *testing.T) {
 // The theme goes through PATCH /api/config's path and comes back the same.
 func TestThemeRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	b, cfg, path := newService(t, handWritten, nil)
+	_, cfg, path := newService(t, handWritten, nil)
 	in := map[string]any{
 		"version": 1.0, "base": "light",
 		"colors": map[string]any{"accent": "#7C3AED", "bg": "#ffffff", "nonsense": "#000000"},
@@ -242,10 +237,6 @@ func TestThemeRoundTrip(t *testing.T) {
 		th.Nick.Saturation != 50 || th.Panes["messages"].Position != "top" || *th.Panes["messages"].Dim != 0.7 ||
 		*th.Panes["messages"].Blur != 8 || th.Panes["servers"].BG != "#0b0b10" || th.Panes["messages"].Image != "" {
 		t.Fatalf("%+v", th)
-	}
-	bundle, _ := b.Bundle(ctx)
-	if bundle.Theme.Base != "light" {
-		t.Fatalf("bundle theme %+v", bundle.Theme)
 	}
 
 	// Invalid values are refused with the field named, and the file is untouched.
@@ -395,5 +386,42 @@ func TestEmailPreviewInlinesImages(t *testing.T) {
 	off, _, _ := newService(t, "version: 1\n", nil)
 	if _, err := off.Preview(ctx, "root", tok, authapi.EmailPreviewRequest{Template: "invite"}); err == nil || off.EmailEnabled() {
 		t.Fatal("preview without auth's internal API")
+	}
+}
+
+type fakePublic struct {
+	doc map[string]any
+	ok  bool
+	err error
+}
+
+func (f fakePublic) Document(context.Context) (map[string]any, bool, error) {
+	return f.doc, f.ok, f.err
+}
+
+// The directory gets auth's document, with absent images sent as "" so
+// the listing drops them.
+func TestDirectoryDocument(t *testing.T) {
+	ctx := context.Background()
+	logo := "https://auth.example.com/v1/branding/assets/logo-0123456789abcdef.svg?v=1"
+	b := NewBrandingService(Options{Public: fakePublic{ok: true, doc: map[string]any{
+		"version": 1.0, "base": "dark", "logo": logo,
+		"panes": map[string]any{"messages": map[string]any{"image": "https://auth.example.com/m.webp", "dim": 0.7}},
+	}}})
+	doc, ok, err := b.DirectoryDocument(ctx)
+	if err != nil || !ok || doc["logo"] != logo || doc["logo_wide"] != "" || doc["login_background"] != "" {
+		t.Fatalf("%v %v %v", err, ok, doc)
+	}
+	panes := doc["panes"].(map[string]any)
+	if panes["messages"].(map[string]any)["image"] != "https://auth.example.com/m.webp" || panes["messages"].(map[string]any)["dim"] != 0.7 ||
+		panes["servers"].(map[string]any)["image"] != "" {
+		t.Fatalf("panes %v", panes)
+	}
+	none := NewBrandingService(Options{Public: fakePublic{}})
+	if doc, ok, err := none.DirectoryDocument(ctx); doc != nil || ok || err != nil {
+		t.Fatalf("no branding: %v %v %v", doc, ok, err)
+	}
+	if _, _, err := NewBrandingService(Options{}).DirectoryDocument(ctx); err == nil {
+		t.Fatal("no auth client")
 	}
 }

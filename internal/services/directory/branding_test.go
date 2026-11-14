@@ -13,18 +13,15 @@ import (
 
 func TestBrandingPushedWithTheListing(t *testing.T) {
 	f, srv := newFakeV1(t)
-	radius := 4
-	bundle := &theme.Bundle{
-		Theme: theme.Theme{Version: 1, Base: "light", Colors: map[string]string{"accent": "#7c3aed"}, Radius: &radius},
-		Images: map[string]theme.BundleImage{
-			"logo":                 {ContentType: "image/svg+xml", Data: []byte("<svg/>"), Hash: "a"},
-			"panes.messages.image": {ContentType: "image/webp", Data: []byte("RIFF"), Hash: "b"},
-		},
-	}
-	var brandingErr error
+	doc := theme.ForDirectory(map[string]any{
+		"version": 1.0, "base": "light", "colors": map[string]any{"accent": "#7c3aed"},
+		"logo": "https://auth.example.com/v1/branding/assets/logo-0123456789abcdef.svg?v=1",
+	})
+	has := true
+	var docErr error
 	d := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Registration: true,
 		Secret: []byte("0123456789abcdef0123456789abcdef"), Hostname: "irc.example.org",
-		Branding: func(context.Context) (*theme.Bundle, error) { return bundle, brandingErr },
+		Branding: func(context.Context) (map[string]any, bool, error) { return doc, has, docErr },
 	}).(*DirectoryService)
 	ctx := context.Background()
 
@@ -33,70 +30,82 @@ func TestBrandingPushedWithTheListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := l.Network.ID
-	if l.BrandingSync == nil || !l.BrandingSync.OK || l.BrandingSync.Images != 2 {
-		t.Fatalf("sync: %+v", l.BrandingSync)
+	if l.BrandingSync == nil || !l.BrandingSync.OK || f.themePuts != 1 {
+		t.Fatalf("sync: %+v puts %d", l.BrandingSync, f.themePuts)
 	}
-	if f.themes[id]["base"] != "light" || f.themes[id]["colors"].(map[string]any)["accent"] != "#7c3aed" || f.themes[id]["logo"] != nil {
-		t.Fatalf("theme: %v", f.themes[id])
-	}
-	if f.themeImages[id]["logo"] != "image/svg+xml" || f.themeImages[id]["pane-messages"] != "image/webp" || len(f.themeImages[id]) != 2 {
-		t.Fatalf("images: %v", f.themeImages[id])
+	got := f.themes[id]
+	if got["base"] != "light" || got["logo"] != doc["logo"] || got["login_background"] != "" ||
+		got["panes"].(map[string]any)["messages"].(map[string]any)["image"] != "" {
+		t.Fatalf("theme: %v", got)
 	}
 
-	// An edit with nothing new re-sends no images.
-	puts := f.imagePuts
+	// Nothing new: not re-sent.
 	l, err = d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "Renamed"})
-	if err != nil || !l.BrandingSync.OK || f.imagePuts != puts || l.BrandingSync.Images != 0 {
-		t.Fatalf("update: %v %+v puts %d→%d", err, l.BrandingSync, puts, f.imagePuts)
+	if err != nil || !l.BrandingSync.OK || f.themePuts != 1 {
+		t.Fatalf("update: %v %+v puts %d", err, l.BrandingSync, f.themePuts)
 	}
-
-	// A removed image is deleted; a changed one re-sent.
-	delete(bundle.Images, "logo")
-	bundle.Images["panes.messages.image"] = theme.BundleImage{ContentType: "image/webp", Data: []byte("RIFF2"), Hash: "c"}
+	// A change is pushed by PushBranding.
+	doc["base"] = "dark"
 	res, err := d.PushBranding(ctx, "root")
-	if err != nil || !res.OK || res.Images != 1 || f.themeImages[id]["logo"] != "" || f.imagePuts != puts+1 {
-		t.Fatalf("push: %v %+v %v", err, res, f.themeImages[id])
+	if err != nil || !res.OK || f.themePuts != 2 || f.themes[id]["base"] != "dark" {
+		t.Fatalf("push: %v %+v", err, res)
 	}
-
-	// logo_wide isn't known to this directory: reported, the rest goes on.
-	bundle.Images["logo_wide"] = theme.BundleImage{ContentType: "image/webp", Data: []byte("RIFF"), Hash: "d"}
+	// The directory refuses a value: reported with its message.
+	doc["logo"] = "http://auth.localhost/logo.svg"
 	res, _ = d.PushBranding(ctx, "root")
 	if res.OK || res.Error == "" || res.Unsupported {
-		t.Fatalf("logo_wide: %+v", res)
+		t.Fatalf("invalid: %+v", res)
 	}
+	// No branding any more: the listing's theme is cleared.
+	has = false
+	res, _ = d.PushBranding(ctx, "root")
+	if !res.OK || !res.Cleared || f.themes[id] != nil {
+		t.Fatalf("clear: %+v %v", res, f.themes[id])
+	}
+	if res, _ := d.PushBranding(ctx, "root"); !res.OK {
+		t.Fatalf("clear again: %+v", res)
+	}
+
+	// An imported listing: 409 not_local, explained.
+	has, doc["logo"] = true, ""
+	f.imported = map[string]bool{id: true}
+	res, _ = d.PushBranding(ctx, "root")
+	if res.OK || res.Error == "" {
+		t.Fatalf("not local: %+v", res)
+	}
+	f.imported = nil
 
 	// An older directory without the theme API: unsupported, not an error,
 	// and the listing edit itself still succeeds.
 	f.noTheme = true
-	d.pushed = map[string]map[string]string{}
+	d.pushed = map[string]string{}
 	l, err = d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "Again"})
 	if err != nil || l.Network.Name != "Again" || l.BrandingSync == nil || !l.BrandingSync.Unsupported || l.BrandingSync.OK {
 		t.Fatalf("old directory: %v %+v", err, l.BrandingSync)
 	}
 
-	// No stack config file: nothing to push.
-	brandingErr = apperr.New(503, "config_file_off", "off")
-	if l, _ := d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "x"}); l.BrandingSync != nil {
-		t.Fatalf("config off: %+v", l.BrandingSync)
+	// auth can't serve the document: reported.
+	f.noTheme = false
+	docErr = apperr.Unsupported("old auth")
+	if l, _ := d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "x"}); l.BrandingSync == nil || !l.BrandingSync.Unsupported {
+		t.Fatalf("old auth: %+v", l.BrandingSync)
 	}
-	brandingErr = errors.New("disk on fire")
+	docErr = errors.New("down")
 	if l, _ := d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "x"}); l.BrandingSync == nil || l.BrandingSync.Error == "" {
-		t.Fatalf("bundle error: %+v", l.BrandingSync)
+		t.Fatalf("auth down: %+v", l.BrandingSync)
 	}
 }
 
 func TestPushBrandingWithoutListing(t *testing.T) {
 	_, srv := newFakeV1(t)
 	calls := 0
+	src := func(context.Context) (map[string]any, bool, error) { calls++; return map[string]any{}, true, nil }
 	d := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Registration: true,
-		Secret: []byte("k"), Hostname: "irc.example.org",
-		Branding: func(context.Context) (*theme.Bundle, error) { calls++; return &theme.Bundle{}, nil },
-	})
+		Secret: []byte("k"), Hostname: "irc.example.org", Branding: src})
 	if res, err := d.PushBranding(context.Background(), "root"); res != nil || err != nil || calls != 0 {
 		t.Fatalf("%v %v %d", res, err, calls)
 	}
-	off := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Secret: []byte("k"), Hostname: "irc.example.org",
-		Branding: func(context.Context) (*theme.Bundle, error) { calls++; return &theme.Bundle{}, nil }})
+	off := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Secret: []byte("k"), Hostname: "irc.example.org", Branding: src})
 	if res, err := off.PushBranding(context.Background(), "root"); res != nil || err != nil || calls != 0 {
 		t.Fatalf("registration off: %v %v", res, err)
 	}
