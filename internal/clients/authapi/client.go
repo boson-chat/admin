@@ -89,6 +89,8 @@ func IsUnauthorized(err error) bool {
 type errorBody struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	// Code is the same code; newer auth releases send both.
+	Code string `json:"code"`
 }
 
 const maxResponse = 4 << 20
@@ -158,6 +160,9 @@ func (c *AuthClient) roundTrip(ctx context.Context, method, path, token string, 
 func upstreamError(resp *http.Response, data []byte) error {
 	var eb errorBody
 	_ = json.Unmarshal(data, &eb)
+	if eb.Error == "" {
+		eb.Error = eb.Code
+	}
 	if resp.StatusCode >= 500 {
 		return apperr.New(http.StatusBadGateway, "upstream_error", "the auth service failed to handle the request")
 	}
