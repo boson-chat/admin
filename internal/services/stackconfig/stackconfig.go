@@ -68,6 +68,8 @@ type Issue struct {
 type Service struct {
 	o Options
 
+	checks []check
+
 	mu       sync.RWMutex
 	admin    AdminValues
 	issues   []Issue // admin keys only (for /internal/config/status)
@@ -279,6 +281,49 @@ func (s *Service) FileValue(name string) (any, bool) {
 
 // ---- writing ----
 
+// Lookup returns a key's value as it is (or would be) in the file: ok is
+// false when the key is unset.
+type Lookup func(key string) (v any, ok bool)
+
+// CheckFunc validates a change as a whole, for keys that depend on each
+// other. after is the file with the change applied, before the file as it
+// is. A returned *apperr.Error goes to the client as it is.
+type CheckFunc func(ctx context.Context, after, before Lookup) error
+
+type check struct {
+	prefix string
+	fn     CheckFunc
+}
+
+// AddCheck runs fn on every change that touches a key starting with
+// prefix. Call it while wiring, before serving.
+func (s *Service) AddCheck(prefix string, fn CheckFunc) {
+	s.checks = append(s.checks, check{prefix: prefix, fn: fn})
+}
+
+func (s *Service) runChecks(ctx context.Context, set map[string]any, unset []string) error {
+	keys := Change{Unset: unset, Set: set}.Keys()
+	before := func(name string) (any, bool) { return s.FileValue(name) }
+	after := func(name string) (any, bool) {
+		if v, ok := set[name]; ok {
+			return jsonShape(v), true
+		}
+		if slices.Contains(unset, name) {
+			return nil, false
+		}
+		return s.FileValue(name)
+	}
+	for _, c := range s.checks {
+		if !slices.ContainsFunc(keys, func(k string) bool { return strings.HasPrefix(k, c.prefix) }) {
+			continue
+		}
+		if err := c.fn(ctx, after, before); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 var (
 	errOff = apperr.New(http.StatusServiceUnavailable, "config_file_off",
 		"no stack config file: set BOSON_CONFIG=/config/boson.yaml on the admin service and mount the stack's config/ directory (docs/config.md)")
@@ -348,6 +393,10 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		if !can(k.Perm) {
 			return nil, &MissingPermissionError{Perm: k.Perm, Key: name}
 		}
+	}
+
+	if err := s.runChecks(ctx, set, c.Unset); err != nil {
+		return nil, err
 	}
 
 	err := s.Write(ctx, actor, ifMatch, "config.update", c.Keys(), func(root *yaml.Node) ([]string, error) {

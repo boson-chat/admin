@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
 	"github.com/boson-chat/admin/internal/session"
@@ -75,7 +76,9 @@ type Handlers struct {
 	Config *stackconfig.Service
 	// Branding: images and email previews (nil = off).
 	Branding branding.BrandingServiceImpl
-	Sessions *session.Codec
+	// NickClaims: the Nick registration page (never nil after Register).
+	NickClaims nickclaim.ServiceImpl
+	Sessions   *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features
@@ -100,6 +103,9 @@ func (h *Handlers) features() Features {
 func (h *Handlers) Register(mux *http.ServeMux) {
 	if h.Config == nil {
 		h.Config = stackconfig.New(stackconfig.Options{})
+	}
+	if h.NickClaims == nil {
+		h.NickClaims = nickclaim.New(nickclaim.Options{})
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

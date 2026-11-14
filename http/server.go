@@ -29,6 +29,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
 	"github.com/boson-chat/admin/internal/session"
@@ -193,6 +194,14 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		h.Features.Directory = true // DirectoryRegistration: Handlers.features()
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}
+	// Nick registration: the api's internal listener (status, mailbox test).
+	var nickClient bosonapi.NickClaimClientImpl
+	if bc.APIInternalURL != "" {
+		nickClient = bosonapi.NewNickClaimClient(bc.APIInternalURL, bc.APIInternalToken, up.Timeout, upstream("boson_api_internal"))
+	}
+	nickSvc := nickclaim.New(nickclaim.Options{Client: nickClient})
+	h.NickClaims = nickSvc
+	stack.AddCheck("nick_claim.", nickSvc.Check)
 	if bc.DirectoryLocalURL != "" {
 		h.LocalDirectory = directory.NewLocalService(directory.LocalOptions{
 			Client: bosonapi.NewOperatorClient(bc.DirectoryLocalURL, bc.DirectoryInternalToken, up.Timeout, upstream("directory_local")),
