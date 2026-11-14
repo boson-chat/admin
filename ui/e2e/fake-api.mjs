@@ -34,7 +34,7 @@ let state = {
 
 function section() {
 	if (!CONFIG) return {};
-	let text = '';
+	let text;
 	try {
 		text = readFileSync(CONFIG, 'utf8');
 	} catch {
