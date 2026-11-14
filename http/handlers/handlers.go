@@ -41,10 +41,13 @@ type Features struct {
 	Services bool `json:"services"`
 	// Profiles: BOSON_API_URL is set.
 	Profiles bool `json:"profiles"`
-	// Directory: DIRECTORY_API_URL is set; DirectoryRegistration: the
-	// proposed self-hosted registration is switched on.
+	// Directory: DIRECTORY_API_URL is set; DirectoryRegistration: network
+	// registration is switched on.
 	Directory             bool `json:"directory"`
 	DirectoryRegistration bool `json:"directory_registration"`
+	// DirectoryLocal: the stack runs its own directory (DIRECTORY_LOCAL_URL):
+	// federation switch and the listings users own.
+	DirectoryLocal bool `json:"directory_local"`
 	// IRCHost is the public IRC hostname (for previews of how roles look on IRC).
 	IRCHost string `json:"irc_host,omitempty"`
 }
@@ -56,8 +59,10 @@ type Handlers struct {
 	// Optional: nil when not configured.
 	Containers containers.ContainersServiceImpl
 	Directory  directory.DirectoryServiceImpl
-	Profiles   bosonapi.ProfileClientImpl
-	Sessions   *session.Codec
+	// LocalDirectory: the stack's own directory (operator API).
+	LocalDirectory directory.LocalServiceImpl
+	Profiles       bosonapi.ProfileClientImpl
+	Sessions       *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features

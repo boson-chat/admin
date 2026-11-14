@@ -32,6 +32,7 @@ func (h *Handlers) routes() []route {
 		{"POST /api/users/{id}/password-reset", admin.PermUsersManage, false, h.sendPasswordReset},
 		{"POST /api/users/{id}/verification", admin.PermUsersManage, false, h.resendVerification},
 		{"GET /api/users/{id}/profile", admin.PermUsersView, false, h.userProfile},
+		{"GET /api/users/{id}/networks", admin.PermUsersView, false, h.userNetworks},
 		{"GET /api/users/{id}", admin.PermUsersView, false, h.getUser},
 		// auth 1.x role switch (user | admin): a role change.
 		{"PATCH /api/users/{id}", admin.PermRolesManage, false, h.updateUser},
@@ -69,6 +70,8 @@ func (h *Handlers) routes() []route {
 		{"POST /api/directory/{id}/verify", admin.PermDirectoryManage, true, h.directoryVerify},
 		{"POST /api/directory/{id}/regenerate-token", admin.PermDirectoryManage, true, h.directoryRegenerate},
 		{"DELETE /api/directory/{id}", admin.PermDirectoryManage, true, h.directoryUnlist},
+		{"GET /api/directory/federation", admin.PermDirectoryManage, true, h.directoryFederation},
+		{"PUT /api/directory/federation/include-main", admin.PermDirectoryManage, true, h.directoryIncludeMain},
 
 		// Reading roles and the catalog needs only admin.panel, as in auth:
 		// user pages label effective permissions and show the hierarchy.

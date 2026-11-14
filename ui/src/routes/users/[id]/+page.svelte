@@ -4,7 +4,14 @@
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { browser, datetime, eventName, eventTone } from '$lib/format';
-	import type { AuditEntry, ProfileResponse, User, UserSession } from '$lib/types';
+	import type {
+		AuditEntry,
+		DirectoryServer,
+		OwnedNetworksResponse,
+		ProfileResponse,
+		User,
+		UserSession
+	} from '$lib/types';
 	import Avatar from '$lib/components/Avatar.svelte';
 	import State from '$lib/components/State.svelte';
 	import Confirm from '$lib/components/Confirm.svelte';
@@ -20,6 +27,10 @@
 	let sessions = $state<UserSession[] | null>(null);
 	let activity = $state<AuditEntry[] | null>(null);
 	let profile = $state<ProfileResponse | null>(null);
+	// Listings they own in the stack's own directory (DIRECTORY_LOCAL_URL);
+	// otherwise the boson API's profile read lists them.
+	let owned = $state<OwnedNetworksResponse | null>(null);
+	let ownedFromDirectory = $derived(!!session.info?.features.directory_local);
 	let error = $state('');
 	let mailing = $state<'' | 'reset' | 'verification'>('');
 
@@ -80,16 +91,26 @@
 		}
 	}
 
+	async function loadOwned() {
+		try {
+			owned = await api<OwnedNetworksResponse>('GET', `/users/${encodeURIComponent(id)}/networks`);
+		} catch (e) {
+			owned = { configured: true, error: errorText(e) };
+		}
+	}
+
 	$effect(() => {
 		void id;
 		user = null;
 		sessions = null;
 		activity = null;
 		profile = null;
+		owned = null;
 		loadUser();
 		loadSessions();
 		loadActivity();
 		loadProfile();
+		if (ownedFromDirectory) loadOwned();
 	});
 
 	async function sendMail(kind: 'reset' | 'verification') {
@@ -152,6 +173,28 @@
 		}
 	}
 </script>
+
+{#snippet serverList(list: DirectoryServer[])}
+	{#if !list.length}
+		<p class="muted small">None.</p>
+	{:else}
+		<ul class="servers">
+			{#each list as srv (srv.id)}
+				<li>
+					<span class="sname">{srv.name}</span>
+					<span class="mono muted">{srv.hostname}:{srv.port}{srv.tls ? '' : ' (plain)'}</span>
+					<span class="tag {statusTag[srv.verification_status] ?? ''}">{srv.verification_status}</span>
+					{#if srv.health_status && srv.health_status !== 'unknown'}
+						<span class="health" data-h={srv.health_status}>{srv.health_status}</span>
+					{/if}
+					{#if srv.user_count !== undefined && srv.user_count !== null}<span class="muted small"
+							>{srv.user_count} users</span
+						>{/if}
+				</li>
+			{/each}
+		</ul>
+	{/if}
+{/snippet}
 
 <svelte:head><title>{user?.username ?? 'User'} · boson admin</title></svelte:head>
 
@@ -357,26 +400,33 @@
 					{/if}
 				</dl>
 			</div>
-			<h3 class="sub">Servers they list in the directory</h3>
-			{#if !profile.servers?.length}
-				<p class="muted small">None.</p>
-			{:else}
-				<ul class="servers">
-					{#each profile.servers as srv (srv.id)}
-						<li>
-							<span class="sname">{srv.name}</span>
-							<span class="mono muted">{srv.hostname}:{srv.port}{srv.tls ? '' : ' (plain)'}</span>
-							<span class="tag {statusTag[srv.verification_status] ?? ''}">{srv.verification_status}</span>
-							{#if srv.health_status && srv.health_status !== 'unknown'}
-								<span class="health" data-h={srv.health_status}>{srv.health_status}</span>
-							{/if}
-							{#if srv.user_count !== undefined}<span class="muted small">{srv.user_count} users</span>{/if}
-						</li>
-					{/each}
-				</ul>
+			{#if !ownedFromDirectory}
+				<h3 class="sub">Servers they list in the directory</h3>
+				{@render serverList(profile.servers ?? [])}
 			{/if}
 		{/if}
 	</section>
+
+	{#if ownedFromDirectory}
+		<section class="section" aria-labelledby="own-h">
+			<div class="section-head">
+				<h2 id="own-h">Directory listings</h2>
+				<p>Networks {user.username} registered in this stack’s directory, in any state.</p>
+			</div>
+			{#if owned === null}
+				<State kind="loading" title="Asking the directory…" />
+			{:else if owned.unsupported}
+				<State kind="unsupported" title="Needs a newer directory">{owned.unsupported}.</State>
+			{:else if owned.error}
+				<State kind="error" title="The listings didn’t load">
+					{owned.error}
+					{#snippet action()}<button class="btn btn-small" onclick={loadOwned}>Try again</button>{/snippet}
+				</State>
+			{:else}
+				{@render serverList(owned.networks ?? [])}
+			{/if}
+		</section>
+	{/if}
 
 	<section class="section" aria-labelledby="id-h">
 		<div class="section-head">

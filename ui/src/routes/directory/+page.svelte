@@ -4,7 +4,7 @@
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { datetime } from '$lib/format';
-	import type { DirectoryServer, DirectoryStatus, Listing, VerifyResult } from '$lib/types';
+	import type { DirectoryServer, DirectoryStatus, Federation, Listing, VerifyResult } from '$lib/types';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import CopyField from '$lib/components/CopyField.svelte';
 	import State from '$lib/components/State.svelte';
@@ -46,8 +46,50 @@
 			error = errorText(e);
 		}
 	}
+	// The stack's own directory (directory profile): its peers and the
+	// switch for the built-in main peer.
+	let local = $derived(!!session.info?.features.directory_local);
+	let fed = $state<Federation | null>(null);
+	let fedError = $state('');
+	let includeMain = $state(true);
+	let switching = $state(false);
+	async function loadFederation() {
+		fedError = '';
+		try {
+			fed = await api<Federation>('GET', '/directory/federation');
+			includeMain = !!fed.main_peer?.enabled;
+		} catch (e) {
+			fedError = errorText(e);
+		}
+	}
+	async function setIncludeMain(on: boolean) {
+		switching = true;
+		try {
+			fed = await api<Federation>('PUT', '/directory/federation/include-main', { enabled: on });
+			includeMain = !!fed.main_peer?.enabled;
+			toasts.push(
+				on
+					? 'Your directory includes the boson main directory again. Its listings show up after their DNS check.'
+					: 'Your directory no longer includes the boson main directory.'
+			);
+		} catch (e) {
+			includeMain = !on;
+			toasts.push(errorText(e), 'bad');
+		} finally {
+			switching = false;
+		}
+	}
+	const peerName = (u: string) => {
+		try {
+			return new URL(u).host;
+		} catch {
+			return u;
+		}
+	};
+
 	onMount(() => {
 		if (!off) load();
+		if (local) loadFederation();
 	});
 
 	function fill(n: DirectoryServer) {
@@ -170,7 +212,8 @@
 	<div>
 		<h1>Directory</h1>
 		<p>
-			List this network in the boson.chat directory so people can find it from the boson app’s server browser.
+			List this network in the boson directory{st?.api_url ? ` (${peerName(st.api_url)})` : ''} so people can find
+			it from the boson app’s server browser.
 		</p>
 	</div>
 </div>
@@ -224,19 +267,19 @@
 	{#if !st.registration || st.unsupported}
 		<div class="section">
 			{#if st.unsupported}
-				<State kind="unsupported" title="api.boson.chat can’t take self-hosted listings yet">
+				<State kind="unsupported" title="This directory can’t take network registrations">
 					<p>{st.unsupported}.</p>
 					<p>
-						The public directory only accepts listings from signed-in boson.chat accounts today. Self-hosted
-						networks will register with a DNS record instead, and this page will do it for you.
+						Networks register with a network key and a DNS record through the directory’s <code>/v1</code>
+						API. Point <code>DIRECTORY_API_URL</code> at a boson directory (default
+						<code>https://directory.boson.chat</code>).
 					</p>
 				</State>
 			{:else}
-				<State kind="off" title="Self-hosted registration isn’t switched on">
+				<State kind="off" title="Registration is switched off">
 					<p>
-						Listing a self-hosted network needs a registration API on api.boson.chat that is still being
-						built. Once it’s live, set <code>DIRECTORY_REGISTRATION=true</code> and this page walks you through
-						it:
+						<code>DIRECTORY_REGISTRATION=false</code>, so this page only checks whether the network is listed.
+						Set it to <code>true</code> and the page walks you through it:
 					</p>
 					<ol class="how">
 						<li>Fill in the network’s name, description and IRC address.</li>
@@ -405,6 +448,67 @@
 			</section>
 		{/if}
 	{/if}
+{/if}
+
+{#if local}
+	<section class="section" aria-labelledby="fed-h">
+		<div class="section-head">
+			<h2 id="fed-h">Your own directory</h2>
+			<p>
+				This stack runs a directory of its own{fed ? ' at ' : ''}{#if fed}<code>{fed.url}</code>{/if}.
+			</p>
+		</div>
+		{#if fedError}
+			<State kind="error" title="The stack’s directory didn’t answer">
+				{fedError}
+				{#snippet action()}<button class="btn btn-small" onclick={loadFederation}>Try again</button>{/snippet}
+			</State>
+		{:else if !fed}
+			<State kind="loading" title="Asking the stack’s directory…" />
+		{:else if fed.unsupported}
+			<State kind="unsupported" title="Needs a newer directory">{fed.unsupported}.</State>
+		{:else if fed.error}
+			<State kind="error" title="The stack’s directory didn’t answer">
+				{fed.error}
+				{#snippet action()}<button class="btn btn-small" onclick={loadFederation}>Try again</button>{/snippet}
+			</State>
+		{:else}
+			<div class="fed">
+				<div class="fed-switch">
+					<Toggle
+						label="Include the boson main directory"
+						detail={fed.main_peer
+							? `Also show every network listed at ${peerName(fed.main_peer.url)}. Each one appears here only after your directory has checked its DNS record itself.`
+							: 'Off: the directory runs with DIRECTORY_INCLUDE_MAIN=false. Set it to true in .env and recreate the directory service to switch it on here.'}
+						bind:checked={includeMain}
+						disabled={!fed.main_peer || switching}
+						onchange={setIncludeMain}
+					/>
+				</div>
+				<h3 class="sub">Peers</h3>
+				{#if fed.peers.length === 0}
+					<p class="muted small">
+						None. Add peers with <code>DIRECTORY_PEERS</code> or on the directory’s own Peers page.
+					</p>
+				{:else}
+					<ul class="peers">
+						{#each fed.peers as p (p.id)}
+							<li data-on={p.enabled}>
+								<span class="pname">{p.name || peerName(p.url)}</span>
+								<span class="mono muted">{p.url}</span>
+								{#if p.builtin}<span class="tag">main</span>{/if}
+								<span class="tag {p.enabled ? 'tag-ok' : ''}">{p.enabled ? 'on' : 'off'}</span>
+								<span class="muted small">{p.listing_count} listings</span>
+								{#if p.last_sync_at}<span class="muted small">synced <Time at={p.last_sync_at} /></span>{/if}
+								{#if p.last_error}<span class="perr small">{p.last_error}</span>{/if}
+							</li>
+						{/each}
+					</ul>
+					<p class="muted small">Add, sync and remove peers on the directory’s own Peers page.</p>
+				{/if}
+			</div>
+		{/if}
+	</section>
 {/if}
 
 <style>
@@ -634,6 +738,55 @@
 		color: var(--fg-2);
 		font-size: var(--text-sm);
 		max-width: 60ch;
+	}
+	.fed {
+		display: grid;
+		gap: var(--space-4);
+		max-width: 820px;
+	}
+	.fed-switch {
+		padding: var(--space-4);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+	}
+	.sub {
+		font-size: var(--text-base);
+	}
+	.peers {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+	}
+	.peers li {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2) var(--space-4);
+		align-items: center;
+		padding: var(--space-3) var(--space-4);
+		border-bottom: 1px solid var(--border-soft);
+		font-size: var(--text-sm);
+	}
+	.peers li:last-child {
+		border-bottom: 0;
+	}
+	.peers li[data-on='false'] .pname {
+		color: var(--fg-quiet);
+	}
+	.pname {
+		font-family: var(--font-mono);
+		font-weight: 600;
+	}
+	.mono {
+		font-family: var(--font-mono);
+		overflow-wrap: anywhere;
+	}
+	.perr {
+		color: var(--danger-text);
+		font-family: var(--font-mono);
 	}
 	@media (max-width: 640px) {
 		.row3 {

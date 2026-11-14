@@ -151,6 +151,13 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		h.Features.Directory, h.Features.DirectoryRegistration = true, bc.DirectoryRegistration
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}
+	if bc.DirectoryLocalURL != "" {
+		h.LocalDirectory = directory.NewLocalService(directory.LocalOptions{
+			Client: bosonapi.NewOperatorClient(bc.DirectoryLocalURL, bc.DirectoryInternalToken, up.Timeout, upstream("directory_local")),
+			URL:    bc.DirectoryLocalURL,
+		})
+		h.Features.DirectoryLocal = true
+	}
 	h.Features.IRCHost = bc.DirectoryHostname // IRC_CHECK_SERVER_NAME unless set
 	mux := nethttp.NewServeMux()
 	h.Register(mux)

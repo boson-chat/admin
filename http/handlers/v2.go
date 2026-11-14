@@ -382,3 +382,67 @@ func (h *Handlers) directoryUnlist(w http.ResponseWriter, r *http.Request, s *se
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ---- the stack's own directory ----
+
+func (h *Handlers) localDirectoryOr503(w http.ResponseWriter, r *http.Request) bool {
+	if h.LocalDirectory == nil {
+		writeError(w, r, apperr.New(http.StatusServiceUnavailable, "directory_local_off",
+			"the stack's own directory isn't connected: DIRECTORY_LOCAL_URL is empty"))
+		return false
+	}
+	return true
+}
+
+func (h *Handlers) directoryFederation(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, h.LocalDirectory.Federation(r.Context()))
+}
+
+func (h *Handlers) directoryIncludeMain(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if !h.localDirectoryOr503(w, r) {
+		return
+	}
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if in.Enabled == nil {
+		writeError(w, r, apperr.Invalid("enabled (true or false) is required"))
+		return
+	}
+	f, err := h.LocalDirectory.SetIncludeMain(r.Context(), s.Snapshot().Username, *in.Enabled)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, f)
+}
+
+// userNetworks is the listings a user owns in the stack's own directory.
+// Like userProfile it always answers 200 so the user page degrades.
+func (h *Handlers) userNetworks(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	if h.LocalDirectory == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"configured": false})
+		return
+	}
+	n, err := h.LocalDirectory.OwnedNetworks(r.Context(), r.PathValue("id"))
+	switch {
+	case apperr.IsUnsupported(err):
+		e, _ := apperr.As(err)
+		writeJSON(w, http.StatusOK, map[string]any{"configured": true, "unsupported": e.Message})
+	case err != nil:
+		msg := "the stack's directory didn't answer"
+		if e, ok := apperr.As(err); ok {
+			msg = e.Message
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"configured": true, "error": msg})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"configured": true, "networks": n})
+	}
+}
