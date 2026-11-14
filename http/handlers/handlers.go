@@ -121,6 +121,7 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 type errorBody struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	Field   string `json:"field,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -145,7 +146,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		if e.Status >= 500 && e.Status != http.StatusNotImplemented && e.Status != http.StatusServiceUnavailable {
 			logger.FromCtx(r.Context()).Warn().Err(err).Str("path", r.URL.Path).Msg("upstream error")
 		}
-		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message})
+		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message, Field: e.Field})
 		return
 	}
 	if errors.Is(err, context.Canceled) {

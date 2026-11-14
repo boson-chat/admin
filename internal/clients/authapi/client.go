@@ -91,6 +91,8 @@ type errorBody struct {
 	Message string `json:"message"`
 	// Code is the same code; newer auth releases send both.
 	Code string `json:"code"`
+	// Field names the request field a 400 is about (email preview).
+	Field string `json:"field"`
 }
 
 const maxResponse = 4 << 20

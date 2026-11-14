@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { api, isUnsupported } from '$lib/api';
+	import { onDestroy, onMount, untrack } from 'svelte';
+	import { beforeNavigate } from '$app/navigation';
+	import { api, ApiError, isUnsupported } from '$lib/api';
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { stackConfig } from '$lib/stackconfig.svelte';
@@ -17,6 +18,16 @@
 		unknownVars,
 		type EmailTemplateId
 	} from '$lib/emails';
+	import {
+		brandingPreviews,
+		frameDoc,
+		livePreview,
+		previewField,
+		previewRequest,
+		type EmailPreview,
+		type PreviewField,
+		type PreviewRequest
+	} from '$lib/livepreview';
 	import ColorPicker from '$lib/components/ColorPicker.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
@@ -57,15 +68,20 @@
 	let custom = (id: string) => !!(saved[id]?.subject || saved[id]?.body);
 	let savingTpl = $state(false);
 	let unknown = $derived(unknownVars(draft.subject + '\n' + draft.body, tpl.vars));
+	let dirty = $derived(sDirty || EMAIL_TEMPLATES.some((t) => tDirty(t.id)));
 
-	function fill() {
+	/**
+	 * Reads the saved config into the form. keep: unsaved edits survive the
+	 * reload except in what was just saved ('settings' or a template id).
+	 */
+	function fill(reset: 'all' | 'settings' | string = 'all') {
 		const next = {
 			sender_name: (val('auth.email.sender_name') as string) ?? '',
 			accent: (val('auth.email.accent') as string) ?? null,
 			footer: (val('auth.email.footer') as string) ?? '',
 			logo: (val('auth.email.logo') as boolean | undefined) ?? true
 		};
-		s = { ...next };
+		if (reset === 'all' || reset === 'settings' || !sDirty) s = { ...next };
 		sSaved = { ...next };
 		const d: Record<string, Draft> = {};
 		for (const t of EMAIL_TEMPLATES)
@@ -73,24 +89,30 @@
 				subject: (val(subjectKey(t.id)) as string) ?? '',
 				body: (val(bodyKey(t.id)) as string) ?? ''
 			};
+		const keep = EMAIL_TEMPLATES.filter(
+			(t) => reset !== 'all' && reset !== t.id && drafts[t.id] && tDirty(t.id)
+		);
+		const nd = structuredClone(d);
+		for (const t of keep) nd[t.id] = { ...drafts[t.id] };
 		saved = structuredClone(d);
-		drafts = structuredClone(d);
+		drafts = nd;
 	}
 
 	async function load() {
 		await stackConfig.load();
 		fill();
 		loaded = true;
-		refreshPreview();
 	}
-	onMount(load);
+	onMount(() => {
+		if (window.innerWidth < 700) device = 'mobile';
+		load();
+	});
 
-	async function saveChange(c: ConfigChange, msg: string) {
+	async function saveChange(c: ConfigChange, msg: string, what: string) {
 		try {
 			await stackConfig.save(c);
-			fill();
+			fill(what);
 			toasts.push(msg);
-			refreshPreview();
 			return true;
 		} catch (e) {
 			toasts.push(errorText(e), 'bad');
@@ -112,9 +134,10 @@
 		put('accent', s.accent, sSaved.accent);
 		put('footer', s.footer.trim() || null, sSaved.footer || null);
 		if (s.logo !== sSaved.logo || !branded) set['auth.email.logo'] = s.logo;
-		await saveChange({ set, unset }, 'Email settings saved.');
+		await saveChange({ set, unset }, 'Email settings saved.', 'settings');
 		savingSettings = false;
 	}
+	const discardSettings = () => (s = { ...sSaved });
 
 	async function saveTemplate() {
 		savingTpl = true;
@@ -125,17 +148,24 @@
 		else if (saved[selected].subject) unset.push(subjectKey(selected));
 		if (d.body.trim()) set[bodyKey(selected)] = d.body;
 		else if (saved[selected].body) unset.push(bodyKey(selected));
-		await saveChange({ set, unset }, `${tpl.label} email saved.`);
+		await saveChange({ set, unset }, `${tpl.label} email saved.`, selected);
 		savingTpl = false;
 	}
 
 	async function resetTemplate() {
 		savingTpl = true;
 		const unset = [subjectKey(selected), bodyKey(selected)].filter((k) => key(k)?.set);
-		if (unset.length) await saveChange({ unset }, `${tpl.label} email is back to Boson’s wording.`);
+		if (unset.length) await saveChange({ unset }, `${tpl.label} email is back to Boson’s wording.`, selected);
 		else drafts[selected] = { subject: '', body: '' };
 		savingTpl = false;
 	}
+
+	beforeNavigate((nav) => {
+		if (!dirty || savingSettings || savingTpl) return;
+		// Closing the tab or leaving the app: the browser asks.
+		if (nav.type === 'leave') nav.cancel();
+		else if (!confirm('Leave the Emails page? Your unsaved email changes will be lost.')) nav.cancel();
+	});
 
 	// ---- variable chips ----
 	let bodyEl = $state<HTMLTextAreaElement>();
@@ -153,48 +183,113 @@
 		});
 	}
 
-	// ---- preview ----
-	let preview = $state<{ subject: string; html: string; text: string } | null>(null);
+	// ---- live preview ----
+	let preview = $state<EmailPreview | null>(null);
 	let previewError = $state('');
 	let previewOff = $state('');
 	let previewing = $state(false);
+	/** Validation errors from the last render, by input. */
+	let fieldErrors = $state<Partial<Record<PreviewField, string>>>({});
+	/** auth renders unsaved branding (it sent a from line). */
+	let livebranding = $derived(!preview || brandingPreviews(preview));
 	let previewMode = $state<'html' | 'text'>('html');
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let seq = 0;
-	async function refreshPreview() {
+	let scheme = $state<'light' | 'dark'>('light');
+	let device = $state<'desktop' | 'mobile'>('desktop');
+	let frameWidth = $derived(device === 'desktop' ? 600 : 375);
+
+	const lp = livePreview<PreviewRequest, EmailPreview>({
+		fetch: (req, signal) => api<EmailPreview>('POST', '/emails/preview', req, undefined, signal),
+		onResult(p) {
+			preview = p;
+			previewError = '';
+			previewOff = '';
+			fieldErrors = {};
+		},
+		onError(e) {
+			if (isUnsupported(e)) {
+				previewOff = e.message;
+				return;
+			}
+			const f = e instanceof ApiError && e.status === 400 ? previewField(e.field) : undefined;
+			if (f) {
+				// Keep the last good preview; the message goes next to the input.
+				fieldErrors = { [f]: e instanceof Error ? e.message : String(e) };
+				previewError = '';
+			} else {
+				fieldErrors = {};
+				previewError = errorText(e);
+			}
+		},
+		onLoading: (b) => (previewing = b)
+	});
+	onDestroy(() => lp.cancel());
+
+	let request = $derived(previewRequest(selected, draft, s, DEFAULT_ACCENT));
+	let lastTemplate = '';
+	$effect(() => {
+		const req = request;
+		if (!loaded) return;
 		if (!session.info?.features.email_preview) {
 			previewOff = 'off';
 			return;
 		}
-		const id = ++seq;
-		const d = drafts[selected] ?? { subject: '', body: '' };
-		const body: Record<string, string> = { template: selected };
-		if (d.subject.trim()) body.subject = d.subject.trim();
-		if (d.body.trim()) body.body = d.body;
-		previewing = true;
-		try {
-			const p = await api<{ subject: string; html: string; text: string }>('POST', '/emails/preview', body);
-			if (id !== seq) return;
-			preview = p;
-			previewError = '';
-			previewOff = '';
-		} catch (e) {
-			if (id !== seq) return;
-			if (isUnsupported(e)) previewOff = e.message;
-			else previewError = errorText(e);
-		} finally {
-			if (id === seq) previewing = false;
+		untrack(() => {
+			// Another email: show it at once; typing: wait for a pause.
+			if (req.template !== lastTemplate) {
+				lastTemplate = req.template;
+				void lp.now(req);
+			} else lp.schedule(req);
+		});
+	});
+	const fieldError = (f: PreviewField) => fieldErrors[f];
+
+	// The frame: two iframes take turns, so a new render loads out of sight
+	// and replaces the old one only once it's laid out (no blank flash).
+	let docs = $state<[string, string]>(['', '']);
+	let front = $state(0);
+	let loadedDocs = ['', ''];
+	let frameHeight = $state(320);
+	let frames: (HTMLIFrameElement | undefined)[] = $state([undefined, undefined]);
+	let html = $derived(preview ? frameDoc(preview.html, scheme) : '');
+	$effect(() => {
+		const h = html;
+		untrack(() => {
+			if (!h || docs[front] === h) return;
+			const back = 1 - front;
+			if (docs[back] === h && loadedDocs[back] === h) swap(back);
+			else docs[back] = h;
+		});
+	});
+	let ro: ResizeObserver | undefined;
+	function measure(i: number) {
+		const d = frames[i]?.contentDocument;
+		if (!d?.documentElement) return 0;
+		return Math.ceil(d.documentElement.getBoundingClientRect().height);
+	}
+	function swap(i: number) {
+		front = i;
+		const h = measure(i);
+		if (h) frameHeight = Math.max(160, h);
+		ro?.disconnect();
+		const d = frames[i]?.contentDocument;
+		if (d?.documentElement && typeof ResizeObserver !== 'undefined') {
+			ro = new ResizeObserver(() => {
+				const h = measure(front);
+				if (h) frameHeight = Math.max(160, h);
+			});
+			ro.observe(d.documentElement);
 		}
 	}
-	$effect(() => {
-		void selected;
-		void draft.subject;
-		void draft.body;
-		if (!loaded) return;
-		clearTimeout(timer);
-		timer = setTimeout(refreshPreview, 450);
-		return () => clearTimeout(timer);
-	});
+	function frameLoaded(i: number) {
+		const d = docs[i];
+		loadedDocs[i] = d;
+		if (d && d === html) swap(i);
+	}
+	onDestroy(() => ro?.disconnect());
+
+	/** The stage scales the frame down to fit a narrow column. */
+	let stageWidth = $state(0);
+	let scale = $derived(stageWidth && stageWidth < frameWidth ? stageWidth / frameWidth : 1);
 
 	// ---- send test ----
 	let to = $state(session.info?.user.email ?? '');
@@ -219,6 +314,7 @@
 		}
 	}
 	let configOff = $derived(session.info?.features.config_file === false || view?.enabled === false);
+	let testDirty = $derived(tDirty(selected) || sDirty);
 </script>
 
 <svelte:head><title>Emails · boson admin</title></svelte:head>
@@ -241,180 +337,216 @@
 {:else if !loaded}
 	<State kind="loading" title="Loading email settings…" />
 {:else}
-	<section class="card settings" aria-labelledby="look-h">
-		<div class="card-head">
-			<h2 id="look-h">Sender and look</h2>
-			{#if branded}
-				<span class="tag tag-ok">Branded layout</span>
-			{:else}
-				<span class="tag">Plain layout</span>
-			{/if}
-		</div>
-		{#if !branded}
-			<p class="hint">
-				Emails use auth’s plain layout until you save something here. Saving switches them to the branded
-				layout with your logo, accent and footer.
-			</p>
-		{/if}
-		<div class="grid">
-			<label class="field">
-				<span>Sender name</span>
-				<input
-					type="text"
-					bind:value={s.sender_name}
-					maxlength="64"
-					placeholder={senderDefault}
-					disabled={!editable}
-				/>
-				<small>Shown as who the email is from. Empty: {senderDefault}.</small>
-			</label>
-			<label class="field">
-				<span>Footer</span>
-				<input
-					type="text"
-					bind:value={s.footer}
-					maxlength="200"
-					placeholder="Example Chat · example.com"
-					disabled={!editable}
-				/>
-				<small>One line under every email.</small>
-			</label>
-			<div class="field">
-				<span id="accent-l">Accent</span>
-				<div class="accent">
-					<span class="chip" style:--c={s.accent ?? DEFAULT_ACCENT} aria-hidden="true"></span>
-					<code>{s.accent ?? DEFAULT_ACCENT}</code>
-					{#if !s.accent}<span class="muted small">default</span>{/if}
-				</div>
-				<ColorPicker bind:value={s.accent} labelledby="accent-l" disabled={!editable} />
-				<small>Buttons and links. “No colour” uses auth’s default blue.</small>
-			</div>
-			<div class="field">
-				<span>Logo</span>
-				<Toggle
-					label="Put the logo at the top"
-					detail="The wordmark if there is one, else the square logo, from the Branding page."
-					bind:checked={s.logo}
-					disabled={!editable}
-				/>
-			</div>
-		</div>
-		<div class="row-end">
-			<button class="btn btn-ghost" type="button" disabled={!sDirty || savingSettings} onclick={fill}
-				>Discard</button
-			>
-			<button
-				class="btn btn-primary"
-				type="button"
-				disabled={(!sDirty && branded) || savingSettings || !editable}
-				onclick={saveSettings}>{savingSettings ? 'Saving…' : 'Save settings'}</button
-			>
-		</div>
-	</section>
-
 	<div class="layout">
-		<section class="card" aria-labelledby="tpl-h">
-			<h2 id="tpl-h" class="sr-only">Messages</h2>
-			<div class="tabs" role="tablist" aria-label="Email">
-				{#each EMAIL_TEMPLATES as t (t.id)}
-					<button
-						type="button"
-						role="tab"
-						id="tab-{t.id}"
-						aria-selected={selected === t.id}
-						aria-controls="tpl-panel"
-						onclick={() => (selected = t.id)}
-					>
-						{t.label}
-						{#if tDirty(t.id)}<span class="dot unsaved" title="Unsaved"></span>
-						{:else if custom(t.id)}<span class="dot edited" title="Custom wording"></span>{/if}
-					</button>
-				{/each}
-			</div>
-			<div class="panel" id="tpl-panel" role="tabpanel" aria-labelledby="tab-{selected}">
-				<p class="hint">{tpl.detail}</p>
-				<label class="field">
-					<span>Subject</span>
-					<input
-						bind:this={subjectEl}
-						type="text"
-						bind:value={drafts[selected].subject}
-						onfocus={() => (lastField = 'subject')}
-						maxlength={MAX_SUBJECT}
-						placeholder="Boson’s default subject"
-						disabled={!editable}
-					/>
-				</label>
-				<div class="field">
-					<span id="vars-l">Insert</span>
-					<div class="chips" role="group" aria-labelledby="vars-l">
-						{#each tpl.vars as v (v)}
-							<button
-								type="button"
-								class="var"
-								title={VAR_HELP[v]}
-								disabled={!editable}
-								onmousedown={(e) => e.preventDefault()}
-								onclick={() => insertVar(v)}>{`{{${v}}}`}</button
-							>
-						{/each}
+		<div class="col">
+			<section class="card settings" aria-labelledby="look-h">
+				<div class="card-head">
+					<h2 id="look-h">Sender and look</h2>
+					{#if branded}
+						<span class="tag tag-ok">Branded layout</span>
+					{:else}
+						<span class="tag">Plain layout</span>
+					{/if}
+				</div>
+				{#if !branded}
+					<p class="hint">
+						Emails use auth’s plain layout until you save something here. Saving switches them to the branded
+						layout with your logo, accent and footer.
+					</p>
+				{/if}
+				<div class="grid">
+					<label class="field">
+						<span>Sender name</span>
+						<input
+							type="text"
+							bind:value={s.sender_name}
+							maxlength="64"
+							placeholder={senderDefault}
+							disabled={!editable}
+							aria-invalid={!!fieldError('sender_name')}
+						/>
+						{#if fieldError('sender_name')}<small class="err" role="alert">{fieldError('sender_name')}</small>
+						{:else}<small>Shown as who the email is from. Empty: {senderDefault}.</small>{/if}
+					</label>
+					<label class="field">
+						<span>Footer</span>
+						<input
+							type="text"
+							bind:value={s.footer}
+							maxlength="200"
+							placeholder="Example Chat · example.com"
+							disabled={!editable}
+							aria-invalid={!!fieldError('footer')}
+						/>
+						{#if fieldError('footer')}<small class="err" role="alert">{fieldError('footer')}</small>
+						{:else}<small>One line under every email.</small>{/if}
+					</label>
+					<div class="field">
+						<span id="accent-l">Accent</span>
+						<div class="accent">
+							<span class="chip" style:--c={s.accent ?? DEFAULT_ACCENT} aria-hidden="true"></span>
+							<code>{s.accent ?? DEFAULT_ACCENT}</code>
+							{#if !s.accent}<span class="muted small">default</span>{/if}
+						</div>
+						<ColorPicker bind:value={s.accent} labelledby="accent-l" disabled={!editable} />
+						{#if fieldError('accent')}<small class="err" role="alert">{fieldError('accent')}</small>
+						{:else}<small>Buttons and links. “No colour” uses auth’s default blue.</small>{/if}
+					</div>
+					<div class="field">
+						<span>Logo</span>
+						<Toggle
+							label="Put the logo at the top"
+							detail="The wordmark if there is one, else the square logo, from the Branding page."
+							bind:checked={s.logo}
+							disabled={!editable}
+						/>
+						{#if fieldError('logo')}<small class="err" role="alert">{fieldError('logo')}</small>{/if}
 					</div>
 				</div>
-				<label class="field">
-					<span>Message</span>
-					<textarea
-						bind:this={bodyEl}
-						bind:value={drafts[selected].body}
-						onfocus={() => (lastField = 'body')}
-						rows="11"
-						maxlength={MAX_BODY}
-						placeholder="Boson’s default wording. Type to replace it. Blank lines start paragraphs; links become buttons."
-						disabled={!editable}></textarea>
-					<small
-						>Plain text. A blank line starts a new paragraph and links are made clickable. {draft.body
-							.length}/{MAX_BODY}</small
-					>
-				</label>
-				{#if unknown.length}
-					<Notice tone="warn">
-						{unknown.map((u) => `{{${u}}}`).join(', ')}
-						{unknown.length === 1 ? 'isn’t' : 'aren’t'} filled in for this email and will show as typed.
-					</Notice>
-				{/if}
 				<div class="row-end">
-					{#if custom(selected) || draft.subject || draft.body}
-						<button
-							type="button"
-							class="btn btn-ghost"
-							disabled={savingTpl || !editable}
-							onclick={resetTemplate}>Reset to default</button
-						>
-					{/if}
+					<button
+						class="btn btn-ghost"
+						type="button"
+						disabled={!sDirty || savingSettings}
+						onclick={discardSettings}>Discard</button
+					>
 					<button
 						class="btn btn-primary"
 						type="button"
-						disabled={!tDirty(selected) || savingTpl || !editable}
-						onclick={saveTemplate}>{savingTpl ? 'Saving…' : 'Save email'}</button
+						disabled={(!sDirty && branded) || savingSettings || !editable}
+						onclick={saveSettings}>{savingSettings ? 'Saving…' : 'Save settings'}</button
 					>
 				</div>
-			</div>
-		</section>
+			</section>
+
+			<section class="card" aria-labelledby="tpl-h">
+				<h2 id="tpl-h" class="sr-only">Messages</h2>
+				<div class="tabs" role="tablist" aria-label="Email">
+					{#each EMAIL_TEMPLATES as t (t.id)}
+						<button
+							type="button"
+							role="tab"
+							id="tab-{t.id}"
+							aria-selected={selected === t.id}
+							aria-controls="tpl-panel"
+							onclick={() => (selected = t.id)}
+						>
+							{t.label}
+							{#if tDirty(t.id)}<span class="dot unsaved" title="Unsaved"></span>
+							{:else if custom(t.id)}<span class="dot edited" title="Custom wording"></span>{/if}
+						</button>
+					{/each}
+				</div>
+				<div class="panel" id="tpl-panel" role="tabpanel" aria-labelledby="tab-{selected}">
+					<p class="hint">{tpl.detail}</p>
+					<label class="field">
+						<span>Subject</span>
+						<input
+							bind:this={subjectEl}
+							type="text"
+							bind:value={drafts[selected].subject}
+							onfocus={() => (lastField = 'subject')}
+							maxlength={MAX_SUBJECT}
+							placeholder="Boson’s default subject"
+							disabled={!editable}
+							aria-invalid={!!fieldError('subject')}
+						/>
+						{#if fieldError('subject')}<small class="err" role="alert">{fieldError('subject')}</small>{/if}
+					</label>
+					<div class="field">
+						<span id="vars-l">Insert</span>
+						<div class="chips" role="group" aria-labelledby="vars-l">
+							{#each tpl.vars as v (v)}
+								<button
+									type="button"
+									class="var"
+									title={VAR_HELP[v]}
+									disabled={!editable}
+									onmousedown={(e) => e.preventDefault()}
+									onclick={() => insertVar(v)}>{`{{${v}}}`}</button
+								>
+							{/each}
+						</div>
+					</div>
+					<label class="field">
+						<span>Message</span>
+						<textarea
+							bind:this={bodyEl}
+							bind:value={drafts[selected].body}
+							onfocus={() => (lastField = 'body')}
+							rows="11"
+							maxlength={MAX_BODY}
+							placeholder="Boson’s default wording. Type to replace it. Blank lines start paragraphs; links become buttons."
+							disabled={!editable}
+							aria-invalid={!!fieldError('body')}></textarea>
+						{#if fieldError('body')}<small class="err" role="alert">{fieldError('body')}</small>
+						{:else}<small
+								>Plain text. A blank line starts a new paragraph and links are made clickable. {draft.body
+									.length}/{MAX_BODY}</small
+							>{/if}
+					</label>
+					{#if unknown.length}
+						<Notice tone="warn">
+							{unknown.map((u) => `{{${u}}}`).join(', ')}
+							{unknown.length === 1 ? 'isn’t' : 'aren’t'} filled in for this email and will show as typed.
+						</Notice>
+					{/if}
+					<div class="row-end">
+						{#if custom(selected) || draft.subject || draft.body}
+							<button
+								type="button"
+								class="btn btn-ghost"
+								disabled={savingTpl || !editable}
+								onclick={resetTemplate}>Reset to default</button
+							>
+						{/if}
+						<button
+							class="btn btn-primary"
+							type="button"
+							disabled={!tDirty(selected) || savingTpl || !editable}
+							onclick={saveTemplate}>{savingTpl ? 'Saving…' : 'Save email'}</button
+						>
+					</div>
+				</div>
+			</section>
+		</div>
 
 		<section class="card preview" aria-labelledby="pv-h">
 			<div class="pv-head">
 				<h2 id="pv-h">Preview</h2>
+				<span class="live" aria-live="polite"
+					>{previewing ? 'Updating…' : dirty ? 'Unsaved changes' : 'Saved'}</span
+				>
+			</div>
+			<div class="controls">
+				<div class="seg" role="group" aria-label="Preview width">
+					<button type="button" aria-pressed={device === 'desktop'} onclick={() => (device = 'desktop')}
+						>Desktop</button
+					>
+					<button type="button" aria-pressed={device === 'mobile'} onclick={() => (device = 'mobile')}
+						>Mobile</button
+					>
+				</div>
+				<div class="seg" role="group" aria-label="Mail client colours">
+					<button type="button" aria-pressed={scheme === 'light'} onclick={() => (scheme = 'light')}
+						>Light</button
+					>
+					<button type="button" aria-pressed={scheme === 'dark'} onclick={() => (scheme = 'dark')}
+						>Dark</button
+					>
+				</div>
 				<div class="seg" role="tablist" aria-label="Preview format">
 					<button
 						type="button"
 						role="tab"
 						aria-selected={previewMode === 'html'}
-						onclick={() => (previewMode = 'html')}>Email</button
+						onclick={() => (previewMode = 'html')}>HTML</button
 					>
 					<button
 						type="button"
 						role="tab"
 						aria-selected={previewMode === 'text'}
-						onclick={() => (previewMode = 'text')}>Plain text</button
+						onclick={() => (previewMode = 'text')}>Text</button
 					>
 				</div>
 			</div>
@@ -428,28 +560,60 @@
 						{previewOff}.
 					{/if}
 				</Notice>
-			{:else if previewError}
-				<Notice tone="bad">{previewError}</Notice>
-			{:else if preview}
-				<p class="subject" aria-live="polite"><span class="muted">Subject</span> {preview.subject}</p>
-				{#if previewMode === 'html'}
-					<iframe
-						class="frame"
-						class:busy={previewing}
-						title="Email preview"
-						sandbox=""
-						referrerpolicy="no-referrer"
-						srcdoc={preview.html}
-					></iframe>
-				{:else}
-					<pre class="text" class:busy={previewing}>{preview.text}</pre>
-				{/if}
-				<p class="hint">
-					Example values fill in the variables. Unsaved edits show here too; colours and the footer show once
-					saved.
-				</p>
 			{:else}
-				<p class="muted small">Rendering…</p>
+				{#if previewError}
+					<Notice tone="bad">{previewError}</Notice>
+				{/if}
+				{#if preview}
+					<div class="mail" class:busy={previewing} aria-busy={previewing}>
+						<div class="loading" aria-hidden="true"></div>
+						<dl class="envelope" data-testid="envelope">
+							{#if preview.from}
+								<dt>From</dt>
+								<dd data-testid="pv-from">{preview.from}</dd>
+							{/if}
+							<dt>Subject</dt>
+							<dd class="subj" data-testid="pv-subject">{preview.subject}</dd>
+						</dl>
+						{#if previewMode === 'html'}
+							<div class="stage {scheme}" bind:clientWidth={stageWidth}>
+								<div class="fit" style:width="{frameWidth * scale}px" style:height="{frameHeight * scale}px">
+									{#each [0, 1] as i (i)}
+										<iframe
+											bind:this={frames[i]}
+											class="frame"
+											class:back={i !== front}
+											title={i === front ? 'Email preview' : 'Email preview (loading)'}
+											aria-hidden={i !== front}
+											sandbox="allow-same-origin"
+											referrerpolicy="no-referrer"
+											srcdoc={docs[i]}
+											style:width="{frameWidth}px"
+											style:height="{frameHeight}px"
+											style:transform={scale < 1 ? `scale(${scale})` : undefined}
+											style:color-scheme={scheme}
+											onload={() => frameLoaded(i)}
+										></iframe>
+									{/each}
+								</div>
+							</div>
+						{:else}
+							<pre class="text" data-testid="pv-text">{preview.text}</pre>
+						{/if}
+					</div>
+					{#if !livebranding}
+						<p class="hint note" data-testid="legacy-note">
+							Branding changes preview after saving (update auth).
+						</p>
+					{/if}
+					<p class="hint">
+						Example values fill in the variables.{previewMode === 'html' && scale < 1
+							? ` Shown at ${Math.round(scale * 100)}% to fit; the email is ${frameWidth} px wide.`
+							: ''}
+					</p>
+				{:else if !previewError}
+					<p class="muted small">Rendering…</p>
+				{/if}
 			{/if}
 			<form class="test" onsubmit={sendTest}>
 				<label class="field">
@@ -465,12 +629,12 @@
 				<button
 					class="btn"
 					disabled={sending || !!previewOff || !editable || !emailOk(to)}
-					title={tDirty(selected) ? 'Sends the saved version' : undefined}
+					title={testDirty ? 'Sends the saved version' : undefined}
 					>{sending ? 'Sending…' : 'Send test'}</button
 				>
 			</form>
-			{#if tDirty(selected)}
-				<p class="hint">The test uses the saved wording; save first to send your edits.</p>
+			{#if testDirty}
+				<p class="hint">The test uses what’s saved; save first to send your edits.</p>
 			{/if}
 		</section>
 	</div>
@@ -495,14 +659,16 @@
 		align-items: center;
 		gap: var(--space-3);
 	}
-	.settings {
-		max-width: 1040px;
-		margin-bottom: var(--space-6);
-	}
 	.grid {
 		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 		gap: var(--space-5) var(--space-6);
+	}
+	.err {
+		color: var(--danger-text) !important;
+	}
+	[aria-invalid='true'] {
+		border-color: var(--danger);
 	}
 	.hint {
 		font-size: var(--text-xs);
@@ -530,10 +696,18 @@
 	}
 	.layout {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
 		gap: var(--space-6);
-		max-width: 1040px;
 		align-items: start;
+	}
+	.col {
+		display: grid;
+		gap: var(--space-6);
+		min-width: 0;
+	}
+	.preview {
+		position: sticky;
+		top: var(--space-6);
 	}
 	.tabs {
 		display: flex;
@@ -623,6 +797,17 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+		gap: var(--space-3);
+	}
+	.live {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+	}
+	.controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
 	}
 	.seg {
 		display: inline-flex;
@@ -643,48 +828,127 @@
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 	}
-	.seg button[aria-selected='true'] {
+	.seg button[aria-selected='true'],
+	.seg button[aria-pressed='true'] {
 		background: var(--surface-raised);
 		color: var(--fg);
 		box-shadow: inset 0 0 0 1px var(--border-strong);
 	}
-	.subject {
-		font-weight: 600;
-		font-size: var(--text-sm);
-	}
-	.subject .muted {
-		font-family: var(--font-mono);
-		font-weight: 400;
-		font-size: var(--text-xs);
-		text-transform: uppercase;
-		letter-spacing: var(--tracking-label);
-		margin-right: var(--space-2);
-	}
-	.frame {
-		width: 100%;
-		height: 460px;
+	.mail {
+		position: relative;
+		display: grid;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		/* emails are written for a white client */
-		background: #fff;
-		color-scheme: light;
+		overflow: hidden;
+		background: var(--bg);
+	}
+	/* a thin bar sweeps along the top while a new render loads */
+	.loading {
+		position: absolute;
+		inset: 0 0 auto;
+		height: 2px;
+		z-index: 2;
+		opacity: 0;
+		background: linear-gradient(90deg, transparent, var(--accent), transparent);
+		background-size: 40% 100%;
+		background-repeat: no-repeat;
+		transition: opacity 0.15s;
+	}
+	.busy .loading {
+		opacity: 1;
+		animation: sweep 0.9s linear infinite;
+	}
+	@keyframes sweep {
+		from {
+			background-position: -40% 0;
+		}
+		to {
+			background-position: 140% 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.busy .loading {
+			animation: none;
+			background: var(--accent);
+			opacity: 0.5;
+		}
+	}
+	.envelope {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: var(--space-1) var(--space-3);
+		margin: 0;
+		padding: var(--space-3) var(--space-4);
+		border-bottom: 1px solid var(--border);
+		background: var(--surface-raised);
+		font-size: var(--text-sm);
+	}
+	.envelope dt {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-label);
+		line-height: 1.6;
+	}
+	.envelope dd {
+		margin: 0;
+		color: var(--fg-2);
+		overflow-wrap: anywhere;
+	}
+	.envelope .subj {
+		color: var(--fg);
+		font-weight: 600;
+	}
+	/* the mail client's canvas around the message */
+	.stage {
+		display: flex;
+		justify-content: center;
+		padding: var(--space-4) 0;
+		background: #f1f2f4;
+		min-width: 0;
+	}
+	.stage.dark {
+		background: #121214;
+	}
+	.fit {
+		position: relative;
+		flex: none;
+		overflow: hidden;
+		transition: height 0.12s ease-out;
+	}
+	.frame {
+		position: absolute;
+		top: 0;
+		left: 0;
+		border: 0;
+		display: block;
+		transform-origin: 0 0;
+		background: transparent;
+	}
+	.frame.back {
+		visibility: hidden;
+		pointer-events: none;
 	}
 	.text {
 		margin: 0;
 		min-height: 200px;
-		max-height: 460px;
+		max-height: 560px;
 		overflow: auto;
-		padding: var(--space-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
+		padding: var(--space-4);
 		background: var(--bg);
 		font-family: var(--font-mono);
 		font-size: var(--text-sm);
 		white-space: pre-wrap;
 		word-break: break-word;
 	}
-	.busy {
-		opacity: 0.6;
+	.busy .stage,
+	.busy .text {
+		opacity: 0.85;
+		transition: opacity 0.2s;
+	}
+	.note {
+		color: var(--warn-text);
 	}
 	.test {
 		display: grid;
@@ -694,10 +958,12 @@
 		padding-top: var(--space-4);
 		border-top: 1px solid var(--border-soft);
 	}
-	@media (max-width: 1000px) {
-		.layout,
-		.grid {
+	@media (max-width: 1100px) {
+		.layout {
 			grid-template-columns: minmax(0, 1fr);
+		}
+		.preview {
+			position: static;
 		}
 	}
 </style>

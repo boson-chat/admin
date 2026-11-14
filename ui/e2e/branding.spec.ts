@@ -144,7 +144,8 @@ for (const mode of ['dark', 'light'] as const) {
 		await expect(page.getByRole('heading', { name: 'Emails', level: 1 })).toBeVisible();
 		await expect(page.getByText('Branded layout')).toBeVisible();
 		const frame = page.locator('iframe[title="Email preview"]');
-		await expect(frame).toHaveAttribute('sandbox', '');
+		// Sandboxed with no scripts; same-origin only so the panel can fit its height.
+		await expect(frame).toHaveAttribute('sandbox', 'allow-same-origin');
 		// The logo is inlined as a data: URI (the sandboxed srcdoc can't load the panel's URLs).
 		await expect(frame.contentFrame().locator('img')).toHaveAttribute('src', /^data:image\/svg\+xml;base64,/);
 		await expect(frame.contentFrame().getByText(/Confirm your email address/)).toBeVisible();

@@ -385,10 +385,13 @@ func (b *BrandingService) Preview(ctx context.Context, actor string, with TokenC
 		return nil, err
 	}
 	if in.Subject != nil && len([]rune(*in.Subject)) > 200 {
-		return nil, apperr.Invalid("the subject must be at most 200 characters")
+		return nil, apperr.InvalidField("subject", "the subject must be at most 200 characters")
 	}
 	if in.Body != nil && len([]rune(*in.Body)) > 5000 {
-		return nil, apperr.Invalid("the body must be at most 5000 characters")
+		return nil, apperr.InvalidField("body", "the body must be at most 5000 characters")
+	}
+	if err := cleanOverrides(in.Email); err != nil {
+		return nil, err
 	}
 	var p *authapi.EmailPreview
 	err := with(func(at string) error {
@@ -401,6 +404,39 @@ func (b *BrandingService) Preview(ctx context.Context, actor string, with TokenC
 	}
 	p.HTML = b.inline(p.HTML)
 	return p, nil
+}
+
+// cleanOverrides checks unsaved email settings like the config keys do
+// (auth checks again; its 400 names the field too).
+func cleanOverrides(o *authapi.EmailOverrides) error {
+	if o == nil {
+		return nil
+	}
+	line := func(p *string, field, what string, max int) error {
+		if p == nil {
+			return nil
+		}
+		v := strings.TrimSpace(*p)
+		if len([]rune(v)) > max || strings.ContainsAny(v, "\r\n\x00") {
+			return apperr.InvalidField(field, fmt.Sprintf("the %s must be at most %d characters on one line", what, max))
+		}
+		*p = v
+		return nil
+	}
+	if err := line(o.SenderName, "email.sender_name", "sender name", 64); err != nil {
+		return err
+	}
+	if err := line(o.Footer, "email.footer", "footer", 200); err != nil {
+		return err
+	}
+	if o.Accent != nil {
+		c, err := theme.Color(*o.Accent)
+		if err != nil {
+			return apperr.InvalidField("email.accent", "the accent must be a colour like #7c3aed")
+		}
+		o.Accent = &c
+	}
+	return nil
 }
 
 // assetRef is a branding image URL in auth's rendered email.

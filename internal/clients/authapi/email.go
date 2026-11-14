@@ -20,22 +20,36 @@ import (
 // settings.manage (auth checks it, the panel checks it first too).
 // INTERNAL_API_TOKEN, when set, goes along in X-Internal-Token.
 //
-//	POST /internal/email/preview {template, subject?, body?} → {subject, html, text}
+//	POST /internal/email/preview {template, subject?, body?, email?} → {subject, html, text, from?}
 //	POST /internal/email/test    {template, to}              → {sent?, message?}
 
-// EmailPreviewRequest renders template; Subject and Body, when set, stand in
-// for the saved wording (unsaved edits).
+// EmailPreviewRequest renders template; Subject, Body and Email's fields,
+// when set, stand in for the saved config (unsaved edits).
 type EmailPreviewRequest struct {
-	Template string  `json:"template"`
-	Subject  *string `json:"subject,omitempty"`
-	Body     *string `json:"body,omitempty"`
+	Template string          `json:"template"`
+	Subject  *string         `json:"subject,omitempty"`
+	Body     *string         `json:"body,omitempty"`
+	Email    *EmailOverrides `json:"email,omitempty"`
 }
 
-// EmailPreview is the rendered email.
+// EmailOverrides are unsaved auth.email.* settings for a preview. An auth
+// older than the MJML layout (1.10.x) ignores them and renders the saved
+// ones; it also leaves EmailPreview.From empty, which is how the panel
+// tells.
+type EmailOverrides struct {
+	SenderName *string `json:"sender_name,omitempty"`
+	Accent     *string `json:"accent,omitempty"`
+	Footer     *string `json:"footer,omitempty"`
+	Logo       *bool   `json:"logo,omitempty"`
+}
+
+// EmailPreview is the rendered email. From ("Name <addr>") is empty from
+// an auth that doesn't take overrides.
 type EmailPreview struct {
 	Subject string `json:"subject"`
 	HTML    string `json:"html"`
 	Text    string `json:"text"`
+	From    string `json:"from,omitempty"`
 }
 
 // EmailTestRequest sends template to To.
@@ -173,5 +187,19 @@ func emailError(res *http.Response, data []byte) error {
 	if code == "" {
 		code = "upstream_" + strconv.Itoa(res.StatusCode)
 	}
-	return apperr.New(res.StatusCode, code, msg)
+	e := apperr.New(res.StatusCode, code, msg)
+	if res.StatusCode == http.StatusBadRequest && previewField(eb.Field) {
+		e.Field = eb.Field
+	}
+	return e
+}
+
+// previewField reports whether f is a preview request field the panel
+// knows (so a stray value from auth never lands on the wrong input).
+func previewField(f string) bool {
+	switch f {
+	case "template", "subject", "body", "email.sender_name", "email.accent", "email.footer", "email.logo":
+		return true
+	}
+	return false
 }
