@@ -71,7 +71,7 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
 - **Invites:** create (uses, expiry, note), with the code shown once; list with
   status (active, used up, expired, revoked); revoke. Warns when registration
   is open or closed rather than invite-only.
-- **Audit log:** filter by event (or group: admin actions, sign-ins,
+- **Audit log:** filter by event (or group: admin actions, roles, sign-ins,
   SSO, password events), who did it, the affected account, and a time window;
   scrolls through the whole history page by page. Usernames are resolved for
   the actor and for the account an admin action affected.
@@ -372,25 +372,32 @@ running auth service and Dex, not only against fakes; rerun with
 | `GET /v1/admin/users/{id}` → `{user, identities[{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` | 1.4.0 | Linked sign-ins, "SSO only" |
 | `GET/POST /v1/admin/sso/providers`, `GET/PATCH/DELETE …/{id}`, `POST …/{id}/test` → `{ok, details{…}}` | 1.4.0 | Sign-in providers. `config` is one flat object per kind (OIDC: `issuer, client_id, client_secret (write-only), scopes, username_claim, email_claim, display_name_claim`; SAML: `idp_metadata_url \| idp_metadata_xml, entity_id, attribute_map, name_id_format, sign_requests`); the panel's own API nests it as `{oidc}` / `{saml}`. PATCH merges key by key: the panel omits `client_secret` to keep it and sends cleared optional keys as `null`. Responses carry `has_client_secret`, `start_url`, `redirect_uri` (OIDC), `acs_url`, `sp_metadata_url`, `sp_entity_id`, `sp_certificate` (SAML). Deleting a provider deletes its linked identities |
 
-**auth 1.5.0: roles and permissions** (in progress in auth; the panel is
-written against this contract and tested with fakes):
+**auth 1.5.0: roles and permissions** ([docs/roles.md](https://github.com/boson-chat/auth/blob/main/docs/roles.md)).
+Checked against a local auth built from the roles branch:
+`AUTH_TEST_URL=http://127.0.0.1:8080 AUTH_TEST_OWNER=… AUTH_TEST_ADMIN=… AUTH_TEST_PASSWORD=… go test -run TestRolesAgainstAuth ./internal/clients/authapi/`
+(an Owner and an Admin sharing a password).
 
 | Endpoint | Used for |
 |---|---|
-| `GET /v1/me`, `GET /v1/admin/users/{id}` add `roles[{id, name, color, position}]` and effective `permissions[]` (inside `user` or next to it) | access checks, chips, effective permissions. Their absence means auth < 1.5.0 |
-| `GET /v1/admin/permissions` → `{permissions[{id, group: admin\|network\|irc, label, description}]}` | the Permissions tab |
-| `GET /v1/admin/roles` → `{roles}` (position desc); `POST` → 201 `{role}`; `PATCH/DELETE /v1/admin/roles/{id}` (409 for built-ins) | Roles page. A role is `{id, name, color: "#rrggbb"\|null, position, builtin: owner\|admin\|moderator\|member\|null, permissions, irc{whois_line, vhost, oper}, hoist, mentionable, member_count, created_at, updated_at}` |
-| `POST /v1/admin/roles/reorder {order:[id…]}` | drag to reorder; `{roles}` or 204 (the panel re-lists) |
-| `GET /v1/admin/roles/{id}/members?cursor=&limit=` → `{users, next_cursor}` | Members tab |
-| `PUT /v1/admin/users/{id}/roles {role_ids}` → `{roles}` | assigning roles |
+| `GET /v1/me`, `GET /v1/admin/users[/{id}]` add `roles[{id, name, color, position}]` (never Member) and, on `/me` and a single user, effective `permissions[]` | access checks, chips, effective permissions. Their absence means auth < 1.5.0 |
+| `GET /v1/admin/permissions` → `{permissions[{id, group, label, description}]}` | the Permissions tab, rendered from the live list (33 in 1.5.0) |
+| `GET /v1/admin/roles` (most senior first), `GET/PATCH/DELETE /v1/admin/roles/{id}`, `POST /v1/admin/roles` → 201 | Roles page. `null` clears `color`, `irc.whois_line` (then `is a <name>`) and `irc.vhost`; `irc.oper` comes back effective (on with any `irc.*` permission). Built-ins can't be renamed or deleted (`409 builtin_role`) |
+| `POST /v1/admin/roles/reorder {order}` → `{roles}` | the movable roles only (not Owner or Member), most senior first; they swap positions among themselves |
+| `GET /v1/admin/roles/{id}/members?cursor=&limit=` → `{users[{id, username, display_name, disabled, assigned_at, assigned_by}], next_cursor}` | Members tab |
+| `PUT /v1/admin/users/{id}/roles {role_ids}` → `{roles}` | assigning roles (the full set) |
 
-The panel assumes the auth service enforces the hierarchy (roles below the
-caller's highest, only permissions the caller has, Owner bypasses) with a
-403, and that the error codes `role_hierarchy`, `permission_not_held`,
-`role_builtin`, `owner_required` and `last_owner` are used (the panel words
-them; others pass through). A role's WHOIS line is shown only for opers
-(Ergo's `RPL_WHOISOPERATOR`), so the preview strikes it through when "Oper
-up on IRC" is off.
+auth enforces the hierarchy (roles and users strictly below your highest
+role, only permissions you hold, Owner bypasses, `roles.owner` for the Owner
+role, the last Owner stays) with `403 role_hierarchy` /
+`permission_not_held` and `409 last_owner`; the panel disables the same
+things and words those errors. auth does not check `services.*` or
+`directory.manage`: the BFF does. Vhost templates and role names are
+checked with auth's rules before saving (letters, digits, `. - _ /` and
+`{username}`, ≤ 64 bytes with a 30-character username, no leading or
+trailing `.`/`/`, no `..`/`//`; names 1–32 letters, digits, spaces, `-`,
+`_`), and the preview renders `{username}` as auth does (ASCII lower case,
+`` []\`^{|} `` → `-`). auth's built-in Moderator has no `admin.panel`, so
+moderators don't open the panel unless a role gives it to them.
 
 **boson API: `GET /v1/admin/profiles/{auth_user_id}`** (new). The backend
 already verifies auth access tokens; the panel calls it with the signed-in
@@ -470,16 +477,16 @@ the page and the buttons.
 
 | Permission | Pages and endpoints |
 |---|---|
-| `admin.panel` | sign in, `/api/session`, `/api/permissions` |
+| `admin.panel` | sign in, `/api/session`, reading `/api/permissions`, `/api/roles`, `/api/roles/{id}` and its members |
 | `services.view` | Stack (`/api/overview`), Services list and logs (`GET /api/services…`) |
 | `services.manage` | restart / stop / start (`POST /api/services/{name}/{action}`) |
 | `settings.manage` | Network settings (`GET/PATCH /api/settings`) |
 | `directory.manage` | Directory (`/api/directory…`) |
 | `audit.view` | Audit log (`/api/audit`) |
 | `users.view` | Users, a user's page, sessions, activity, profile |
-| `users.manage` | create users, password reset / verification emails, legacy role change |
-| `users.moderate` | disable / enable, revoke sessions |
-| `roles.manage` | Roles (`/api/roles…`), assigning roles (`PUT /api/users/{id}/roles`) |
+| `users.manage` | create users, password reset / verification emails |
+| `users.moderate` or `users.manage` | disable / enable, revoke sessions (auth also requires outranking the user) |
+| `roles.manage` | Roles page and role changes (`POST/PATCH/DELETE /api/roles…`, reorder, members), assigning roles (`PUT /api/users/{id}/roles`, the 1.x `PATCH /api/users/{id} {role}`) |
 | `invites.manage` | Invites (`/api/invites…`) |
 | `sso.manage` | Sign-in providers (`/api/sso/providers…`) |
 
@@ -540,7 +547,7 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `POST /api/services/{name}/{start\|stop\|restart}` `{confirm}` | 428 `confirmation_required` for a protected service without its name; 202 for the panel itself |
 | `GET /api/services/{name}/logs?tail=&since=&download=1` | `{lines, last_at}` or a text/plain attachment |
 | `GET /api/permissions` | `{permissions[{id, group, label, description}], source}`; `source: "panel"` (the panel's own list) on auth < 1.5.0 |
-| `GET/POST /api/roles`, `PATCH/DELETE /api/roles/{id}`, `POST /api/roles/reorder` `{order}` | roles, most senior first; 501 `upstream_unsupported` on auth < 1.5.0 |
+| `GET/POST /api/roles`, `GET/PATCH/DELETE /api/roles/{id}`, `POST /api/roles/reorder` `{order}` | roles, most senior first; 501 `upstream_unsupported` on auth < 1.5.0. `null` or `""` clears `color`, `irc.whois_line`, `irc.vhost` |
 | `GET /api/roles/{id}/members?cursor=&limit=`, `PUT/DELETE /api/roles/{id}/members/{user_id}` | `{users, next_cursor}`; adding / removing one member reads and rewrites that user's roles |
 | `PUT /api/users/{id}/roles` `{role_ids}` | `{roles}` |
 | `GET /api/directory?hostname=`, `POST /api/directory`, `PATCH /api/directory/{id}?hostname=`, `POST …/{id}/verify`, `POST …/{id}/regenerate-token`, `DELETE …/{id}` | |
