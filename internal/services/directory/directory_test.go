@@ -26,6 +26,10 @@ type fakeV1 struct {
 	peers    []map[string]any
 	acting   []string
 	internal string
+	// settings: the 1.4.0 settings API; nil = an older directory (404).
+	settings map[string]any
+	isMain   bool
+	patches  []map[string]any
 }
 
 func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
@@ -199,6 +203,111 @@ func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
 		}
 		jsonErr(w, 404, "not_found")
 	}))
+	// The settings API (directory >= 1.4.0) and the rest of the peers API.
+	settingsOn := func(w http.ResponseWriter, r *http.Request) bool {
+		if f.settings == nil {
+			http.NotFound(w, r)
+			return false
+		}
+		return operator(w, r)
+	}
+	builtin := func() map[string]any {
+		for _, p := range f.peers {
+			if p["builtin"] == true {
+				return p
+			}
+		}
+		return nil
+	}
+	settingsBody := func() map[string]any {
+		b := builtin()
+		active := b != nil && b["enabled"] == true && f.settings["include_main"] == true && !f.isMain
+		return map[string]any{"settings": f.settings, "defaults": f.settings, "overridden": []string{}, "is_main": f.isMain,
+			"main_active": active, "main_peer": b}
+	}
+	mux.HandleFunc("GET /v1/admin/settings", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !settingsOn(w, r) {
+			return
+		}
+		_ = json.NewEncoder(w).Encode(settingsBody())
+	}))
+	mux.HandleFunc("PATCH /v1/admin/settings", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !settingsOn(w, r) {
+			return
+		}
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		f.patches = append(f.patches, in)
+		if v, ok := in["sync_every"].(string); ok && v == "5s" {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":"invalid_request","message":"sync_every must be between 1m and 168h"}`))
+			return
+		}
+		for k, v := range in {
+			f.settings[k] = v
+		}
+		if on, ok := in["include_main"].(bool); ok {
+			// The directory creates/re-enables the builtin on include_main=true
+			// and hides it on false.
+			if b := builtin(); on && b == nil {
+				f.peers = append([]map[string]any{{"id": "peer_main", "url": "https://directory.boson.chat", "name": "boson", "enabled": true, "builtin": true, "listing_count": 0}}, f.peers...)
+			} else if on {
+				b["enabled"] = true
+			} else if b != nil {
+				f.peers = f.peers[1:]
+			}
+		}
+		_ = json.NewEncoder(w).Encode(settingsBody())
+	}))
+	mux.HandleFunc("GET /v1/admin/peers/check", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !settingsOn(w, r) {
+			return
+		}
+		u := r.URL.Query().Get("url")
+		if strings.Contains(u, "down") {
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte(`{"error":"peer_unreachable","message":"connection refused"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"url": u, "well_known": map[string]any{"name": "Friends", "api": u + "/v1"}})
+	}))
+	mux.HandleFunc("POST /v1/admin/peers", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !settingsOn(w, r) {
+			return
+		}
+		var in map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		p := map[string]any{"id": "peer_new", "url": in["url"], "name": "Friends", "enabled": true, "builtin": false, "listing_count": 0}
+		f.peers = append(f.peers, p)
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer": p})
+	}))
+	mux.HandleFunc("DELETE /v1/admin/peers/{id}", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !settingsOn(w, r) {
+			return
+		}
+		for i, p := range f.peers {
+			if p["id"] == r.PathValue("id") {
+				f.peers = append(f.peers[:i], f.peers[i+1:]...)
+				w.WriteHeader(204)
+				return
+			}
+		}
+		jsonErr(w, 404, "not_found")
+	}))
+	mux.HandleFunc("POST /v1/admin/peers/{id}/sync", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !settingsOn(w, r) {
+			return
+		}
+		for _, p := range f.peers {
+			if p["id"] == r.PathValue("id") {
+				p["listing_count"], p["last_sync_at"] = 5, time.Now()
+				_ = json.NewEncoder(w).Encode(map[string]any{"peer": p, "result": map[string]any{"created": 5, "verified": 4}})
+				return
+			}
+		}
+		jsonErr(w, 404, "not_found")
+	}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -336,5 +445,102 @@ func TestLocalDirectory(t *testing.T) {
 	}
 	if _, err := old.OwnedNetworks(ctx, "usr_ana"); !apperr.IsUnsupported(err) {
 		t.Fatalf("owned unsupported: %v", err)
+	}
+}
+
+// A 1.4.0 directory: include_main through the settings API (also when no
+// builtin peer exists yet), is_main, name/operator/contact and peers.
+func TestLocalDirectorySettings(t *testing.T) {
+	f, srv := newFakeV1(t)
+	f.settings = map[string]any{"name": "Stack dir", "operator": "", "contact": "", "include_main": false,
+		"main_peer_url": "https://directory.boson.chat", "sync_every": "10m"}
+	f.peers = f.peers[1:] // include_main off: no builtin
+	l := NewLocalService(LocalOptions{Client: bosonapi.NewOperatorClient(srv.URL, "itok", time.Second, nil), URL: srv.URL})
+	ctx := context.Background()
+
+	fed := l.Federation(ctx)
+	if fed.Settings == nil || fed.Settings.Settings.Name != "Stack dir" || fed.MainPeer != nil || fed.SettingsUnsupported != "" {
+		t.Fatalf("federation: %+v", fed)
+	}
+	fed, err := l.SetIncludeMain(ctx, "root", true)
+	if err != nil || fed.MainPeer == nil || !fed.MainPeer.Enabled || !fed.Settings.MainActive || !fed.Settings.Settings.IncludeMain {
+		t.Fatalf("include on without a builtin: %v %+v", err, fed)
+	}
+	if last := f.patches[len(f.patches)-1]; last["include_main"] != true || f.acting[len(f.acting)-1] != "root" {
+		t.Fatalf("patch %v acting %v", last, f.acting)
+	}
+	if fed, err = l.SetIncludeMain(ctx, "root", false); err != nil || fed.MainPeer != nil || fed.Settings.Settings.IncludeMain {
+		t.Fatalf("include off: %v %+v", err, fed)
+	}
+
+	name, op, every := " New name ", "Ops team", "1h"
+	fed, err = l.UpdateSettings(ctx, "root", SettingsUpdate{Name: &name, Operator: &op, SyncEvery: &every})
+	if err != nil || fed.Settings.Settings.Name != "New name" || fed.Settings.Settings.Operator != "Ops team" || fed.Settings.Settings.SyncEvery != "1h" {
+		t.Fatalf("settings: %v %+v", err, fed.Settings)
+	}
+	if _, ok := f.patches[len(f.patches)-1]["contact"]; ok {
+		t.Fatal("unset fields must not be sent")
+	}
+	empty, bad := "", "5s"
+	if _, err := l.UpdateSettings(ctx, "root", SettingsUpdate{Name: &empty}); err == nil {
+		t.Fatal("empty name")
+	}
+	if _, err := l.UpdateSettings(ctx, "root", SettingsUpdate{}); err == nil {
+		t.Fatal("empty update")
+	}
+	if _, err := l.UpdateSettings(ctx, "root", SettingsUpdate{SyncEvery: &bad}); err == nil || !strings.Contains(err.Error(), "between 1m") {
+		t.Fatalf("directory validation passes through: %v", err)
+	}
+
+	// Peers.
+	c, err := l.CheckPeer(ctx, "dir.friends.net/")
+	if err != nil || c.URL != "https://dir.friends.net" || c.WellKnown.Name != "Friends" {
+		t.Fatalf("check: %v %+v", err, c)
+	}
+	if _, err := l.CheckPeer(ctx, "down.example"); err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("unreachable: %v", err)
+	}
+	if _, err := l.CheckPeer(ctx, "  "); err == nil {
+		t.Fatal("empty url")
+	}
+	fed, err = l.AddPeer(ctx, "root", "https://dir.friends.net")
+	if err != nil || len(fed.Peers) != 2 {
+		t.Fatalf("add: %v %+v", err, fed)
+	}
+	fed, res, err := l.SyncPeer(ctx, "root", "peer_new")
+	if err != nil || res.Created != 5 || fed.Peers[1].ListingCount != 5 {
+		t.Fatalf("sync: %v %+v %+v", err, res, fed)
+	}
+	if fed, err = l.SetPeerEnabled(ctx, "root", "peer_new", false); err != nil || fed.Peers[1].Enabled {
+		t.Fatalf("disable: %v %+v", err, fed)
+	}
+	if fed, err = l.RemovePeer(ctx, "root", "peer_new"); err != nil || len(fed.Peers) != 1 {
+		t.Fatalf("remove: %v %+v", err, fed)
+	}
+
+	// The main directory itself.
+	f.isMain = true
+	if fed := l.Federation(ctx); !fed.Settings.IsMain {
+		t.Fatalf("is_main: %+v", fed.Settings)
+	}
+	if _, err := l.SetIncludeMain(ctx, "root", true); err == nil {
+		t.Fatal("include on the main directory")
+	} else if e, _ := apperr.As(err); e.Code != "is_main_directory" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Before 1.4.0 the settings are unsupported; the page degrades.
+func TestLocalDirectoryWithoutSettings(t *testing.T) {
+	_, srv := newFakeV1(t)
+	l := NewLocalService(LocalOptions{Client: bosonapi.NewOperatorClient(srv.URL, "itok", time.Second, nil)})
+	ctx := context.Background()
+	fed := l.Federation(ctx)
+	if fed.Settings != nil || !strings.Contains(fed.SettingsUnsupported, "1.4.0") || fed.MainPeer == nil {
+		t.Fatalf("old directory: %+v", fed)
+	}
+	name := "x"
+	if _, err := l.UpdateSettings(ctx, "root", SettingsUpdate{Name: &name}); !apperr.IsUnsupported(err) || !strings.Contains(err.Error(), "1.4.0") {
+		t.Fatalf("settings on an old directory: %v", err)
 	}
 }

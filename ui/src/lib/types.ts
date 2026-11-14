@@ -297,17 +297,57 @@ export interface DirectoryPeer {
 	enabled: boolean;
 	/** The main directory (directory.boson.chat), included by default. */
 	builtin: boolean;
+	/** Synced right now (enabled, and for the builtin peer, included). */
+	active?: boolean;
 	last_sync_at?: string;
 	last_error?: string;
 	listing_count: number;
+}
+
+export interface DirectorySettingValues {
+	name: string;
+	operator: string;
+	contact: string;
+	include_main: boolean;
+	main_peer_url: string;
+	/** Go duration, e.g. 10m. */
+	sync_every: string;
+}
+
+/** The stack directory's runtime settings (directory >= 1.4.0). */
+export interface DirectorySettings {
+	settings: DirectorySettingValues;
+	/** The directory's env values (what a reset goes back to). */
+	defaults: DirectorySettingValues;
+	overridden: string[];
+	/** This is the main directory itself: include_main doesn't apply. */
+	is_main: boolean;
+	main_active: boolean;
+	main_peer?: DirectoryPeer | null;
+	public_url?: string;
+	updated_at?: string;
+	updated_by?: string | null;
 }
 
 export interface Federation {
 	url: string;
 	main_peer?: DirectoryPeer;
 	peers: DirectoryPeer[];
+	settings?: DirectorySettings;
+	settings_unsupported?: string;
+	settings_error?: string;
 	error?: string;
 	unsupported?: string;
+}
+
+export interface PeerCheck {
+	url: string;
+	well_known: { name: string; api: string; operator?: string; contact?: string };
+}
+
+export interface PeerSyncResult {
+	federation: Federation;
+	result: { created: number; updated: number; deleted: number; verified: number; error?: string };
 }
 
 export interface OwnedNetworksResponse {

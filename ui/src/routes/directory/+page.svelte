@@ -4,9 +4,19 @@
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { datetime } from '$lib/format';
-	import type { DirectoryServer, DirectoryStatus, Federation, Listing, VerifyResult } from '$lib/types';
+	import type {
+		DirectoryPeer,
+		DirectoryServer,
+		DirectoryStatus,
+		Federation,
+		Listing,
+		PeerCheck,
+		PeerSyncResult,
+		VerifyResult
+	} from '$lib/types';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import CopyField from '$lib/components/CopyField.svelte';
+	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
 	import Toggle from '$lib/components/Toggle.svelte';
@@ -46,18 +56,47 @@
 			error = errorText(e);
 		}
 	}
-	// The stack's own directory (directory profile): its peers and the
-	// switch for the built-in main peer.
+	// The stack's own directory (directory profile): its runtime settings
+	// (directory >= 1.4.0; stored in its database, the env only holds
+	// defaults) and its peers.
 	let local = $derived(!!session.info?.features.directory_local);
 	let fed = $state<Federation | null>(null);
 	let fedError = $state('');
 	let includeMain = $state(true);
 	let switching = $state(false);
+	let ds = $derived(fed?.settings ?? null);
+	let others = $derived(fed?.peers.filter((p) => !p.builtin) ?? []);
+
+	// identity form
+	let dName = $state('');
+	let dOperator = $state('');
+	let dContact = $state('');
+	let dSync = $state('10m');
+	let savingSettings = $state(false);
+	let settingsError = $state('');
+	const syncChoices = ['5m', '10m', '30m', '1h', '6h', '24h'];
+	let settingsDirty = $derived(
+		!!ds &&
+			(dName.trim() !== ds.settings.name ||
+				dOperator.trim() !== ds.settings.operator ||
+				dContact.trim() !== ds.settings.contact ||
+				dSync !== ds.settings.sync_every)
+	);
+
+	function applyFed(f: Federation) {
+		fed = f;
+		includeMain = f.settings ? f.settings.main_active : !!f.main_peer?.enabled;
+		if (f.settings) {
+			dName = f.settings.settings.name;
+			dOperator = f.settings.settings.operator;
+			dContact = f.settings.settings.contact;
+			dSync = f.settings.settings.sync_every;
+		}
+	}
 	async function loadFederation() {
 		fedError = '';
 		try {
-			fed = await api<Federation>('GET', '/directory/federation');
-			includeMain = !!fed.main_peer?.enabled;
+			applyFed(await api<Federation>('GET', '/directory/federation'));
 		} catch (e) {
 			fedError = errorText(e);
 		}
@@ -65,18 +104,121 @@
 	async function setIncludeMain(on: boolean) {
 		switching = true;
 		try {
-			fed = await api<Federation>('PUT', '/directory/federation/include-main', { enabled: on });
-			includeMain = !!fed.main_peer?.enabled;
+			applyFed(await api<Federation>('PUT', '/directory/federation/include-main', { enabled: on }));
 			toasts.push(
 				on
-					? 'Your directory includes the boson main directory again. Its listings show up after their DNS check.'
-					: 'Your directory no longer includes the boson main directory.'
+					? 'Your directory includes the boson main directory. Its listings show up after their DNS check.'
+					: 'Your directory no longer includes the boson main directory. Its listings are gone.'
 			);
 		} catch (e) {
 			includeMain = !on;
 			toasts.push(errorText(e), 'bad');
 		} finally {
 			switching = false;
+		}
+	}
+	async function saveSettings(e: Event) {
+		e.preventDefault();
+		if (!ds) return;
+		savingSettings = true;
+		settingsError = '';
+		const body: Record<string, string> = {};
+		if (dName.trim() !== ds.settings.name) body.name = dName.trim();
+		if (dOperator.trim() !== ds.settings.operator) body.operator = dOperator.trim();
+		if (dContact.trim() !== ds.settings.contact) body.contact = dContact.trim();
+		if (dSync !== ds.settings.sync_every) body.sync_every = dSync;
+		try {
+			applyFed(await api<Federation>('PATCH', '/directory/settings', body));
+			toasts.push('Directory settings saved. They apply right away.');
+		} catch (err) {
+			settingsError = errorText(err);
+		} finally {
+			savingSettings = false;
+		}
+	}
+
+	// peers
+	let peerInput = $state('');
+	let peerCheck = $state<PeerCheck | null>(null);
+	let peerError = $state('');
+	let checkingPeer = $state(false);
+	let addingPeer = $state(false);
+	let peerBusy = $state<Record<string, boolean>>({});
+	async function checkPeer(e: Event) {
+		e.preventDefault();
+		peerCheck = null;
+		peerError = '';
+		if (!peerInput.trim()) return;
+		checkingPeer = true;
+		try {
+			peerCheck = await api<PeerCheck>(
+				'GET',
+				'/directory/peers/check?url=' + encodeURIComponent(peerInput.trim())
+			);
+		} catch (err) {
+			peerError = errorText(err);
+		} finally {
+			checkingPeer = false;
+		}
+	}
+	async function addPeer() {
+		if (!peerCheck) return;
+		addingPeer = true;
+		try {
+			applyFed(await api<Federation>('POST', '/directory/peers', { url: peerCheck.url }));
+			toasts.push(
+				`Importing from ${peerCheck.well_known.name || peerName(peerCheck.url)}. The first sync starts within a minute.`
+			);
+			peerCheck = null;
+			peerInput = '';
+		} catch (err) {
+			peerError = errorText(err);
+		} finally {
+			addingPeer = false;
+		}
+	}
+	async function setPeer(p: DirectoryPeer, on: boolean) {
+		peerBusy[p.id] = true;
+		try {
+			applyFed(
+				await api<Federation>('PATCH', `/directory/peers/${encodeURIComponent(p.id)}`, { enabled: on })
+			);
+			toasts.push(
+				on
+					? `Importing from ${p.name || peerName(p.url)} again.`
+					: `Stopped importing from ${p.name || peerName(p.url)}. Its listings are hidden.`
+			);
+		} catch (err) {
+			toasts.push(errorText(err), 'bad');
+			await loadFederation();
+		} finally {
+			peerBusy[p.id] = false;
+		}
+	}
+	async function syncPeer(p: DirectoryPeer) {
+		peerBusy[p.id] = true;
+		try {
+			const r = await api<PeerSyncResult>('POST', `/directory/peers/${encodeURIComponent(p.id)}/sync`);
+			applyFed(r.federation);
+			if (r.result.error)
+				toasts.push(`Sync with ${p.name || peerName(p.url)} failed: ${r.result.error}`, 'bad');
+			else
+				toasts.push(
+					`Synced with ${p.name || peerName(p.url)}: ${r.result.created} new, ${r.result.updated} updated, ${r.result.deleted} removed.`
+				);
+		} catch (err) {
+			toasts.push(errorText(err), 'bad');
+		} finally {
+			peerBusy[p.id] = false;
+		}
+	}
+	async function removePeer(p: DirectoryPeer) {
+		try {
+			applyFed(await api<Federation>('DELETE', `/directory/peers/${encodeURIComponent(p.id)}`));
+			toasts.push(`Removed ${p.name || peerName(p.url)}. Its listings disappear from your directory.`);
+		} catch (err) {
+			toasts.push(errorText(err), 'bad');
+			throw err;
 		}
 	}
 	const peerName = (u: string) => {
@@ -450,12 +592,21 @@
 	{/if}
 {/if}
 
+{#snippet peerStats(p: DirectoryPeer)}
+	<span>{p.listing_count} listings</span>
+	<span
+		>Last sync {#if p.last_sync_at}<Time at={p.last_sync_at} />{:else}not yet{/if}</span
+	>
+{/snippet}
+
 {#if local}
 	<section class="section" aria-labelledby="fed-h">
 		<div class="section-head">
 			<h2 id="fed-h">Your own directory</h2>
 			<p>
-				This stack runs a directory of its own{fed ? ' at ' : ''}{#if fed}<code>{fed.url}</code>{/if}.
+				This stack runs a directory of its own{fed ? ' at ' : ''}{#if fed}<code
+						>{ds?.public_url || fed.url}</code
+					>{/if}. Changes here apply right away and stick across restarts; no <code>.env</code> edits.
 			</p>
 		</div>
 		{#if fedError}
@@ -474,38 +625,183 @@
 			</State>
 		{:else}
 			<div class="fed">
-				<div class="fed-switch">
-					<Toggle
-						label="Include the boson main directory"
-						detail={fed.main_peer
-							? `Also show every network listed at ${peerName(fed.main_peer.url)}. Each one appears here only after your directory has checked its DNS record itself.`
-							: 'Off: the directory runs with DIRECTORY_INCLUDE_MAIN=false. Set it to true in .env and recreate the directory service to switch it on here.'}
-						bind:checked={includeMain}
-						disabled={!fed.main_peer || switching}
-						onchange={setIncludeMain}
-					/>
-				</div>
-				<h3 class="sub">Peers</h3>
-				{#if fed.peers.length === 0}
-					<p class="muted small">
-						None. Add peers with <code>DIRECTORY_PEERS</code> or on the directory’s own Peers page.
-					</p>
-				{:else}
-					<ul class="peers">
-						{#each fed.peers as p (p.id)}
-							<li data-on={p.enabled}>
-								<span class="pname">{p.name || peerName(p.url)}</span>
-								<span class="mono muted">{p.url}</span>
-								{#if p.builtin}<span class="tag">main</span>{/if}
-								<span class="tag {p.enabled ? 'tag-ok' : ''}">{p.enabled ? 'on' : 'off'}</span>
-								<span class="muted small">{p.listing_count} listings</span>
-								{#if p.last_sync_at}<span class="muted small">synced <Time at={p.last_sync_at} /></span>{/if}
-								{#if p.last_error}<span class="perr small">{p.last_error}</span>{/if}
-							</li>
-						{/each}
-					</ul>
-					<p class="muted small">Add, sync and remove peers on the directory’s own Peers page.</p>
+				{#if fed.settings_unsupported}
+					<Notice tone="info">
+						Your directory is older than 1.4.0, so its name, contact and main-directory setting can’t be
+						changed from here yet. Update the directory service to manage them in the panel. Peers work
+						already.
+					</Notice>
+				{:else if fed.settings_error}
+					<Notice tone="warn">Couldn’t read the directory’s settings: {fed.settings_error}</Notice>
 				{/if}
+
+				<!-- the main directory -->
+				<div class="card" aria-labelledby="main-h">
+					<h3 id="main-h" class="sub">The boson main directory</h3>
+					{#if ds?.is_main}
+						<div class="ismain">
+							<span class="tag tag-accent">Main directory</span>
+							<p>
+								This is the boson main directory: other directories include it. It doesn’t import itself, so
+								there’s nothing to switch on here.
+							</p>
+						</div>
+					{:else}
+						<Toggle
+							label="Include the boson main directory"
+							detail={ds || fed.main_peer
+								? `Also show every network listed at ${peerName(ds?.settings.main_peer_url || fed.main_peer?.url || 'https://directory.boson.chat')}. Each one appears here only after your directory has checked its DNS record itself.`
+								: 'Off. Switching it on from here needs directory 1.4.0 or newer.'}
+							bind:checked={includeMain}
+							disabled={(!ds && !fed.main_peer) || switching}
+							onchange={setIncludeMain}
+						/>
+						{#if includeMain && fed.main_peer}
+							<div class="pstats muted small">
+								{@render peerStats(fed.main_peer)}
+								{#if fed.main_peer.last_error}<span class="perr">{fed.main_peer.last_error}</span>{/if}
+							</div>
+						{/if}
+					{/if}
+				</div>
+
+				<!-- identity -->
+				{#if ds}
+					<form class="card dsettings" aria-labelledby="id-h" onsubmit={saveSettings}>
+						<h3 id="id-h" class="sub">Directory details</h3>
+						<p class="muted small">
+							Shown to people browsing your directory and to other directories that import it.
+						</p>
+						<div class="row2">
+							<label class="field">
+								<span>Name</span>
+								<input type="text" bind:value={dName} required maxlength="100" />
+							</label>
+							<label class="field">
+								<span>Operator</span>
+								<input type="text" bind:value={dOperator} maxlength="100" placeholder="Who runs it" />
+							</label>
+						</div>
+						<div class="row2">
+							<label class="field">
+								<span>Contact</span>
+								<input
+									type="text"
+									bind:value={dContact}
+									maxlength="200"
+									placeholder="Email or URL"
+									spellcheck="false"
+								/>
+							</label>
+							<label class="field">
+								<span>Sync peers every</span>
+								<select bind:value={dSync}>
+									{#each syncChoices.includes(ds.settings.sync_every) ? syncChoices : [ds.settings.sync_every, ...syncChoices] as c (c)}
+										<option value={c}>{c.replace(/m$/, ' min').replace(/h$/, ' h')}</option>
+									{/each}
+								</select>
+							</label>
+						</div>
+						{#if settingsError}<p class="verr" role="alert">{settingsError}</p>{/if}
+						<div class="submit">
+							{#if ds.updated_by}<span class="muted small"
+									>Last changed by {ds.updated_by}{#if ds.updated_at}, <Time at={ds.updated_at} />{/if}</span
+								>{/if}
+							<button class="btn btn-primary btn-small" disabled={!settingsDirty || savingSettings}
+								>{savingSettings ? 'Saving…' : 'Save details'}</button
+							>
+						</div>
+					</form>
+				{/if}
+
+				<!-- peers -->
+				<div class="card" aria-labelledby="peers-h">
+					<h3 id="peers-h" class="sub">Other directories</h3>
+					<p class="muted small">
+						Import listings from any directory that publishes <code>/.well-known/boson-directory.json</code>.
+					</p>
+					<form class="addpeer" onsubmit={checkPeer}>
+						<label class="field">
+							<span class="sr-only">Directory address</span>
+							<input
+								type="text"
+								inputmode="url"
+								bind:value={peerInput}
+								placeholder="https://directory.example.org"
+								spellcheck="false"
+								oninput={() => {
+									peerCheck = null;
+									peerError = '';
+								}}
+							/>
+						</label>
+						<button class="btn btn-small" disabled={checkingPeer || !peerInput.trim()}
+							>{checkingPeer ? 'Checking…' : 'Check'}</button
+						>
+					</form>
+					{#if peerError}<p class="verr" role="alert">{peerError}</p>{/if}
+					{#if peerCheck}
+						<div class="found" aria-live="polite">
+							<div>
+								<span class="pname">{peerCheck.well_known.name || peerName(peerCheck.url)}</span>
+								<span class="mono muted small">{peerCheck.url}</span>
+								{#if peerCheck.well_known.operator}<span class="muted small"
+										>run by {peerCheck.well_known.operator}</span
+									>{/if}
+							</div>
+							<button class="btn btn-primary btn-small" onclick={addPeer} disabled={addingPeer}
+								>{addingPeer ? 'Adding…' : 'Add peer'}</button
+							>
+						</div>
+					{/if}
+					{#if others.length === 0}
+						<p class="muted small">No other directories yet.</p>
+					{:else}
+						<ul class="peers">
+							{#each others as p (p.id)}
+								<li data-on={p.enabled}>
+									<div class="pwhat">
+										<div class="pline">
+											<span class="pname">{p.name || peerName(p.url)}</span>
+											{#if !p.enabled}<span class="tag">off</span>{/if}
+										</div>
+										<span class="mono muted small">{p.url}</span>
+										<div class="pstats muted small">{@render peerStats(p)}</div>
+										{#if p.last_error}<p class="perr small">{p.last_error}</p>{/if}
+									</div>
+									<div class="pctl">
+										<Toggle
+											label={p.enabled ? 'Importing' : 'Not importing'}
+											checked={p.enabled}
+											disabled={peerBusy[p.id]}
+											onchange={(v) => setPeer(p, v)}
+										/>
+										<div class="pbtns">
+											<button
+												class="btn btn-small"
+												onclick={() => syncPeer(p)}
+												disabled={!p.enabled || peerBusy[p.id]}
+												>{peerBusy[p.id] ? 'Working…' : 'Sync now'}</button
+											>
+											<Confirm
+												title="Remove {p.name || peerName(p.url)}?"
+												action="Remove peer"
+												danger
+												onconfirm={() => removePeer(p)}
+											>
+												{#snippet trigger(open)}<button class="btn btn-small btn-ghost" onclick={open}
+														>Remove</button
+													>{/snippet}
+												Its {p.listing_count} imported listings disappear from your directory. Networks registered
+												directly with it aren’t affected.
+											</Confirm>
+										</div>
+									</div>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
 			</div>
 		{/if}
 	</section>
@@ -744,7 +1040,9 @@
 		gap: var(--space-4);
 		max-width: 820px;
 	}
-	.fed-switch {
+	.card {
+		display: grid;
+		gap: var(--space-3);
 		padding: var(--space-4);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -753,25 +1051,97 @@
 	.sub {
 		font-size: var(--text-base);
 	}
+	.ismain {
+		display: grid;
+		gap: var(--space-2);
+		justify-items: start;
+	}
+	.ismain p {
+		color: var(--fg-2);
+		font-size: var(--text-sm);
+		max-width: 62ch;
+	}
+	.dsettings .submit {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+		align-items: center;
+		justify-content: flex-end;
+	}
+	select {
+		width: 100%;
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border);
+		background: var(--surface);
+		color: var(--fg);
+		font-size: var(--text-base);
+	}
+	.addpeer {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: var(--space-2);
+		align-items: center;
+	}
+	.found {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-3);
+		border: 1px solid color-mix(in oklab, var(--accent), transparent 60%);
+		border-radius: var(--radius-sm);
+		background: var(--accent-dim);
+	}
+	.found > div {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+	}
 	.peers {
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		border: 1px solid var(--border);
+		border: 1px solid var(--border-soft);
 		border-radius: var(--radius-sm);
-		background: var(--surface);
 	}
 	.peers li {
 		display: flex;
 		flex-wrap: wrap;
-		gap: var(--space-2) var(--space-4);
-		align-items: center;
+		gap: var(--space-3) var(--space-5);
+		align-items: flex-start;
+		justify-content: space-between;
 		padding: var(--space-3) var(--space-4);
 		border-bottom: 1px solid var(--border-soft);
-		font-size: var(--text-sm);
 	}
 	.peers li:last-child {
 		border-bottom: 0;
+	}
+	.pwhat {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+		flex: 1 1 260px;
+	}
+	.pline {
+		display: flex;
+		gap: var(--space-2);
+		align-items: center;
+	}
+	.pstats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1) var(--space-4);
+	}
+	.pctl {
+		display: grid;
+		gap: var(--space-2);
+		justify-items: end;
+	}
+	.pbtns {
+		display: flex;
+		gap: var(--space-2);
 	}
 	.peers li[data-on='false'] .pname {
 		color: var(--fg-quiet);
@@ -787,6 +1157,7 @@
 	.perr {
 		color: var(--danger-text);
 		font-family: var(--font-mono);
+		overflow-wrap: anywhere;
 	}
 	@media (max-width: 640px) {
 		.row3 {
@@ -797,6 +1168,9 @@
 		}
 		.steps > li {
 			padding-left: var(--space-5);
+		}
+		.pctl {
+			justify-items: start;
 		}
 	}
 </style>

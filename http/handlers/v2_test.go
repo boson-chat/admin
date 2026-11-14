@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/clients/dockerapi"
 	"github.com/boson-chat/admin/internal/services/containers"
@@ -213,6 +214,31 @@ func (f *fakeLocal) SetIncludeMain(_ context.Context, actor string, on bool) (*d
 	f.main.Name = "by:" + actor
 	return f.Federation(context.Background()), nil
 }
+func (f *fakeLocal) UpdateSettings(_ context.Context, actor string, u directory.SettingsUpdate) (*directory.Federation, error) {
+	fed := f.Federation(context.Background())
+	fed.Settings = &bosonapi.DirectorySettings{Settings: bosonapi.DirectorySettingValues{Name: *u.Name}, UpdatedBy: &actor}
+	return fed, nil
+}
+func (f *fakeLocal) CheckPeer(_ context.Context, u string) (*bosonapi.PeerCheck, error) {
+	return &bosonapi.PeerCheck{URL: u}, nil
+}
+func (f *fakeLocal) AddPeer(_ context.Context, actor, u string) (*directory.Federation, error) {
+	fed := f.Federation(context.Background())
+	fed.Peers = append(fed.Peers, bosonapi.Peer{ID: "peer_new", URL: u, Name: "by:" + actor, Enabled: true})
+	return fed, nil
+}
+func (f *fakeLocal) SetPeerEnabled(_ context.Context, actor, id string, on bool) (*directory.Federation, error) {
+	if id != f.main.ID {
+		return nil, apperr.New(404, "not_found", "peer not found")
+	}
+	return f.SetIncludeMain(context.Background(), actor, on)
+}
+func (f *fakeLocal) RemovePeer(_ context.Context, _, id string) (*directory.Federation, error) {
+	return f.Federation(context.Background()), nil
+}
+func (f *fakeLocal) SyncPeer(_ context.Context, _, id string) (*directory.Federation, *bosonapi.SyncResult, error) {
+	return f.Federation(context.Background()), &bosonapi.SyncResult{Created: 3}, nil
+}
 func (f *fakeLocal) OwnedNetworks(_ context.Context, id string) ([]bosonapi.Server, error) {
 	return []bosonapi.Server{{ID: "net_1", Hostname: "irc." + id + ".org", VerificationStatus: "pending"}}, nil
 }
@@ -243,5 +269,33 @@ func TestLocalDirectoryEndpoints(t *testing.T) {
 	w = h.do("GET", "/api/users/usr_bob/networks", nil, withCookie(c))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"hostname":"irc.usr_bob.org"`) {
 		t.Fatalf("networks: %d %s", w.Code, w.Body)
+	}
+
+	// Settings and peers.
+	csrfH := withHeader(CSRFHeader, csrf)
+	if w := h.do("PATCH", "/api/directory/settings", map[string]any{"name": "Mine"}, withCookie(c)); w.Code != 403 {
+		t.Fatalf("settings without csrf: %d", w.Code)
+	}
+	w = h.do("PATCH", "/api/directory/settings", map[string]any{"name": "Mine"}, withCookie(c), csrfH)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"Mine"`) || !strings.Contains(w.Body.String(), `"updated_by":"root"`) {
+		t.Fatalf("settings: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("GET", "/api/directory/peers/check?url=https://dir.x.org", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), "dir.x.org") {
+		t.Fatalf("check: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("POST", "/api/directory/peers", map[string]any{"url": "https://dir.x.org"}, withCookie(c), csrfH); w.Code != 201 || !strings.Contains(w.Body.String(), `"name":"by:root"`) {
+		t.Fatalf("add: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("PATCH", "/api/directory/peers/peer_main", map[string]any{}, withCookie(c), csrfH); w.Code != 400 {
+		t.Fatalf("peer patch without enabled: %d", w.Code)
+	}
+	if w := h.do("PATCH", "/api/directory/peers/peer_main", map[string]any{"enabled": true}, withCookie(c), csrfH); w.Code != 200 || !strings.Contains(w.Body.String(), `"enabled":true`) {
+		t.Fatalf("peer enable: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("POST", "/api/directory/peers/peer_main/sync", nil, withCookie(c), csrfH); w.Code != 200 || !strings.Contains(w.Body.String(), `"created":3`) {
+		t.Fatalf("sync: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("DELETE", "/api/directory/peers/peer_2", nil, withCookie(c), csrfH); w.Code != 200 {
+		t.Fatalf("remove: %d %s", w.Code, w.Body)
 	}
 }

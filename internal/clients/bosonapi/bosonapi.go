@@ -115,6 +115,9 @@ func (c *Client) httpError(resp *http.Response, data []byte) error {
 	}
 	_ = json.Unmarshal(data, &eb)
 	switch {
+	case resp.StatusCode == http.StatusBadGateway && eb.Error == "peer_unreachable" && eb.Message != "":
+		// The directory couldn't reach a peer directory: say why.
+		return apperr.New(http.StatusBadGateway, "peer_unreachable", "couldn't read that directory: "+eb.Message)
 	case resp.StatusCode >= 500:
 		return apperr.New(http.StatusBadGateway, "boson_api_error", c.Name+" failed to handle the request")
 	case eb.Error == "" && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed):
