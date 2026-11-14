@@ -94,6 +94,8 @@ export interface Features {
 	profiles: boolean;
 	directory: boolean;
 	directory_registration: boolean;
+	/** The stack runs its own directory (DIRECTORY_LOCAL_URL): federation switch, owned listings. */
+	directory_local?: boolean;
 	/** The public IRC hostname, when known. */
 	irc_host?: string;
 }
@@ -278,8 +280,39 @@ export interface DirectoryServer {
 	user_count?: number;
 	icon_url?: string;
 	registered_at?: string;
+	last_verified_at?: string;
 	website_url?: string;
 	auth_url?: string;
+	/** local | peer:<id> */
+	origin?: string;
+}
+
+/** A directory the stack's own directory imports listings from. */
+export interface DirectoryPeer {
+	id: string;
+	url: string;
+	name?: string;
+	enabled: boolean;
+	/** The main directory (directory.boson.chat), included by default. */
+	builtin: boolean;
+	last_sync_at?: string;
+	last_error?: string;
+	listing_count: number;
+}
+
+export interface Federation {
+	url: string;
+	main_peer?: DirectoryPeer;
+	peers: DirectoryPeer[];
+	error?: string;
+	unsupported?: string;
+}
+
+export interface OwnedNetworksResponse {
+	configured: boolean;
+	unsupported?: string;
+	error?: string;
+	networks?: DirectoryServer[];
 }
 
 export interface ProfileResponse {

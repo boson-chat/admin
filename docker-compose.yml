@@ -91,10 +91,14 @@ services:
       DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-}
       DOCKER_PROJECT: boson-admin-dev
       DOCKER_PROTECTED_SERVICES: admin,caddy
-      # Profiles from a local boson API (empty = off); the public directory.
+      # Profiles from a local boson API (empty = off); the boson directory.
       BOSON_API_URL: ${BOSON_API_URL:-}
-      DIRECTORY_API_URL: ${DIRECTORY_API_URL:-https://api.boson.chat}
-      DIRECTORY_REGISTRATION: ${DIRECTORY_REGISTRATION:-false}
+      DIRECTORY_API_URL: ${DIRECTORY_API_URL:-https://directory.boson.chat}
+      DIRECTORY_REGISTRATION: ${DIRECTORY_REGISTRATION:-true}
+      # A local boson directory (github.com/boson-chat/directory) and its
+      # operator token: federation switch, users' listings. Empty = off.
+      DIRECTORY_LOCAL_URL: ${DIRECTORY_LOCAL_URL:-}
+      DIRECTORY_INTERNAL_TOKEN: ${DIRECTORY_INTERNAL_TOKEN:-}
     ports:
       - "127.0.0.1:8090:8080"
     networks: [default, docker-proxy]

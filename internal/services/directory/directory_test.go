@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,105 +14,271 @@ import (
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 )
 
-// fakeDirectory serves the live public search and the proposed
-// registration API, keyed by the management key's header.
-func fakeDirectory(t *testing.T, registration bool) (*httptest.Server, *map[string]string) {
-	keys := map[string]string{} // id -> key
-	var listing *bosonapi.Server
+// fakeV1 is the boson directory's /v1 API as the panel assumes it
+// (github.com/boson-chat/directory): networks keyed by the sha of the
+// management key, the public lookup, the owner API and the operator API.
+type fakeV1 struct {
+	mu       sync.Mutex
+	nets     map[string]map[string]any // id -> wire network
+	keys     map[string]string         // id -> management key
+	token    map[string]string         // id -> verification token
+	dnsOK    bool
+	peers    []map[string]any
+	acting   []string
+	internal string
+}
+
+func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
+	f := &fakeV1{nets: map[string]map[string]any{}, keys: map[string]string{}, token: map[string]string{}, internal: "itok",
+		peers: []map[string]any{
+			{"id": "peer_main", "url": "https://directory.boson.chat", "name": "boson", "enabled": true, "builtin": true, "listing_count": 42},
+			{"id": "peer_2", "url": "https://dir.example.net", "enabled": true, "builtin": false, "listing_count": 3, "last_error": "timeout"},
+		}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /servers", func(w http.ResponseWriter, r *http.Request) {
-		out := []bosonapi.Server{{ID: "x", Hostname: "irc.other.org", Name: "Other", VerificationStatus: "verified"}}
-		if listing != nil && listing.VerificationStatus == "verified" {
-			out = append(out, *listing)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"servers": out, "count": len(out)})
-	})
-	if registration {
-		auth := func(w http.ResponseWriter, r *http.Request) bool {
-			key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Network ")
-			if !ok || (r.PathValue("id") != "" && keys[r.PathValue("id")] != key) {
-				w.WriteHeader(403)
-				_, _ = w.Write([]byte(`{"error":"bad_key"}`))
-				return false
-			}
-			return true
-		}
-		ver := &bosonapi.Verification{RecordName: "_boson.irc.example.org", RecordValue: "boson-verify=tok"}
-		mux.HandleFunc("GET /directory/networks/lookup", func(w http.ResponseWriter, r *http.Request) {
-			if !auth(w, r) {
-				return
-			}
-			if listing == nil || keys[listing.ID] != strings.TrimPrefix(r.Header.Get("Authorization"), "Network ") {
-				w.WriteHeader(404)
-				_, _ = w.Write([]byte(`{"error":"not_found"}`))
-				return
-			}
-			_ = json.NewEncoder(w).Encode(bosonapi.Listing{Network: *listing, Verification: ver})
-		})
-		mux.HandleFunc("POST /directory/networks", func(w http.ResponseWriter, r *http.Request) {
-			if !auth(w, r) {
-				return
-			}
-			var s bosonapi.Submission
-			_ = json.NewDecoder(r.Body).Decode(&s)
-			listing = &bosonapi.Server{ID: "n1", Hostname: s.Hostname, Port: s.Port, TLS: *s.TLS, Name: s.Name, VerificationStatus: "pending"}
-			keys["n1"] = strings.TrimPrefix(r.Header.Get("Authorization"), "Network ")
-			w.WriteHeader(201)
-			_ = json.NewEncoder(w).Encode(bosonapi.Listing{Network: *listing, Verification: ver})
-		})
-		mux.HandleFunc("POST /directory/networks/{id}/verify", func(w http.ResponseWriter, r *http.Request) {
-			if !auth(w, r) {
-				return
-			}
-			listing.VerificationStatus = "verified"
-			_, _ = w.Write([]byte(`{"success":true,"report":{"success":true,"results":{"cloudflare":{"outcome":"match"},"google":{"outcome":"match"},"quad9":{"outcome":"match"}}}}`))
-		})
+	jsonErr := func(w http.ResponseWriter, code int, e string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(`{"error":"` + e + `"}`))
 	}
+	key := func(r *http.Request) string {
+		k, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Network ")
+		return k
+	}
+	listing := func(id string) map[string]any {
+		out := map[string]any{"network": f.nets[id]}
+		if f.nets[id]["status"] != "verified" {
+			out["verification"] = map[string]any{"record_name": "_boson." + f.nets[id]["hostname"].(string),
+				"record_value": "boson-verify=" + f.token[id], "expires_at": time.Now().Add(72 * time.Hour)}
+		}
+		return out
+	}
+	owned := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		id := r.PathValue("id")
+		if _, ok := f.nets[id]; !ok {
+			jsonErr(w, 404, "not_found")
+			return "", false
+		}
+		if f.keys[id] != key(r) {
+			jsonErr(w, 403, "forbidden")
+			return "", false
+		}
+		return id, true
+	}
+	lock := func(fn http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			fn(w, r)
+		}
+	}
+	mux.HandleFunc("GET /v1/networks/lookup", lock(func(w http.ResponseWriter, r *http.Request) {
+		h := strings.ToLower(r.URL.Query().Get("hostname"))
+		for id, n := range f.nets {
+			if n["hostname"] != h {
+				continue
+			}
+			if k := key(r); k != "" && f.keys[id] == k {
+				_ = json.NewEncoder(w).Encode(listing(id))
+				return
+			}
+			if n["status"] == "verified" {
+				_ = json.NewEncoder(w).Encode(n) // public: the bare network
+				return
+			}
+		}
+		jsonErr(w, 404, "not_found")
+	}))
+	mux.HandleFunc("POST /v1/networks", lock(func(w http.ResponseWriter, r *http.Request) {
+		var s bosonapi.Submission
+		_ = json.NewDecoder(r.Body).Decode(&s)
+		for id, n := range f.nets {
+			if n["hostname"] == s.Hostname {
+				if f.keys[id] == key(r) {
+					_ = json.NewEncoder(w).Encode(listing(id)) // idempotent: 200
+					return
+				}
+				jsonErr(w, 409, "hostname_taken")
+				return
+			}
+		}
+		id := "net_" + strings.ReplaceAll(s.Hostname, ".", "")
+		f.nets[id] = map[string]any{"id": id, "hostname": s.Hostname, "port": s.Port, "tls": *s.TLS, "name": s.Name,
+			"status": "pending", "origin": "local", "created_at": time.Now().UTC()}
+		f.keys[id], f.token[id] = key(r), "tok1"
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(listing(id))
+	}))
+	mux.HandleFunc("PATCH /v1/networks/{id}", lock(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		var s bosonapi.Submission
+		_ = json.NewDecoder(r.Body).Decode(&s)
+		if s.Name != "" {
+			f.nets[id]["name"] = s.Name
+		}
+		_ = json.NewEncoder(w).Encode(listing(id))
+	}))
+	mux.HandleFunc("POST /v1/networks/{id}/verify", lock(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		if !f.dnsOK {
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"success":false,"report":{"success":false,"results":{"cloudflare":{"outcome":"match"},"google":{"outcome":"missing_record"},"quad9":{"outcome":"timeout"}}}}`))
+			return
+		}
+		f.nets[id]["status"] = "verified"
+		f.nets[id]["last_checked_at"] = time.Now().UTC()
+		f.nets[id]["last_verified_at"] = time.Now().UTC()
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "network": f.nets[id],
+			"report": map[string]any{"success": true, "results": map[string]any{"cloudflare": map[string]string{"outcome": "match"}, "google": map[string]string{"outcome": "match"}, "quad9": map[string]string{"outcome": "match"}}}})
+	}))
+	mux.HandleFunc("POST /v1/networks/{id}/regenerate-token", lock(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		f.token[id] = "tok2"
+		f.nets[id]["status"] = "pending"
+		_ = json.NewEncoder(w).Encode(listing(id))
+	}))
+	mux.HandleFunc("DELETE /v1/networks/{id}", lock(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		delete(f.nets, id)
+		w.WriteHeader(204)
+	}))
+	operator := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("X-Internal-Token") != f.internal {
+			jsonErr(w, 401, "unauthorized")
+			return false
+		}
+		if a := r.Header.Get("X-Acting-User"); a != "" {
+			f.acting = append(f.acting, a)
+		}
+		return true
+	}
+	mux.HandleFunc("GET /v1/networks", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !operator(w, r) {
+			return
+		}
+		owner := r.URL.Query().Get("owner")
+		// Two pages for usr_ana, so the client has to follow next_cursor.
+		switch {
+		case owner == "usr_ana" && r.URL.Query().Get("cursor") == "":
+			_, _ = w.Write([]byte(`{"networks":[{"id":"net_a","hostname":"irc.ana.org","port":6697,"tls":true,"name":"Ana","status":"verified","created_at":"2026-11-01T10:00:00Z"}],"next_cursor":"c2","total_estimate":2}`))
+		case owner == "usr_ana":
+			_, _ = w.Write([]byte(`{"networks":[{"id":"net_b","hostname":"irc.ana2.org","port":6697,"tls":true,"name":"Ana 2","status":"pending"}],"next_cursor":null}`))
+		default:
+			_, _ = w.Write([]byte(`{"networks":[],"next_cursor":null}`))
+		}
+	}))
+	mux.HandleFunc("GET /v1/admin/peers", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !operator(w, r) {
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"peers": f.peers})
+	}))
+	mux.HandleFunc("PATCH /v1/admin/peers/{id}", lock(func(w http.ResponseWriter, r *http.Request) {
+		if !operator(w, r) {
+			return
+		}
+		var in map[string]bool
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		for _, p := range f.peers {
+			if p["id"] == r.PathValue("id") {
+				p["enabled"] = in["enabled"]
+				_ = json.NewEncoder(w).Encode(map[string]any{"peer": p})
+				return
+			}
+		}
+		jsonErr(w, 404, "not_found")
+	}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, &keys
+	return f, srv
 }
 
 func TestRegistrationFlow(t *testing.T) {
-	srv, keys := fakeDirectory(t, true)
+	f, srv := newFakeV1(t)
 	d := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Registration: true,
 		Secret: []byte("0123456789abcdef0123456789abcdef"), Hostname: "irc.example.org"}).(*DirectoryService)
 	ctx := context.Background()
 	st := d.Status(ctx, "")
-	if st.Listing != nil || st.Public != nil || st.Unsupported != "" || st.Hostname != "irc.example.org" {
+	if st.Listing != nil || st.Public != nil || st.Unsupported != "" || st.ListingError != "" || st.PublicError != "" || st.Hostname != "irc.example.org" {
 		t.Fatalf("before: %+v", st)
 	}
 	if _, err := d.Submit(ctx, "root", bosonapi.Submission{Hostname: "1.2.3.4", Port: 6697, Name: "x"}); err == nil {
 		t.Fatal("IP accepted")
 	}
 	l, err := d.Submit(ctx, "root", bosonapi.Submission{Hostname: "IRC.Example.org.", Port: 6697, Name: "Example"})
-	if err != nil || l.Verification.RecordName != "_boson.irc.example.org" || l.Network.Hostname != "irc.example.org" {
+	if err != nil || l.Verification == nil || l.Verification.RecordName != "_boson.irc.example.org" || l.Network.Hostname != "irc.example.org" ||
+		l.Network.VerificationStatus != "pending" || l.Network.RegisteredAt == nil {
 		t.Fatalf("submit: %v %+v", err, l)
 	}
-	if (*keys)["n1"] != d.Key("irc.example.org") || d.Key("irc.example.org") == d.Key("irc.other.org") {
+	id := l.Network.ID
+	if f.keys[id] != d.Key("irc.example.org") || d.Key("irc.example.org") == d.Key("irc.other.org") {
 		t.Fatal("management key not derived per hostname")
+	}
+	// Create is idempotent for the same key.
+	if again, err := d.Submit(ctx, "root", bosonapi.Submission{Hostname: "irc.example.org", Port: 6697, Name: "Example"}); err != nil || again.Network.ID != id {
+		t.Fatalf("resubmit: %v %+v", err, again)
 	}
 	st = d.Status(ctx, "irc.example.org")
 	if st.Listing == nil || st.Listing.Network.VerificationStatus != "pending" || st.Public != nil {
 		t.Fatalf("pending: %+v", st)
 	}
-	r, err := d.Verify(ctx, "root", "irc.example.org", "n1")
-	if err != nil || !r.Success || r.Report.Results["quad9"].Outcome != "match" {
+	// DNS not there yet: 409 + report is a result, not an error.
+	r, err := d.Verify(ctx, "root", "irc.example.org", id)
+	if err != nil || r.Success || r.Report.Results["google"].Outcome != "missing_record" {
+		t.Fatalf("failed verify: %v %+v", err, r)
+	}
+	f.dnsOK = true
+	r, err = d.Verify(ctx, "root", "irc.example.org", id)
+	if err != nil || !r.Success || r.Report.Results["quad9"].Outcome != "match" || r.Network == nil || r.Network.VerificationStatus != "verified" {
 		t.Fatalf("verify: %v %+v", err, r)
 	}
 	st = d.Status(ctx, "irc.example.org")
-	if st.Public == nil || st.Public.ID != "n1" {
+	if st.Public == nil || st.Public.ID != id || st.Listing.Network.LastVerifiedAt == nil || st.Listing.Network.VerificationLastCheckedAt == nil {
 		t.Fatalf("listed: %+v", st)
 	}
-	// Another panel (different secret) can't touch it.
+	if l, err := d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "Renamed"}); err != nil || l.Network.Name != "Renamed" {
+		t.Fatalf("update: %v %+v", err, l)
+	}
+	if l, err := d.Regenerate(ctx, "root", "irc.example.org", id); err != nil || l.Verification.RecordValue != "boson-verify=tok2" {
+		t.Fatalf("regenerate: %v %+v", err, l)
+	}
+	// Another panel (different secret) can't touch it, nor take the hostname.
 	other := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Registration: true, Secret: []byte("x")})
-	if _, err := other.Verify(ctx, "eve", "irc.example.org", "n1"); err == nil {
+	if _, err := other.Verify(ctx, "eve", "irc.example.org", id); err == nil {
 		t.Fatal("foreign key accepted")
+	}
+	if _, err := other.Submit(ctx, "eve", bosonapi.Submission{Hostname: "irc.example.org", Port: 6697, Name: "Mine"}); err == nil {
+		t.Fatal("hostname taken by another key")
+	} else if e, _ := apperr.As(err); e.Code != "hostname_taken" {
+		t.Fatalf("taken: %v", err)
+	}
+	if err := d.Unlist(ctx, "root", "irc.example.org", id); err != nil {
+		t.Fatalf("unlist: %v", err)
+	}
+	if st := d.Status(ctx, "irc.example.org"); st.Listing != nil || st.Public != nil {
+		t.Fatalf("after unlist: %+v", st)
 	}
 }
 
 func TestRegistrationNotLive(t *testing.T) {
-	srv, _ := fakeDirectory(t, false)
+	// An old backend (api.boson.chat): no /v1/networks, only GET /servers.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /servers", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"servers":[{"id":"x","hostname":"irc.other.org","name":"Other","verification_status":"verified"}],"count":1}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
 	c := bosonapi.NewDirectoryClient(srv.URL, time.Second, nil)
 	on := NewDirectoryService(Options{Client: c, Registration: true, Secret: []byte("s"), Hostname: "irc.other.org"})
 	st := on.Status(context.Background(), "")
@@ -123,5 +290,51 @@ func TestRegistrationNotLive(t *testing.T) {
 		t.Fatal("submit with registration off")
 	} else if e, _ := apperr.As(err); e.Code != "directory_registration_off" {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestLocalDirectory(t *testing.T) {
+	f, srv := newFakeV1(t)
+	l := NewLocalService(LocalOptions{Client: bosonapi.NewOperatorClient(srv.URL, "itok", time.Second, nil), URL: srv.URL})
+	ctx := context.Background()
+	fed := l.Federation(ctx)
+	if fed.Error != "" || fed.MainPeer == nil || !fed.MainPeer.Enabled || fed.MainPeer.URL != "https://directory.boson.chat" || len(fed.Peers) != 2 {
+		t.Fatalf("federation: %+v", fed)
+	}
+	fed, err := l.SetIncludeMain(ctx, "root", false)
+	if err != nil || fed.MainPeer.Enabled || fed.Peers[0].Enabled {
+		t.Fatalf("off: %v %+v", err, fed)
+	}
+	if len(f.acting) == 0 || f.acting[len(f.acting)-1] != "root" {
+		t.Fatalf("acting user not sent: %v", f.acting)
+	}
+	if fed := l.Federation(ctx); fed.MainPeer.Enabled {
+		t.Fatal("stayed on")
+	}
+	nets, err := l.OwnedNetworks(ctx, "usr_ana")
+	if err != nil || len(nets) != 2 || nets[0].VerificationStatus != "verified" || nets[1].VerificationStatus != "pending" || nets[0].RegisteredAt == nil {
+		t.Fatalf("owned: %v %+v", err, nets)
+	}
+	// No builtin peer (DIRECTORY_INCLUDE_MAIN=false on the directory).
+	f.peers = f.peers[1:]
+	if _, err := l.SetIncludeMain(ctx, "root", true); err == nil {
+		t.Fatal("no main peer")
+	} else if e, _ := apperr.As(err); e.Code != "main_peer_missing" {
+		t.Fatalf("got %v", err)
+	}
+	// Wrong operator token.
+	bad := NewLocalService(LocalOptions{Client: bosonapi.NewOperatorClient(srv.URL, "nope", time.Second, nil)})
+	if fed := bad.Federation(ctx); fed.Error == "" {
+		t.Fatalf("bad token: %+v", fed)
+	}
+	// A directory without the operator API.
+	empty := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(empty.Close)
+	old := NewLocalService(LocalOptions{Client: bosonapi.NewOperatorClient(empty.URL, "itok", time.Second, nil)})
+	if fed := old.Federation(ctx); fed.Unsupported == "" {
+		t.Fatalf("unsupported: %+v", fed)
+	}
+	if _, err := old.OwnedNetworks(ctx, "usr_ana"); !apperr.IsUnsupported(err) {
+		t.Fatalf("owned unsupported: %v", err)
 	}
 }

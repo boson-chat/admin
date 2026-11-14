@@ -10,6 +10,7 @@ import (
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/clients/dockerapi"
 	"github.com/boson-chat/admin/internal/services/containers"
+	"github.com/boson-chat/admin/internal/services/directory"
 )
 
 func TestSettingsAndSSOEndpoints(t *testing.T) {
@@ -179,5 +180,48 @@ func TestDirectoryOff(t *testing.T) {
 	c, _ := h.login()
 	if w := h.do("GET", "/api/directory", nil, withCookie(c)); w.Code != 503 || !strings.Contains(w.Body.String(), "directory_off") {
 		t.Fatalf("directory off: %d %s", w.Code, w.Body)
+	}
+}
+
+type fakeLocal struct{ main bosonapi.Peer }
+
+func (f *fakeLocal) Federation(context.Context) *directory.Federation {
+	return &directory.Federation{URL: "http://directory:8080", MainPeer: &f.main, Peers: []bosonapi.Peer{f.main}}
+}
+func (f *fakeLocal) SetIncludeMain(_ context.Context, actor string, on bool) (*directory.Federation, error) {
+	f.main.Enabled = on
+	f.main.Name = "by:" + actor
+	return f.Federation(context.Background()), nil
+}
+func (f *fakeLocal) OwnedNetworks(_ context.Context, id string) ([]bosonapi.Server, error) {
+	return []bosonapi.Server{{ID: "net_1", Hostname: "irc." + id + ".org", VerificationStatus: "pending"}}, nil
+}
+
+func TestLocalDirectoryEndpoints(t *testing.T) {
+	h := newHarness(t)
+	c, csrf := h.login()
+	if w := h.do("GET", "/api/directory/federation", nil, withCookie(c)); w.Code != 503 || !strings.Contains(w.Body.String(), "directory_local_off") {
+		t.Fatalf("off: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("GET", "/api/users/usr_bob/networks", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), `"configured":false`) {
+		t.Fatalf("networks off: %d %s", w.Code, w.Body)
+	}
+	h.h.LocalDirectory = &fakeLocal{main: bosonapi.Peer{ID: "peer_main", URL: "https://directory.boson.chat", Enabled: true, Builtin: true}}
+	if w := h.do("GET", "/api/directory/federation", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), `"builtin":true`) {
+		t.Fatalf("federation: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("PUT", "/api/directory/federation/include-main", map[string]any{"enabled": false}, withCookie(c)); w.Code != 403 {
+		t.Fatalf("no csrf: %d", w.Code)
+	}
+	if w := h.do("PUT", "/api/directory/federation/include-main", map[string]any{}, withCookie(c), withHeader(CSRFHeader, csrf)); w.Code != 400 {
+		t.Fatalf("no enabled: %d %s", w.Code, w.Body)
+	}
+	w := h.do("PUT", "/api/directory/federation/include-main", map[string]any{"enabled": false}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"enabled":false`) || !strings.Contains(w.Body.String(), `"name":"by:root"`) {
+		t.Fatalf("include-main off: %d %s", w.Code, w.Body)
+	}
+	w = h.do("GET", "/api/users/usr_bob/networks", nil, withCookie(c))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"hostname":"irc.usr_bob.org"`) {
+		t.Fatalf("networks: %d %s", w.Code, w.Body)
 	}
 }

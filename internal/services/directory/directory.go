@@ -1,10 +1,11 @@
-// Package directory lists this network in the boson.chat directory so boson
-// clients can discover it.
+// Package directory lists this network in the boson network directory
+// (directory.boson.chat by default, github.com/boson-chat/directory) so boson
+// clients can discover it, and, when the stack runs its own directory,
+// manages that one's federation (local.go).
 //
-// The public directory (api.boson.chat) only accepts listings from signed-in
-// boson.chat users today. A self-hosted network has its own auth service,
-// so its admins have no boson.chat token. The panel therefore speaks a
-// proposed registration API where the network proves itself twice:
+// A self-hosted network has its own auth service, so its admins have no
+// boson.chat account. The panel registers the network as itself, proving
+// it twice:
 //
 //   - a management key, derived here from the panel's secret and the
 //     hostname (HMAC-SHA256), sent as "Authorization: Network <key>"; the
@@ -13,8 +14,8 @@
 //   - the DNS TXT record _boson.<hostname> = "boson-verify=<token>", the same
 //     check the directory runs for every listing (and re-runs daily).
 //
-// Registration is behind DIRECTORY_REGISTRATION until the backend has it;
-// with it off the page still reports whether the network is listed.
+// DIRECTORY_REGISTRATION=false turns registration off; the page then only
+// reports whether the network is listed.
 package directory
 
 import (
@@ -36,7 +37,7 @@ import (
 type Options struct {
 	Client bosonapi.DirectoryClientImpl
 	APIURL string
-	// Registration turns the proposed self-hosted registration on.
+	// Registration turns network registration (the owner API) on.
 	Registration bool
 	// Secret derives the management keys (DIRECTORY_KEY, else SESSION_KEY).
 	Secret []byte
@@ -57,7 +58,8 @@ type Status struct {
 	// Listing is this panel's own listing (any status), if registration is on.
 	Listing      *bosonapi.Listing `json:"listing,omitempty"`
 	ListingError string            `json:"listing_error,omitempty"`
-	// Unsupported: the directory doesn't have the registration API yet.
+	// Unsupported: the directory doesn't have the /v1 owner API (an older
+	// directory, or DIRECTORY_API_URL still points at the boson API).
 	Unsupported string `json:"unsupported,omitempty"`
 }
 
@@ -191,7 +193,7 @@ func clean(s *bosonapi.Submission, create bool) error {
 }
 
 var errOff = apperr.New(http.StatusConflict, "directory_registration_off",
-	"directory registration is off; set DIRECTORY_REGISTRATION=true once api.boson.chat supports self-hosted networks")
+	"directory registration is off; set DIRECTORY_REGISTRATION=true to list this network")
 
 func (d *DirectoryService) log(ctx context.Context, actor, action, hostname string, err error) {
 	ev := logger.FromCtx(ctx).Info()

@@ -49,15 +49,16 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   creator automatically, and unregister channels idle for a chosen number of
   days (never, presets or 1–3,650). On older auth that group is disabled with
   a note and its fields are never sent.
-- **Directory:** whether the network is listed in the boson.chat directory,
-  and (once api.boson.chat supports it) submitting it with a DNS TXT proof.
-  See "Directory" below.
+- **Directory:** whether the network is listed in the boson directory
+  (directory.boson.chat), and listing it with a network key and a DNS TXT
+  proof. With the stack's own directory: the "Include the boson main
+  directory" switch and its peers. See "Directory" below.
 - **Users:** search by username or email, paginate, create a user (with a
   password or an emailed set-password link), open a user to change their
   role, disable or enable them (disabling signs them out everywhere), send a
   password reset or a new verification email, see their linked SSO sign-ins,
-  their boson profile (avatar, display name, handle) and the servers they
-  list in the directory, list and revoke their sessions, and see their recent
+  their boson profile (avatar, display name, handle) and the networks they
+  list in the directory (from the stack's own directory when it runs one), list and revoke their sessions, and see their recent
   activity.
 - **Roles:** network-wide, IRC-native roles (auth ≥ 1.5.0). Each role is
   an Ergo oper class with a WHOIS line and an optional vhost, so IRC users see
@@ -194,8 +195,10 @@ Everything is an environment variable. Durations use Go syntax (`15m`, `12h`).
 | `DOCKER_TIMEOUT` | `20s` | per Docker call (stats take about a second) |
 | `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
 | `BOSON_CDN_URL` | `https://cdn.boson.chat` | where avatars and server icons are served from; added to the CSP `img-src` |
-| `DIRECTORY_API_URL` | `https://api.boson.chat` | the public directory. Empty = the directory page is off |
-| `DIRECTORY_REGISTRATION` | `false` | use the self-hosted registration API (not live on api.boson.chat yet) |
+| `DIRECTORY_API_URL` | `https://directory.boson.chat` | the boson directory this network is listed in ([boson-chat/directory](https://github.com/boson-chat/directory), `/v1` API). Empty = the directory page is off |
+| `DIRECTORY_REGISTRATION` | `true` | register and edit this network's listing there (network key + DNS proof). `false` = the page only reports whether it is listed |
+| `DIRECTORY_LOCAL_URL` | – | the stack's own directory (`directory` profile), e.g. `http://directory:8080`: the "Include the boson main directory" switch, its peers, and the listings each user owns. Empty = off |
+| `DIRECTORY_INTERNAL_TOKEN` | – | operator token for `DIRECTORY_LOCAL_URL` (the directory's `DIRECTORY_INTERNAL_TOKEN`); required with it |
 | `DIRECTORY_KEY` | `SESSION_KEY` | secret the directory management key is derived from. Set it if you rotate `SESSION_KEY`, or the panel loses edit access to its listing |
 | `DIRECTORY_HOSTNAME` | `IRC_CHECK_SERVER_NAME` | the IRC hostname to list |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | – | enable OTLP/HTTP metrics push in addition to `/metrics` |
@@ -336,24 +339,35 @@ stdout and stderr).
 
 ## Directory
 
-The boson.chat directory (`GET https://api.boson.chat/servers`) lists IRC
-networks that proved control of their hostname with a TXT record
-`_boson.<hostname>` = `boson-verify=<token>` (checked against Cloudflare,
-Google and Quad9; re-checked daily by the backend's `cron --mode=verify`).
-Today a listing can only be created by a signed-in boson.chat user
-(`POST /servers` with a boson.chat access token). A self-hosted network has
-its own auth service, so its admins have no boson.chat token, and there is no
-OAuth or device flow to get one.
-
-The panel therefore uses a proposed registration API where the network
-proves itself twice instead of through a user account: a **management key**
-(HMAC-SHA256 of `DIRECTORY_KEY`/`SESSION_KEY` and the hostname, sent as
+The boson directory ([boson-chat/directory](https://github.com/boson-chat/directory),
+`https://directory.boson.chat` by default, or any other one in
+`DIRECTORY_API_URL`) lists IRC networks that proved control of their hostname
+with a TXT record `_boson.<hostname>` = `boson-verify=<token>` (checked
+against Cloudflare, Google and Quad9, and re-checked daily by the directory).
+People list networks there with a boson account; a self-hosted network has
+its own auth service, so the panel registers it as the network itself
+instead, proving it twice: a **network key** (HMAC-SHA256 of
+`DIRECTORY_KEY`/`SESSION_KEY` and the hostname, sent as
 `Authorization: Network <key>`; the directory stores only its hash, so only
-this panel can edit the listing and the panel stores nothing) and the
-**DNS TXT record**. Until the backend has it, leave
-`DIRECTORY_REGISTRATION=false`: the page still shows whether the hostname is
-listed (from the public search) and explains the steps. Details in
-"Upstream work".
+this panel can edit the listing and the panel stores nothing) and the **DNS
+TXT record**. The page submits the listing, shows the record to add, runs the
+check (with each resolver's answer), edits the listing, issues a new record
+and removes it. A directory without the `/v1` API (an old boson API at
+`api.boson.chat`) reads as "unsupported", and the page falls back to that
+API's `GET /servers` search to say whether the network is listed.
+
+**The stack's own directory.** With the stack's `directory` profile, set
+`DIRECTORY_LOCAL_URL=http://directory:8080` and `DIRECTORY_INTERNAL_TOKEN`
+(the stack does both). The Directory page then gets a "Your own directory"
+section: the **Include the boson main directory** switch (the directory's
+built-in main peer, on by default: your directory also shows every network
+listed at directory.boson.chat, each only after your directory has checked
+its DNS itself) and a read-only list of its peers with their sync state.
+Peers are added and removed on the directory's own Peers page. A user's page
+lists the networks they registered in that directory, in any state. Switching
+the main peer needs `directory.manage` and is logged
+(`action=directory.include_main`, actor, enabled) here and in the
+directory's own audit log (the panel sends `X-Acting-User`).
 
 ## Upstream work
 
@@ -422,26 +436,32 @@ admin's own token. The backend must:
    profile yet; the panel shows "no boson profile yet". A plain-text 404
    means "endpoint missing".
 
-**boson API: self-hosted directory registration** (new; behind
-`DIRECTORY_REGISTRATION`). All calls carry `Authorization: Network <key>`
-(43-char base64url); the backend stores `sha256(key)` in a new
-`servers.management_key_hash` column and leaves `registered_by` NULL, so the
-existing verify cron covers these rows unchanged.
+**boson directory** ([boson-chat/directory](https://github.com/boson-chat/directory) `/v1`).
+Network JSON as the panel reads it: `{id, hostname, port, tls, name,
+description, tags, languages, is_nsfw, website_url, auth_url, icon_url,
+banner_url, origin, status, health_status, user_count, last_checked_at,
+last_verified_at, created_at}` (the backend's `verification_status` /
+`registered_at` names are read too). The panel's own API keeps the old
+names (`verification_status`, `verification_last_checked_at`,
+`registered_at`) so the UI didn't change. A plain-text 404 or a 405 reads as
+"endpoint missing".
 
-| Endpoint | |
-|---|---|
-| `POST /directory/networks` `{hostname, port, tls, name, description?, tags?, languages?, is_nsfw?, website_url?}` | 201 `{network, verification: {record_name, record_value, expires_at}}`. Same key + hostname again = 200 with the existing row. 409 `hostname_taken` if another key or a user owns the hostname. Reject IPs. Rate limit per IP (e.g. 5/h) |
-| `GET /directory/networks/lookup?hostname=` | 200 `{network, verification?}` (verification only while pending) or 404 `{"error":"not_found"}` for this key |
-| `PATCH /directory/networks/{id}` | name, description, tags, languages, is_nsfw, website_url |
-| `POST /directory/networks/{id}/verify` | strict check, same body and 409 as `/servers/{id}/verify`; 1 per 30 s |
-| `POST /directory/networks/{id}/regenerate-token` | new token, back to pending |
-| `DELETE /directory/networks/{id}` | unlist |
+| Endpoint | Auth | |
+|---|---|---|
+| `GET /v1/networks/lookup?hostname=` | none | the verified public listing (bare network or `{network}`), 404 `{"error":"not_found"}` |
+| `GET /v1/networks/lookup?hostname=` | `Network <key>` | this key's own listing in any status: `{network, verification?}`; 404 `not_found` when the key has none |
+| `POST /v1/networks` `{hostname, port, tls, name, description?, tags?, languages?, is_nsfw?, website_url?}` | `Network <key>` | 201 `{network, verification: {record_name, record_value, expires_at}}`; same key + hostname again = 200 with the existing row; 409 `hostname_taken` |
+| `PATCH /v1/networks/{id}` | `Network <key>` | `{network, verification?}` |
+| `POST /v1/networks/{id}/verify` | `Network <key>` | 200 `{success, network, report: {success, results: {cloudflare\|google\|quad9: {outcome, detail?, records?}}}}`, 409 with the same body when a resolver doesn't see the record |
+| `POST /v1/networks/{id}/regenerate-token` | `Network <key>` | `{network, verification}`, back to pending |
+| `DELETE /v1/networks/{id}` | `Network <key>` | 204 |
+| `GET /v1/networks?owner=<auth_user_id>&limit=100&cursor=` | `X-Internal-Token` | `{networks, next_cursor}`, every status for that owner; the panel follows `next_cursor` (≤ 5 pages) |
+| `GET /v1/admin/peers` | `X-Internal-Token` | `{peers: [{id, url, name, enabled, builtin, last_sync_at, last_error, listing_count}]}`; `builtin: true` is the main peer |
+| `PATCH /v1/admin/peers/{id}` `{enabled}` | `X-Internal-Token` (+ `X-Acting-User`) | `{peer}` (or the bare peer) |
 
-`website_url` (and an optional `auth_url` so boson clients can offer the
-network's own sign-in) are new optional columns. Two cron details noted while
-reading the backend: `verification_last_checked_at` is overwritten on every
-check, so the 14-day lapse grace never triggers with a daily run, and the cron
-verifies pending rows whose 72 h token has expired.
+Without a `builtin` peer (the directory runs with
+`DIRECTORY_INCLUDE_MAIN=false`) the switch is off and explains how to turn
+it on.
 
 ## How it works
 
@@ -556,6 +576,9 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/roles/{id}/members?cursor=&limit=`, `PUT/DELETE /api/roles/{id}/members/{user_id}` | `{users, next_cursor}`; adding / removing one member reads and rewrites that user's roles |
 | `PUT /api/users/{id}/roles` `{role_ids}` | `{roles}` |
 | `GET /api/directory?hostname=`, `POST /api/directory`, `PATCH /api/directory/{id}?hostname=`, `POST …/{id}/verify`, `POST …/{id}/regenerate-token`, `DELETE …/{id}` | |
+| `GET /api/directory/federation` | `{url, main_peer?, peers, unsupported?, error?}`; 503 `directory_local_off` without `DIRECTORY_LOCAL_URL` |
+| `PUT /api/directory/federation/include-main` `{enabled}` | the same; 409 `main_peer_missing` when the directory has no built-in main peer |
+| `GET /api/users/{id}/networks` | always 200: `{configured, networks?, unsupported?, error?}` (the stack's own directory) |
 
 ### Metrics
 
@@ -571,7 +594,7 @@ On `INTERNAL_ADDR` `/metrics` (and OTLP if configured), plus Go runtime metrics:
 | `admin_token_refreshes_total` | `outcome` (`success`, `shared`, `expired`, `error`) |
 | `admin_service_actions_total` | `action` (`start`, `stop`, `restart`), `outcome` (`success`, `refused`, `error`) |
 
-`admin_upstream_*` covers `auth`, `docker`, `boson_api` and `directory`.
+`admin_upstream_*` covers `auth`, `docker`, `boson_api`, `directory` and `directory_local`.
 
 ## Layout
 

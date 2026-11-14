@@ -43,10 +43,16 @@ type BosonConfig struct {
 	APIURL string `env:"BOSON_API_URL"`
 	// Where avatars and server icons are served from (img-src in the CSP).
 	CDNURL string `default:"https://cdn.boson.chat" env:"BOSON_CDN_URL"`
-	// The public directory. Empty = the directory page is off.
-	DirectoryURL string `default:"https://api.boson.chat" env:"DIRECTORY_API_URL"`
-	// Use the (proposed) self-hosted registration API.
-	DirectoryRegistration bool `default:"false" env:"DIRECTORY_REGISTRATION"`
+	// The directory this network is listed in (github.com/boson-chat/directory).
+	// Empty = the directory page is off.
+	DirectoryURL string `default:"https://directory.boson.chat" env:"DIRECTORY_API_URL"`
+	// Register / edit this network's listing there (network key + DNS proof).
+	DirectoryRegistration bool `default:"true" env:"DIRECTORY_REGISTRATION"`
+	// The stack's own directory (directory profile), e.g. http://directory:8080,
+	// and its operator token: the "include the main directory" switch, peers,
+	// and the listings a user owns. Empty = off.
+	DirectoryLocalURL      string `env:"DIRECTORY_LOCAL_URL"`
+	DirectoryInternalToken string `env:"DIRECTORY_INTERNAL_TOKEN"`
 	// Secret for the directory management key; defaults to SESSION_KEY.
 	DirectoryKey string `env:"DIRECTORY_KEY"`
 	// The IRC hostname to list; defaults to IRC_CHECK_SERVER_NAME.
@@ -149,6 +155,7 @@ func (c *Config) ApplyDefaults() {
 	d.ProxyURL = trim(d.ProxyURL)
 	b := &c.BosonConfig
 	b.APIURL, b.CDNURL, b.DirectoryURL = trim(b.APIURL), trim(b.CDNURL), trim(b.DirectoryURL)
+	b.DirectoryLocalURL, b.DirectoryInternalToken = trim(b.DirectoryLocalURL), strings.TrimSpace(b.DirectoryInternalToken)
 	if b.DirectoryHostname == "" {
 		b.DirectoryHostname = strings.TrimSpace(u.IRCCheckServerName)
 	}
@@ -183,7 +190,8 @@ func (c Config) Validate() error {
 	for name, v := range map[string]string{"AUTH_URL": c.UpstreamConfig.AuthURL, "AUTH_INTERNAL_URL": c.UpstreamConfig.AuthInternalURL,
 		"METRICS_URL": c.UpstreamConfig.MetricsURL, "GRAFANA_URL": c.UpstreamConfig.GrafanaURL,
 		"DOCKER_PROXY_URL": c.DockerConfig.ProxyURL, "BOSON_API_URL": c.BosonConfig.APIURL,
-		"BOSON_CDN_URL": c.BosonConfig.CDNURL, "DIRECTORY_API_URL": c.BosonConfig.DirectoryURL} {
+		"BOSON_CDN_URL": c.BosonConfig.CDNURL, "DIRECTORY_API_URL": c.BosonConfig.DirectoryURL,
+		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL} {
 		if v == "" {
 			continue
 		}
@@ -199,6 +207,9 @@ func (c Config) Validate() error {
 	}
 	if c.BosonConfig.DirectoryRegistration && c.BosonConfig.DirectoryURL == "" {
 		return errors.New("DIRECTORY_REGISTRATION needs DIRECTORY_API_URL")
+	}
+	if c.BosonConfig.DirectoryLocalURL != "" && c.BosonConfig.DirectoryInternalToken == "" {
+		return errors.New("DIRECTORY_LOCAL_URL needs DIRECTORY_INTERNAL_TOKEN (the directory's operator token)")
 	}
 	if c.SessionConfig.MaxAge <= 0 {
 		return errors.New("SESSION_MAX_AGE must be positive")

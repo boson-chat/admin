@@ -1,5 +1,5 @@
-// Package bosonapi talks to the boson backend (the stack's `api` service and
-// the public directory at api.boson.chat).
+// Package bosonapi talks to the boson backend (the stack's `api` service) and
+// the boson network directory.
 //
 // Two parts:
 //   - profiles: the admin read of a user's boson profile, GET
@@ -7,9 +7,9 @@
 //     auth-service access token (the backend already verifies those).
 //     The backend doesn't have this endpoint yet; see README "Upstream
 //     work".
-//   - directory: the public listing (GET /servers, GET /servers/{id}, live)
-//     and a proposed self-hosted network registration authorised by a
-//     per-network management key plus DNS proof (POST /directory/networks…).
+//   - directory: the boson network directory (directory.boson.chat or a
+//     stack's own, github.com/boson-chat/directory), /v1 API: the public
+//     lookup, the network-key owner API and the operator API (directory.go).
 package bosonapi
 
 import (
@@ -43,15 +43,20 @@ func newClient(baseURL, name string, timeout time.Duration, observe Observer) *C
 
 // call does one JSON request. auth is a full Authorization header value.
 func (c *Client) call(ctx context.Context, op, method, path, auth string, body, out any) error {
+	return c.callH(ctx, op, method, path, auth, nil, body, out)
+}
+
+// callH is call with extra request headers.
+func (c *Client) callH(ctx context.Context, op, method, path, auth string, hdr map[string]string, body, out any) error {
 	start := time.Now()
-	status, err := c.roundTrip(ctx, method, path, auth, body, out)
+	status, err := c.roundTrip(ctx, method, path, auth, hdr, body, out)
 	if c.Observe != nil {
 		c.Observe(op, status, err, time.Since(start))
 	}
 	return err
 }
 
-func (c *Client) roundTrip(ctx context.Context, method, path, auth string, body, out any) (int, error) {
+func (c *Client) roundTrip(ctx context.Context, method, path, auth string, hdr map[string]string, body, out any) (int, error) {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -71,6 +76,9 @@ func (c *Client) roundTrip(ctx context.Context, method, path, auth string, body,
 	}
 	if auth != "" {
 		req.Header.Set("Authorization", auth)
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -153,28 +161,6 @@ type Profile struct {
 	CreatedAt       *time.Time `json:"created_at,omitempty"`
 }
 
-// Server is a directory listing.
-type Server struct {
-	ID                        string     `json:"id"`
-	Hostname                  string     `json:"hostname"`
-	Port                      int        `json:"port"`
-	TLS                       bool       `json:"tls"`
-	Name                      string     `json:"name"`
-	Description               string     `json:"description,omitempty"`
-	Tags                      []string   `json:"tags,omitempty"`
-	Languages                 []string   `json:"languages,omitempty"`
-	IsNSFW                    bool       `json:"is_nsfw"`
-	VerificationStatus        string     `json:"verification_status"`
-	VerificationLastCheckedAt *time.Time `json:"verification_last_checked_at,omitempty"`
-	HealthStatus              string     `json:"health_status,omitempty"`
-	UserCount                 *int       `json:"user_count,omitempty"`
-	IconURL                   string     `json:"icon_url,omitempty"`
-	RegisteredAt              *time.Time `json:"registered_at,omitempty"`
-	// Proposed for self-hosted networks.
-	WebsiteURL string `json:"website_url,omitempty"`
-	AuthURL    string `json:"auth_url,omitempty"`
-}
-
 // AdminProfile is GET /v1/admin/profiles/{auth_user_id}. Profile is nil
 // when the person never opened boson (no profile yet).
 type AdminProfile struct {
@@ -208,170 +194,4 @@ func (p *ProfileClient) AdminProfile(ctx context.Context, at, authUserID string)
 		out.Servers = []Server{}
 	}
 	return &out, nil
-}
-
-// ---- directory ----
-
-// Verification is the DNS TXT record that proves control of the hostname.
-type Verification struct {
-	RecordName  string     `json:"record_name"`  // _boson.<hostname>
-	RecordValue string     `json:"record_value"` // boson-verify=<token>
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-}
-
-// Listing is a self-hosted network's directory entry as its owner sees it.
-type Listing struct {
-	Network      Server        `json:"network"`
-	Verification *Verification `json:"verification,omitempty"`
-}
-
-// Submission creates or edits a listing.
-type Submission struct {
-	Hostname    string   `json:"hostname,omitempty"`
-	Port        int      `json:"port,omitempty"`
-	TLS         *bool    `json:"tls,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Description *string  `json:"description,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	Languages   []string `json:"languages,omitempty"`
-	IsNSFW      *bool    `json:"is_nsfw,omitempty"`
-	WebsiteURL  *string  `json:"website_url,omitempty"`
-	AuthURL     *string  `json:"auth_url,omitempty"`
-}
-
-// ResolverResult is one public resolver's view of the TXT record.
-type ResolverResult struct {
-	Outcome string   `json:"outcome"` // match | missing_record | timeout | error
-	Detail  string   `json:"detail,omitempty"`
-	Records []string `json:"records,omitempty"`
-}
-
-// VerifyResult is POST …/verify.
-type VerifyResult struct {
-	Network *Server `json:"server,omitempty"`
-	Success bool    `json:"success"`
-	Report  struct {
-		Success bool                      `json:"success"`
-		Results map[string]ResolverResult `json:"results"`
-	} `json:"report"`
-}
-
-type DirectoryClientImpl interface {
-	// FindPublic finds a verified listing by hostname in the public directory
-	// (GET /servers?q=…). nil when it isn't listed.
-	FindPublic(ctx context.Context, hostname, name string) (*Server, error)
-	// The rest is the proposed self-hosted registration API. key is the
-	// network's management key.
-	Lookup(ctx context.Context, key, hostname string) (*Listing, error)
-	Submit(ctx context.Context, key string, s Submission) (*Listing, error)
-	Update(ctx context.Context, key, id string, s Submission) (*Listing, error)
-	Verify(ctx context.Context, key, id string) (*VerifyResult, error)
-	RegenerateToken(ctx context.Context, key, id string) (*Listing, error)
-	Unlist(ctx context.Context, key, id string) error
-}
-
-// DirectoryEndpoints is what the proposed registration needs (README).
-const DirectoryEndpoints = "POST /directory/networks (and …/lookup, …/{id}/verify)"
-
-type DirectoryClient struct{ c *Client }
-
-func NewDirectoryClient(baseURL string, timeout time.Duration, observe Observer) DirectoryClientImpl {
-	host := baseURL
-	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
-		host = u.Host
-	}
-	return &DirectoryClient{c: newClient(baseURL, host, timeout, observe)}
-}
-
-func keyAuth(key string) string { return "Network " + key }
-
-func dirUnsupported(err error) error {
-	return unsupported(err, "Self-hosted directory registration needs "+DirectoryEndpoints+" on the boson API, which isn't live yet")
-}
-
-func (d *DirectoryClient) FindPublic(ctx context.Context, hostname, name string) (*Server, error) {
-	queries := []string{}
-	if name != "" {
-		queries = append(queries, name)
-	}
-	if label, _, _ := strings.Cut(hostname, "."); label != "" && label != name {
-		queries = append(queries, label)
-	}
-	queries = append(queries, "") // newest 100, unfiltered
-	for _, q := range queries {
-		v := url.Values{"limit": {"100"}}
-		if q != "" {
-			v.Set("q", q)
-		} else {
-			v.Set("sort", "newest")
-		}
-		var out struct {
-			Servers []Server `json:"servers"`
-		}
-		if err := d.c.call(ctx, "directory.search", http.MethodGet, "/servers?"+v.Encode(), "", nil, &out); err != nil {
-			return nil, err
-		}
-		for _, s := range out.Servers {
-			if strings.EqualFold(s.Hostname, hostname) {
-				return &s, nil
-			}
-		}
-	}
-	return nil, nil
-}
-
-func (d *DirectoryClient) Lookup(ctx context.Context, key, hostname string) (*Listing, error) {
-	var out Listing
-	err := d.c.call(ctx, "directory.lookup", http.MethodGet, "/directory/networks/lookup?hostname="+url.QueryEscape(hostname), keyAuth(key), nil, &out)
-	if e, ok := apperr.As(err); ok && e.Status == http.StatusNotFound && e.Code == "not_found" {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, dirUnsupported(err)
-	}
-	return &out, nil
-}
-
-func (d *DirectoryClient) Submit(ctx context.Context, key string, s Submission) (*Listing, error) {
-	var out Listing
-	if err := d.c.call(ctx, "directory.submit", http.MethodPost, "/directory/networks", keyAuth(key), s, &out); err != nil {
-		return nil, dirUnsupported(err)
-	}
-	return &out, nil
-}
-
-func netPath(id string) string { return "/directory/networks/" + url.PathEscape(id) }
-
-func (d *DirectoryClient) Update(ctx context.Context, key, id string, s Submission) (*Listing, error) {
-	var out Listing
-	if err := d.c.call(ctx, "directory.update", http.MethodPatch, netPath(id), keyAuth(key), s, &out); err != nil {
-		return nil, dirUnsupported(err)
-	}
-	return &out, nil
-}
-
-func (d *DirectoryClient) Verify(ctx context.Context, key, id string) (*VerifyResult, error) {
-	var out VerifyResult
-	err := d.c.call(ctx, "directory.verify", http.MethodPost, netPath(id)+"/verify", keyAuth(key), nil, &out)
-	// A failed check is 409 with the report in the body; the backend's
-	// /servers/{id}/verify does the same.
-	if e, ok := apperr.As(err); ok && e.Status == http.StatusConflict && out.Report.Results != nil {
-		return &out, nil
-	}
-	if err != nil {
-		return nil, dirUnsupported(err)
-	}
-	return &out, nil
-}
-
-func (d *DirectoryClient) RegenerateToken(ctx context.Context, key, id string) (*Listing, error) {
-	var out Listing
-	if err := d.c.call(ctx, "directory.regenerate", http.MethodPost, netPath(id)+"/regenerate-token", keyAuth(key), nil, &out); err != nil {
-		return nil, dirUnsupported(err)
-	}
-	return &out, nil
-}
-
-func (d *DirectoryClient) Unlist(ctx context.Context, key, id string) error {
-	return dirUnsupported(d.c.call(ctx, "directory.unlist", http.MethodDelete, netPath(id), keyAuth(key), nil, nil))
 }
