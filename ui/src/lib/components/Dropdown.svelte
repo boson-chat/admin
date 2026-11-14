@@ -10,6 +10,11 @@
 	Tab chooses and moves on; Escape closes without changing anything; typing
 	jumps (type-ahead).
 
+	With `multiple` it is a multi-select listbox (aria-multiselectable):
+	Enter, Space and clicks toggle an option and keep the list open; closing
+	it (Escape, Tab, a click outside, the trigger) reports the new `values`
+	once through `onchangemany`.
+
 	No inline style attributes: placement is classes plus two CSS custom
 	properties set through the CSSOM.
 -->
@@ -31,7 +36,11 @@
 		size = 'md',
 		align = 'start',
 		title,
-		class: className = ''
+		class: className = '',
+		multiple = false,
+		values = $bindable([]),
+		onchangemany,
+		summary
 	}: {
 		options: DropdownOption<V>[];
 		value?: V;
@@ -52,6 +61,13 @@
 		align?: 'start' | 'end';
 		title?: string;
 		class?: string;
+		/** Multi-select: the chosen options are `values`. */
+		multiple?: boolean;
+		values?: V[];
+		/** Multi-select: called once when the list closes, if the choice changed. */
+		onchangemany?: (values: V[]) => void;
+		/** Multi-select: the trigger's text for the chosen options. */
+		summary?: (chosen: DropdownOption<V>[]) => string;
 	} = $props();
 
 	const uid = $props.id();
@@ -68,8 +84,23 @@
 	let trigger: HTMLButtonElement;
 	let list: HTMLDivElement;
 
-	let selectedIndex = $derived(options.findIndex((o) => o.value === value));
+	let selectedIndex = $derived(
+		multiple
+			? options.findIndex((o) => values.includes(o.value))
+			: options.findIndex((o) => o.value === value)
+	);
 	let selected = $derived(selectedIndex >= 0 ? options[selectedIndex] : undefined);
+	let chosen = $derived(multiple ? options.filter((o) => values.includes(o.value)) : []);
+	let triggerText = $derived(
+		multiple
+			? chosen.length
+				? (summary?.(chosen) ?? chosen.map((o) => o.label).join(', '))
+				: ''
+			: (selected?.label ?? '')
+	);
+	const isSelected = (i: number) => (multiple ? values.includes(options[i].value) : i === selectedIndex);
+	// Multi-select: the values when the list opened, to report a change on close.
+	let openedWith: V[] = [];
 
 	// Consecutive options sharing a group render under one heading.
 	let sections = $derived.by(() => {
@@ -89,6 +120,7 @@
 		if (disabled || open) return;
 		open = true;
 		active = highlight;
+		openedWith = [...values];
 		await tick();
 		position();
 		scrollActive();
@@ -99,11 +131,20 @@
 		open = false;
 		active = -1;
 		if (refocus) trigger?.focus();
+		if (multiple) {
+			const now = [...values];
+			if (now.length !== openedWith.length || now.some((v) => !openedWith.includes(v))) onchangemany?.(now);
+		}
 	}
 
 	function choose(i: number) {
 		const o = options[i];
 		if (!o || o.disabled) return;
+		if (multiple) {
+			values = values.includes(o.value) ? values.filter((v) => v !== o.value) : [...values, o.value];
+			active = i;
+			return;
+		}
 		const changed = o.value !== value;
 		value = o.value;
 		hide();
@@ -210,8 +251,8 @@
 				hide();
 				break;
 			case 'Tab':
-				// Choose and let focus move on.
-				if (active >= 0 && active !== selectedIndex) choose(active);
+				// Choose and let focus move on (multi-select: just close).
+				if (!multiple && active >= 0 && active !== selectedIndex) choose(active);
 				hide(false);
 				break;
 			default:
@@ -274,7 +315,7 @@
 		{onclick}
 		{onkeydown}
 	>
-		<span class="value" class:placeholder={!selected}>{selected?.label ?? placeholder}</span>
+		<span class="value" class:placeholder={!triggerText}>{triggerText || placeholder}</span>
 		<span class="chev" aria-hidden="true"></span>
 	</button>
 	<div
@@ -284,6 +325,7 @@
 		class:up
 		class:end
 		role="listbox"
+		aria-multiselectable={multiple || undefined}
 		tabindex="-1"
 		aria-label={label}
 		aria-labelledby={labelledby}
@@ -306,8 +348,9 @@
 						id={optId(i)}
 						role="option"
 						class="opt"
+						class:multi={multiple}
 						class:active={i === active}
-						aria-selected={i === selectedIndex}
+						aria-selected={isSelected(i)}
 						aria-disabled={o.disabled || undefined}
 						aria-labelledby={o.description ? `${optId(i)}-l` : undefined}
 						aria-describedby={o.description ? `${optId(i)}-d` : undefined}
@@ -316,6 +359,7 @@
 							if (!o.disabled && active !== i) active = i;
 						}}
 					>
+						{#if multiple}<span class="check" aria-hidden="true"></span>{/if}
 						<span class="opt-label" id="{optId(i)}-l">{o.label}</span>
 						{#if o.description}<span class="opt-desc" id="{optId(i)}-d">{o.description}</span>{/if}
 					</li>
@@ -479,6 +523,45 @@
 		border-left-color: var(--accent);
 		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 		font-weight: 600;
+	}
+	/* multi-select: a check box in front, no amber rule (several can be on) */
+	.opt.multi {
+		grid-template-columns: 14px minmax(0, 1fr);
+		column-gap: var(--space-3);
+	}
+	.opt.multi .opt-desc {
+		grid-column: 2;
+	}
+	.opt.multi[aria-selected='true'] {
+		border-left-color: transparent;
+		border-radius: var(--radius-sm);
+		color: var(--fg);
+	}
+	.check {
+		width: 14px;
+		height: 14px;
+		margin-top: 1px;
+		border-radius: var(--radius-sm);
+		box-shadow: inset 0 0 0 1px var(--border-strong);
+		position: relative;
+	}
+	.opt[aria-selected='true'] .check {
+		background: var(--accent);
+		box-shadow: none;
+	}
+	.opt[aria-selected='true'] .check::after {
+		content: '';
+		position: absolute;
+		left: 4.5px;
+		top: 1.5px;
+		width: 4px;
+		height: 8px;
+		border-right: 2px solid var(--accent-on);
+		border-bottom: 2px solid var(--accent-on);
+		transform: rotate(45deg);
+	}
+	.opt[aria-disabled='true'] .check {
+		opacity: 0.5;
 	}
 	.opt[aria-disabled='true'] {
 		color: var(--fg-3);

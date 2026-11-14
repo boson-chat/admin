@@ -16,7 +16,7 @@ export class ApiError extends Error {
 	}
 }
 
-type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
  * Calls the panel's BFF. The session lives in an HttpOnly cookie; state-

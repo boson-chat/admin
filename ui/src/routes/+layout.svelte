@@ -10,11 +10,25 @@
 	import type { SessionInfo } from '$lib/types';
 	import Shell from '$lib/components/Shell.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
+	import State from '$lib/components/State.svelte';
+	import { firstAllowed, pagePerms, permFor } from '$lib/perms';
 
 	let { children }: { children: Snippet } = $props();
 	let bootError = $state('');
 
 	let onLogin = $derived(page.url.pathname === '/login');
+	// The permission this page needs, when the account lacks it.
+	let missing = $derived.by(() => {
+		const p = permFor(page.url.pathname);
+		return p && session.info && !session.can(p) ? p : '';
+	});
+	let landing = $derived(session.info ? firstAllowed(session.info.permissions) : null);
+
+	// The stack overview needs services.view; send everyone else to their first page.
+	$effect(() => {
+		if (missing && page.url.pathname === '/' && landing && landing !== '/')
+			goto(landing, { replaceState: true });
+	});
 
 	$effect(() => {
 		if (session.loaded) return;
@@ -46,7 +60,27 @@
 {:else if onLogin}
 	{@render children()}
 {:else if session.info}
-	<Shell>{@render children()}</Shell>
+	<Shell>
+		{#if missing}
+			{@const pg = pagePerms.find((p) => p.perm === missing)}
+			<div class="page-head">
+				<div>
+					<h1>{pg?.label ?? 'Stack'}</h1>
+				</div>
+			</div>
+			<State kind="off" title="Your roles don’t include this page">
+				It needs the <code>{missing}</code> permission. Someone who manages roles can add it to one of your
+				roles.
+				{#snippet action()}
+					{#if landing && landing !== page.url.pathname}<a class="btn btn-small" href={landing}
+							>Go to a page you can open</a
+						>{/if}
+				{/snippet}
+			</State>
+		{:else}
+			{@render children()}
+		{/if}
+	</Shell>
 {:else}
 	<div class="boot" aria-busy="true"><span class="muted">Loading…</span></div>
 {/if}

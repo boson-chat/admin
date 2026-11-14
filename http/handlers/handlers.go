@@ -45,6 +45,8 @@ type Features struct {
 	// proposed self-hosted registration is switched on.
 	Directory             bool `json:"directory"`
 	DirectoryRegistration bool `json:"directory_registration"`
+	// IRCHost is the public IRC hostname (for previews of how roles look on IRC).
+	IRCHost string `json:"irc_host,omitempty"`
 }
 
 // Handlers is the DI container for the HTTP layer.

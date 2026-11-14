@@ -136,3 +136,62 @@ describe('Dropdown', () => {
 		expect(combo.textContent).toContain('Pick one');
 	});
 });
+
+describe('Dropdown (multiple)', () => {
+	const roles: DropdownOption[] = [
+		{ value: 'admin', label: 'Admin', disabled: true, description: 'Above your role' },
+		{ value: 'mod', label: 'Moderator' },
+		{ value: 'dj', label: 'DJ' }
+	];
+	function multi(values: string[]) {
+		const onchangemany = vi.fn();
+		const user = userEvent.setup();
+		render(Dropdown, {
+			options: roles,
+			multiple: true,
+			values,
+			label: 'Roles',
+			onchangemany,
+			placeholder: 'Add roles'
+		});
+		return { user, onchangemany, combo: screen.getByRole('combobox', { name: 'Roles' }) };
+	}
+
+	it('toggles several options and reports once on close', async () => {
+		const { user, onchangemany, combo } = multi(['admin']);
+		expect(combo.textContent).toContain('Admin');
+		await user.click(combo);
+		const list = screen.getByRole('listbox');
+		expect(list.getAttribute('aria-multiselectable')).toBe('true');
+		await user.click(screen.getByRole('option', { name: 'Moderator' }));
+		await user.click(screen.getByRole('option', { name: 'DJ' }));
+		expect(combo.getAttribute('aria-expanded')).toBe('true'); // stays open
+		expect(screen.getAllByRole('option', { selected: true })).toHaveLength(3);
+		expect(onchangemany).not.toHaveBeenCalled();
+		await user.keyboard('{Escape}');
+		expect(onchangemany).toHaveBeenCalledTimes(1);
+		expect(onchangemany).toHaveBeenCalledWith(['admin', 'mod', 'dj']);
+		expect(combo.textContent).toContain('Admin, Moderator, DJ');
+	});
+
+	it('keeps disabled options as they are and toggles with the keyboard', async () => {
+		const { user, onchangemany, combo } = multi(['admin', 'dj']);
+		combo.focus();
+		await user.keyboard('{ArrowDown}'); // opens on the first chosen enabled… or first enabled
+		await user.keyboard('{Home}{Enter}'); // Home skips the disabled Admin → Moderator on
+		await user.keyboard('{End}{ }'); // DJ off
+		await user.keyboard('{ArrowUp}{ArrowUp}{Enter}'); // can't reach Admin
+		await user.tab();
+		expect(onchangemany).toHaveBeenCalledWith(['admin']);
+	});
+
+	it('reports nothing when nothing changed', async () => {
+		const { user, onchangemany, combo } = multi([]);
+		expect(combo.textContent).toContain('Add roles');
+		await user.click(combo);
+		await user.click(screen.getByRole('option', { name: 'DJ' }));
+		await user.click(screen.getByRole('option', { name: 'DJ' }));
+		await user.click(document.body);
+		expect(onchangemany).not.toHaveBeenCalled();
+	});
+});

@@ -12,6 +12,12 @@ class SessionState {
 		this.notice = '';
 	}
 
+	/** Whether the signed-in account has every one of perms (the BFF enforces it too). */
+	can(...perms: string[]) {
+		const have = this.info?.permissions ?? [];
+		return perms.every((p) => have.includes(p));
+	}
+
 	clear(notice = '') {
 		this.info = null;
 		this.loaded = true;

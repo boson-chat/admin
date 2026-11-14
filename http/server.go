@@ -151,6 +151,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		h.Features.Directory, h.Features.DirectoryRegistration = true, bc.DirectoryRegistration
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}
+	h.Features.IRCHost = bc.DirectoryHostname // IRC_CHECK_SERVER_NAME unless set
 	mux := nethttp.NewServeMux()
 	h.Register(mux)
 	mux.Handle("/", spa)
