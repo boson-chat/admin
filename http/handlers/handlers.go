@@ -17,6 +17,7 @@ import (
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/logger"
 	"github.com/boson-chat/admin/internal/services/admin"
+	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/overview"
@@ -54,6 +55,10 @@ type Features struct {
 	// ConfigFile: the stack config file (BOSON_CONFIG) holds the runtime
 	// settings; the panel writes it.
 	ConfigFile bool `json:"config_file"`
+	// Branding: image uploads work (the config file is on); EmailPreview:
+	// auth's internal email API is configured.
+	Branding     bool `json:"branding"`
+	EmailPreview bool `json:"email_preview"`
 }
 
 // Handlers is the DI container for the HTTP layer.
@@ -67,7 +72,9 @@ type Handlers struct {
 	LocalDirectory directory.LocalServiceImpl
 	Profiles       bosonapi.ProfileClientImpl
 	// Config is the stack config file (never nil; Enabled() without BOSON_CONFIG).
-	Config   *stackconfig.Service
+	Config *stackconfig.Service
+	// Branding: images and email previews (nil = off).
+	Branding branding.BrandingServiceImpl
 	Sessions *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
@@ -84,6 +91,8 @@ func (h *Handlers) features() Features {
 		f.DirectoryRegistration = f.Directory && a.DirectoryRegistration
 		f.ConfigFile = h.Config.Enabled()
 	}
+	f.Branding = h.Branding != nil && f.ConfigFile
+	f.EmailPreview = h.Branding != nil && h.Branding.EmailEnabled()
 	return f
 }
 

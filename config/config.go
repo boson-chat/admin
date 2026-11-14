@@ -38,6 +38,9 @@ type StackConfig struct {
 	StatusTargets string `env:"CONFIG_STATUS_TARGETS"`
 	// How often the file is re-read when no change event arrives.
 	Poll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
+	// Where branding images are written (branding.images names files in
+	// it). Empty = branding/ next to the config file.
+	BrandingDir string `env:"BRANDING_DIR"`
 }
 
 // Statuses parses CONFIG_STATUS_TARGETS.
@@ -114,6 +117,9 @@ type UpstreamConfig struct {
 	AuthURL string `default:"http://auth:8080" env:"AUTH_URL"`
 	// Auth service internal listener (/healthz, /readyz, /metrics). Empty = not checked.
 	AuthInternalURL string `env:"AUTH_INTERNAL_URL"`
+	// auth's INTERNAL_API_TOKEN: sent along to its internal email preview
+	// and test endpoints (which authorise the admin's own access token).
+	InternalAPIToken string `env:"INTERNAL_API_TOKEN"`
 	// Prometheus-compatible query API (VictoriaMetrics, Prometheus). Empty = no live metrics.
 	MetricsURL string `env:"METRICS_URL"`
 	// Grafana base URL for links. Empty = no links.

@@ -3,6 +3,7 @@ package directory
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,6 +31,12 @@ type fakeV1 struct {
 	settings map[string]any
 	isMain   bool
 	patches  []map[string]any
+	// theme API (branding contract, section 3); noTheme = an older directory.
+	noTheme     bool
+	themes      map[string]map[string]any
+	themeImages map[string]map[string]string // id -> slot -> content type
+	imagePuts   int
+	imageDels   int
 }
 
 func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
@@ -123,6 +130,72 @@ func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
 			f.nets[id]["name"] = s.Name
 		}
 		_ = json.NewEncoder(w).Encode(listing(id))
+	}))
+	mux.HandleFunc("PUT /v1/networks/{id}/theme", lock(func(w http.ResponseWriter, r *http.Request) {
+		if f.noTheme {
+			http.NotFound(w, r)
+			return
+		}
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		var t map[string]any
+		if json.NewDecoder(r.Body).Decode(&t) != nil || r.Header.Get("Content-Type") != "application/json" {
+			jsonErr(w, 400, "invalid_theme")
+			return
+		}
+		if f.themes == nil {
+			f.themes = map[string]map[string]any{}
+		}
+		f.themes[id] = t
+		_ = json.NewEncoder(w).Encode(listing(id))
+	}))
+	mux.HandleFunc("PUT /v1/networks/{id}/theme-images/{slot}", lock(func(w http.ResponseWriter, r *http.Request) {
+		if f.noTheme {
+			http.NotFound(w, r)
+			return
+		}
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		slot := r.PathValue("slot")
+		if slot == "logo_wide" {
+			jsonErr(w, 400, "unknown_slot")
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		if len(b) == 0 || !strings.HasPrefix(r.Header.Get("Content-Type"), "image/") {
+			jsonErr(w, 400, "unsupported_image")
+			return
+		}
+		if f.themeImages == nil {
+			f.themeImages = map[string]map[string]string{}
+		}
+		if f.themeImages[id] == nil {
+			f.themeImages[id] = map[string]string{}
+		}
+		f.themeImages[id][slot] = r.Header.Get("Content-Type")
+		f.imagePuts++
+		_ = json.NewEncoder(w).Encode(listing(id))
+	}))
+	mux.HandleFunc("DELETE /v1/networks/{id}/theme-images/{slot}", lock(func(w http.ResponseWriter, r *http.Request) {
+		if f.noTheme {
+			http.NotFound(w, r)
+			return
+		}
+		id, ok := owned(w, r)
+		if !ok {
+			return
+		}
+		f.imageDels++
+		if _, ok := f.themeImages[id][r.PathValue("slot")]; !ok {
+			jsonErr(w, 404, "not_found")
+			return
+		}
+		delete(f.themeImages[id], r.PathValue("slot"))
+		w.WriteHeader(204)
 	}))
 	mux.HandleFunc("POST /v1/networks/{id}/verify", lock(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := owned(w, r)

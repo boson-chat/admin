@@ -325,6 +325,9 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		if !can(k.Perm) {
 			return nil, &MissingPermissionError{Perm: k.Perm, Key: name}
 		}
+		if k.Kind == KindImages {
+			return nil, apperr.Invalid(name + " is written by image uploads (PUT /api/branding/images/{slot})")
+		}
 		v, err := k.Clean(raw)
 		if err != nil {
 			return nil, apperr.Invalid(err.Error())
@@ -336,6 +339,9 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		if !ok {
 			return nil, apperr.Invalid(name + " isn't a setting the panel knows")
 		}
+		if k.Kind == KindImages {
+			return nil, apperr.Invalid(name + " is written by image uploads (DELETE /api/branding/images/{slot})")
+		}
 		if _, dup := set[name]; dup {
 			return nil, apperr.Invalid(name + " is both set and reset")
 		}
@@ -344,9 +350,8 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		}
 	}
 
-	var changes []string
-	_, err := s.o.Store.Update(ifMatch, actor, func(root *yaml.Node) error {
-		changes = changes[:0]
+	err := s.Write(ctx, actor, ifMatch, "config.update", c.Keys(), func(root *yaml.Node) ([]string, error) {
+		var changes []string
 		names := make([]string, 0, len(set))
 		for name := range set {
 			names = append(names, name)
@@ -355,7 +360,7 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		for _, name := range names {
 			old := describe(root, name)
 			if err := configfile.Set(root, configfile.Split(name), set[name]); err != nil {
-				return apperr.Invalid(err.Error())
+				return nil, apperr.Invalid(err.Error())
 			}
 			if now := describe(root, name); now != old {
 				changes = append(changes, name+": "+old+" → "+now)
@@ -368,7 +373,30 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 				changes = append(changes, name+": "+old+" → "+unsetWord)
 			}
 		}
-		return nil
+		return changes, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.View(can), nil
+}
+
+// Edit changes the parsed file and returns the changes it made, for the log.
+type Edit func(root *yaml.Node) (changes []string, err error)
+
+// Write applies edit to the file (atomically, If-Match guarded) with the
+// same log line and metrics as Update. keys name the settings it touches;
+// action names it in the log (config.update, branding.image.upload, …).
+// Callers check permissions first.
+func (s *Service) Write(ctx context.Context, actor, ifMatch, action string, keys []string, edit Edit) error {
+	if !s.Enabled() {
+		return errOff
+	}
+	var changes []string
+	_, err := s.o.Store.Update(ifMatch, actor, func(root *yaml.Node) error {
+		var err error
+		changes, err = edit(root)
+		return err
 	})
 	outcome := "success"
 	switch {
@@ -386,19 +414,33 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 			outcome = "error"
 		}
 	}
-	for _, sec := range sections(c.Keys()) {
+	for _, sec := range sections(keys) {
 		s.o.Metrics.SettingsChange(ctx, sec, outcome)
 	}
 	ev := logger.FromCtx(ctx).Info()
 	if err != nil {
 		ev = logger.FromCtx(ctx).Warn().Err(err)
 	}
-	ev.Str("actor", actor).Str("action", "config.update").Str("outcome", outcome).
-		Strs("keys", c.Keys()).Strs("changes", changes).Str("file", s.o.Store.Path()).Msg("config file change")
-	if err != nil {
-		return nil, err
+	ev.Str("actor", actor).Str("action", action).Str("outcome", outcome).
+		Strs("keys", keys).Strs("changes", changes).Str("file", s.o.Store.Path()).Msg("config file change")
+	return err
+}
+
+// Snapshot is the file's last good state (nil without BOSON_CONFIG).
+func (s *Service) Snapshot() *configfile.Snapshot {
+	if !s.Enabled() {
+		return nil
 	}
-	return s.View(can), nil
+	snap, _ := s.o.Store.Current()
+	return snap
+}
+
+// Path is the config file's path ("" without BOSON_CONFIG).
+func (s *Service) Path() string {
+	if !s.Enabled() {
+		return ""
+	}
+	return s.o.Store.Path()
 }
 
 const unsetWord = "(default)"

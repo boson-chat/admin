@@ -41,6 +41,12 @@ func newClient(baseURL, name string, timeout time.Duration, observe Observer) *C
 	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: timeout}, Observe: observe, Name: name}
 }
 
+// RawBody is a request body sent as it is (an image upload).
+type RawBody struct {
+	ContentType string
+	Data        []byte
+}
+
 // call does one JSON request. auth is a full Authorization header value.
 func (c *Client) call(ctx context.Context, op, method, path, auth string, body, out any) error {
 	return c.callH(ctx, op, method, path, auth, nil, body, out)
@@ -58,7 +64,10 @@ func (c *Client) callH(ctx context.Context, op, method, path, auth string, hdr m
 
 func (c *Client) roundTrip(ctx context.Context, method, path, auth string, hdr map[string]string, body, out any) (int, error) {
 	var rd io.Reader
-	if body != nil {
+	contentType := "application/json"
+	if raw, ok := body.(RawBody); ok {
+		rd, contentType = bytes.NewReader(raw.Data), raw.ContentType
+	} else if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return 0, err
@@ -72,7 +81,7 @@ func (c *Client) roundTrip(ctx context.Context, method, path, auth string, hdr m
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "boson-admin")
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	if auth != "" {
 		req.Header.Set("Authorization", auth)

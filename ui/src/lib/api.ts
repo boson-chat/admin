@@ -63,3 +63,40 @@ export async function api<T>(
 	}
 	return data as T;
 }
+
+/**
+ * Sends a file as the raw request body (an image upload). Same CSRF and
+ * error handling as api().
+ */
+export async function upload<T>(
+	method: 'PUT' | 'POST',
+	path: string,
+	file: Blob,
+	extraHeaders?: Record<string, string>
+): Promise<T> {
+	const headers: Record<string, string> = {
+		Accept: 'application/json',
+		'Content-Type': file.type && file.type.startsWith('image/') ? file.type : 'application/octet-stream',
+		'X-Requested-With': 'boson-admin',
+		...extraHeaders
+	};
+	if (session.info) headers['X-CSRF-Token'] = session.info.csrf_token;
+	let res: Response;
+	try {
+		res = await fetch(`/api${path}`, { method, headers, body: file, credentials: 'same-origin' });
+	} catch {
+		throw new ApiError(0, 'network', 'The admin panel server is unreachable. Check your connection.');
+	}
+	let data: unknown = null;
+	try {
+		data = await res.json();
+	} catch {
+		/* non-JSON error page from a proxy */
+	}
+	if (!res.ok) {
+		const e = (data ?? {}) as { error?: string; message?: string };
+		if (res.status === 413 && !e.message) e.message = 'The image is too large (2 MB at most).';
+		throw new ApiError(res.status, e.error ?? 'http_' + res.status, e.message ?? res.statusText);
+	}
+	return data as T;
+}
