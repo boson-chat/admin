@@ -807,3 +807,11 @@ Conventional commits on `main` → semantic-release tags `vX.Y.Z` and pushes
 `harbor.floret.dev/boson/admin:X.Y.Z` and `:latest` (linux/amd64 + arm64).
 The workflow needs the repo secrets `HARBOR_USERNAME` / `HARBOR_PASSWORD`;
 the Harbor `boson` project is public, so pulls need no credentials.
+
+## License
+
+Copyright (C) 2026 bludot / the boson authors
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE) only (`AGPL-3.0-only`).
+
+In plain English: if you run a modified version of this software as a network service, you must offer its source code to the people who use that service.
