@@ -41,6 +41,13 @@ export const PANE_LABELS: Record<PaneName, string> = {
 	messages: 'Messages',
 	members: 'Member list'
 };
+/** The token a pane's background falls back to. */
+export const PANE_DEFAULT: Record<PaneName, ThemeToken> = {
+	servers: 'bg',
+	channels: 'surface',
+	messages: 'bg',
+	members: 'surface'
+};
 export const POSITIONS = ['center', 'top', 'bottom', 'left', 'right'] as const;
 export type PanePosition = (typeof POSITIONS)[number];
 
@@ -49,6 +56,17 @@ export interface Pane {
 	dim?: number;
 	blur?: number;
 	position?: PanePosition;
+}
+
+/**
+ * The version of a theme for the other base (variants.<base>): its own
+ * colours and nick tuning, and pane fields laid over the primary's panes.
+ * Radius, font and the logo / sign-in images are shared.
+ */
+export interface ThemeVariant {
+	colors?: Partial<ThemeColors>;
+	nick?: { saturation: number; lightness: number };
+	panes?: Partial<Record<PaneName, Pane>>;
 }
 
 /** The document as stored in branding.theme (no image URLs). */
@@ -60,7 +78,12 @@ export interface NetworkTheme {
 	radius?: number;
 	font?: ThemeFont;
 	panes?: Partial<Record<PaneName, Pane>>;
+	/** At most the base that isn't `base`. */
+	variants?: Partial<Record<ThemeBase, ThemeVariant>>;
 }
+
+export const BASES = ['dark', 'light'] as const;
+export const otherBase = (b: ThemeBase): ThemeBase => (b === 'dark' ? 'light' : 'dark');
 
 /** branding.images keys. */
 export const IMAGE_SLOTS = [
@@ -70,10 +93,13 @@ export const IMAGE_SLOTS = [
 	'panes.servers.image',
 	'panes.channels.image',
 	'panes.messages.image',
-	'panes.members.image'
+	'panes.members.image',
+	...BASES.flatMap((b) => PANES.map((p) => `variants.${b}.panes.${p}.image` as const))
 ] as const;
 export type ImageSlot = (typeof IMAGE_SLOTS)[number];
 export const paneSlot = (p: PaneName) => `panes.${p}.image` as ImageSlot;
+/** A pane's image in the variant for base (else the primary pane's is used). */
+export const variantPaneSlot = (b: ThemeBase, p: PaneName) => `variants.${b}.panes.${p}.image` as ImageSlot;
 
 interface Builtin {
 	name: string;
@@ -159,9 +185,25 @@ export function resolve(t: NetworkTheme): ThemeColors {
 	return out;
 }
 
-/** The theme as stored: empty values and empty panes dropped, numbers clamped. */
+/**
+ * The theme as stored: empty values and empty panes dropped, numbers
+ * clamped. A variant for the theme's own base is dropped; an empty variant
+ * for the other is kept (Boson's built-in of that base).
+ */
 export function clean(t: NetworkTheme): NetworkTheme {
 	const out: NetworkTheme = { version: 1, base: t.base === 'light' ? 'light' : 'dark' };
+	Object.assign(out, cleanLook(t));
+	if (typeof t.radius === 'number') out.radius = Math.max(0, Math.min(MAX_RADIUS, Math.round(t.radius)));
+	if (t.font === 'system' || t.font === 'boson') out.font = t.font;
+	const other = otherBase(out.base);
+	const v = t.variants?.[other];
+	if (v && typeof v === 'object') out.variants = { [other]: cleanLook(v) };
+	return out;
+}
+
+/** The colours, nick and panes of the primary or a variant, cleaned. */
+function cleanLook(t: ThemeVariant): ThemeVariant {
+	const out: ThemeVariant = {};
 	const colors: Partial<ThemeColors> = {};
 	for (const { key } of THEME_TOKENS) {
 		const c = t.colors?.[key];
@@ -172,8 +214,6 @@ export function clean(t: NetworkTheme): NetworkTheme {
 		const n = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
 		out.nick = { saturation: n(t.nick.saturation), lightness: n(t.nick.lightness) };
 	}
-	if (typeof t.radius === 'number') out.radius = Math.max(0, Math.min(MAX_RADIUS, Math.round(t.radius)));
-	if (t.font === 'system' || t.font === 'boson') out.font = t.font;
 	const panes: Partial<Record<PaneName, Pane>> = {};
 	for (const p of PANES) {
 		const src = t.panes?.[p];
@@ -186,6 +226,65 @@ export function clean(t: NetworkTheme): NetworkTheme {
 		if (Object.keys(pane).length) panes[p] = pane;
 	}
 	if (Object.keys(panes).length) out.panes = panes;
+	return out;
+}
+
+/**
+ * A new variant for base, starting from Boson's built-in of that base. A
+ * pane colour of the primary would carry over (variants overlay the
+ * primary's panes), so those panes get the built-in's colour instead.
+ */
+export function variantFromBuiltin(b: ThemeBase, primary?: NetworkTheme): ThemeVariant {
+	const bi = builtin(b);
+	const colors: Partial<ThemeColors> = {};
+	for (const { key } of THEME_TOKENS) colors[key] = bi.colors[key].toLowerCase();
+	const v: ThemeVariant = { colors, nick: { ...bi.nick } };
+	for (const p of PANES) {
+		if (!isHex(primary?.panes?.[p]?.bg)) continue;
+		v.panes ??= {};
+		v.panes[p] = { bg: colors[PANE_DEFAULT[p]] };
+	}
+	return v;
+}
+
+/**
+ * What a Boson app in `mode` shows (contract section 7): the variant for
+ * that mode when there is one (base = mode, the primary's panes overlaid
+ * field by field by the variant's), else the primary. The result has no
+ * variants.
+ */
+export function themeFor(t: NetworkTheme, mode: ThemeBase): NetworkTheme {
+	const { variants, ...primary } = t;
+	const v = variants?.[mode];
+	if (mode === t.base || !v) return primary;
+	const panes: Partial<Record<PaneName, Pane>> = {};
+	for (const p of PANES) {
+		const merged = { ...(t.panes?.[p] ?? {}), ...(v.panes?.[p] ?? {}) };
+		if (Object.keys(merged).length) panes[p] = merged;
+	}
+	return {
+		version: 1,
+		base: mode,
+		colors: v.colors,
+		nick: v.nick,
+		radius: t.radius,
+		font: t.font,
+		panes
+	};
+}
+
+/** The images the app in `mode` shows: a variant's own pane image, else the primary's. */
+export function imagesFor(
+	t: NetworkTheme,
+	mode: ThemeBase,
+	images: Partial<Record<ImageSlot, string>>
+): Partial<Record<ImageSlot, string>> {
+	const out = { ...images };
+	if (mode === t.base || !t.variants?.[mode]) return out;
+	for (const p of PANES) {
+		const own = images[variantPaneSlot(mode, p)];
+		if (own) out[paneSlot(p)] = own;
+	}
 	return out;
 }
 
@@ -311,16 +410,10 @@ export function themeVars(
 	const nick = t.nick ?? b.nick;
 	vars['--nick-s'] = `${nick.saturation}%`;
 	vars['--nick-l'] = `${nick.lightness}%`;
-	const paneDefault: Record<PaneName, ThemeToken> = {
-		servers: 'bg',
-		channels: 'surface',
-		messages: 'bg',
-		members: 'surface'
-	};
 	for (const p of PANES) {
 		const pane = t.panes?.[p] ?? {};
 		const img = images[paneSlot(p)];
-		vars[`--pane-${p}-bg`] = isHex(pane.bg) ? pane.bg : c[paneDefault[p]];
+		vars[`--pane-${p}-bg`] = isHex(pane.bg) ? pane.bg : c[PANE_DEFAULT[p]];
 		vars[`--pane-${p}-image`] = img ? `url("${img.replace(/["\\\n]/g, '')}")` : 'none';
 		vars[`--pane-${p}-dim`] = img ? String(pane.dim ?? 0.6) : '0';
 		vars[`--pane-${p}-blur`] = `${pane.blur ?? 0}px`;
