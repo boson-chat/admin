@@ -154,6 +154,7 @@
 			certificates={data.certificates}
 			edgeName={data.edge?.name || 'Traefik'}
 			ircConfigured={data.irc?.configured ?? false}
+			discovered={data.discovery?.enabled ?? false}
 			probes={data.public_probes ?? []}
 			{browser}
 		/>

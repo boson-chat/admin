@@ -7,6 +7,7 @@
 		certificates,
 		edgeName = 'Traefik',
 		ircConfigured = false,
+		discovered = false,
 		probes = [],
 		browser = {}
 	}: {
@@ -14,6 +15,8 @@
 		certificates: Certificate[];
 		edgeName?: string;
 		ircConfigured?: boolean;
+		/** The services are the stack's containers: one that isn't listed doesn't run. */
+		discovered?: boolean;
 		/** Public endpoints the browser times, by service name ("admin" = this panel, via the edge). */
 		probes?: PublicProbe[];
 		browser?: Record<string, BrowserLatency>;
@@ -68,7 +71,9 @@
 		};
 	});
 
-	let hasIRC = $derived(ircConfigured || services.some((s) => /irc|ergo|anope/i.test(s.name)));
+	// With discovery an IRC server that isn't listed isn't running (the irc
+	// profile is off), so there's nothing to configure.
+	let hasIRC = $derived(discovered || ircConfigured || services.some((s) => /irc|ergo|anope/i.test(s.name)));
 	const names: Record<string, string> = { irc: 'IRC' };
 
 	function latency(s: ServiceHealth): string {
@@ -107,7 +112,7 @@
 					{#if s.version}<span class="version mono">{s.version}</span>{/if}
 				</div>
 				<span class="status">{statusWord[s.status]}</span>
-				<span class="lat">
+				<span class="lat" class:none={!y && !latency(s)}>
 					{#if y}
 						<span class="you" class:na={y.na} title={y.tip}>
 							<span class="v">{y.text}</span> <span class="lbl">from you</span>
@@ -239,13 +244,17 @@
 		padding: 0;
 		position: relative;
 	}
+	/* Every row's first line is a 20px band (node, name, status, "from you")
+	   and the latency column always takes two lines, so a long list of
+	   services keeps one rhythm whether or not each has a public probe. */
 	.branch {
+		--line: 20px;
 		position: relative;
 		display: grid;
 		grid-template-columns: 14px minmax(0, 1fr) auto auto;
-		align-items: center;
+		align-items: start;
 		column-gap: var(--space-3);
-		padding: 0 0 var(--space-5) var(--space-6);
+		padding: 0 0 var(--space-4) var(--space-6);
 	}
 	/* the bus: a vertical track joining every branch */
 	.branch::before {
@@ -289,6 +298,10 @@
 		align-self: start;
 		margin-top: 3px;
 	}
+	.name h3,
+	.status {
+		line-height: var(--line);
+	}
 	.name {
 		display: flex;
 		align-items: baseline;
@@ -321,6 +334,13 @@
 		text-align: right;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
+		/* two lines: "from you" and "internal" */
+		grid-template-rows: var(--line) 16px;
+		align-items: center;
+	}
+	/* a service with nothing passing: its failures follow straight on */
+	.lat.none {
+		grid-template-rows: var(--line);
 	}
 	.lat > span,
 	.edge-lat {
@@ -338,6 +358,7 @@
 		font-weight: 500;
 	}
 	.int {
+		grid-row: 2;
 		color: var(--fg-quiet);
 	}
 	.lbl {
@@ -390,8 +411,11 @@
 		.branch:nth-child(4) .node {
 			animation-delay: 270ms;
 		}
-		.branch:nth-child(n + 5) .node {
+		.branch:nth-child(5) .node {
 			animation-delay: 360ms;
+		}
+		.branch:nth-child(n + 6) .node {
+			animation-delay: 420ms;
 		}
 	}
 	@keyframes arrive {
@@ -442,7 +466,7 @@
 			min-width: 0;
 			margin-top: var(--space-1);
 		}
-		.lat:empty {
+		.lat.none {
 			display: none;
 		}
 	}

@@ -147,8 +147,25 @@ type UpstreamConfig struct {
 	// or JSON {"version"}, or a Prometheus /metrics URL (target_info service_version).
 	VersionTargets string `env:"VERSION_TARGETS"`
 	// Comma-separated host:port[@dial-host:dial-port] whose TLS certificates
-	// are checked. With BOSON_CONFIG, admin.tls_check_hosts wins.
+	// are checked. With BOSON_CONFIG, admin.tls_check_hosts wins. Empty =
+	// derived from CERT_HOSTS.
 	TLSCheckHosts string `env:"TLS_CHECK_HOSTS"`
+	// The stack's certificate hostnames (its .env CERT_HOSTS). When
+	// TLS_CHECK_HOSTS is empty each is checked on 443 through TLS_EDGE_ADDR,
+	// and the IRC host (IRC_HOST / IRC_CHECK_SERVER_NAME) on IRC_CHECK's
+	// port (6697) instead.
+	CertHosts string `env:"CERT_HOSTS"`
+	// Where CERT_HOSTS' 443 checks are dialled (the edge on the compose
+	// network, e.g. traefik:443). Empty = each hostname itself.
+	TLSEdgeAddr string `env:"TLS_EDGE_ADDR"`
+	// The stack's public hostnames: the stack overview's built-in public
+	// probes (with the Docker socket proxy on) for the services that run.
+	AuthHost      string `env:"AUTH_HOST"`
+	VoiceHost     string `env:"VOICE_HOST"`
+	IRCHost       string `env:"IRC_HOST"`
+	APIHost       string `env:"API_HOST"`
+	DirectoryHost string `env:"DIRECTORY_HOST"`
+	FilesHost     string `env:"FILES_HOST"`
 	// IRC server to probe: ircs://host:port (TLS) or irc://host:port. Empty = not checked.
 	IRCCheck string `env:"IRC_CHECK"`
 	// SNI for the IRC TLS handshake (the public IRC host when IRC_CHECK dials
@@ -196,6 +213,9 @@ func (c *Config) ApplyDefaults() {
 	if strings.TrimSpace(u.VersionTargets) == "" && u.AuthInternalURL != "" {
 		u.VersionTargets = "auth=" + u.AuthInternalURL + "/metrics"
 	}
+	if strings.TrimSpace(u.TLSCheckHosts) == "" {
+		u.TLSCheckHosts = strings.Join(u.CertTLSHosts(), ",")
+	}
 	d := &c.DockerConfig
 	d.ProxyURL = trim(d.ProxyURL)
 	b := &c.BosonConfig
@@ -206,6 +226,46 @@ func (c *Config) ApplyDefaults() {
 	if b.DirectoryHostname == "" {
 		b.DirectoryHostname = strings.TrimSpace(u.IRCCheckServerName)
 	}
+}
+
+// IRCHostname is IRC_HOST, else IRC_CHECK_SERVER_NAME.
+func (u UpstreamConfig) IRCHostname() string {
+	if h := strings.TrimSpace(u.IRCHost); h != "" {
+		return h
+	}
+	return strings.TrimSpace(u.IRCCheckServerName)
+}
+
+// CertTLSHosts turns CERT_HOSTS into TLS_CHECK_HOSTS entries: host:443
+// (@TLS_EDGE_ADDR), the IRC host on IRC_CHECK's port. Hostnames that
+// aren't plain DNS names are skipped.
+func (u UpstreamConfig) CertTLSHosts() []string {
+	ircPort := "6697"
+	if t, err := u.IRC(); err == nil && t != nil && t.TLS {
+		if _, p, err := net.SplitHostPort(t.Address); err == nil {
+			ircPort = p
+		}
+	}
+	irc := strings.ToLower(u.IRCHostname())
+	edge := strings.TrimSpace(u.TLSEdgeAddr)
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range SplitList(u.CertHosts) {
+		h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
+		if h == "" || seen[h] || strings.ContainsAny(h, ":@/*") {
+			continue
+		}
+		seen[h] = true
+		switch {
+		case h == irc:
+			out = append(out, h+":"+ircPort)
+		case edge != "":
+			out = append(out, h+":443@"+edge)
+		default:
+			out = append(out, h+":443")
+		}
+	}
+	return out
 }
 
 // ProtectedServices parses DOCKER_PROTECTED_SERVICES.
