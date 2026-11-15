@@ -158,3 +158,28 @@ func TestDockerAndBoson(t *testing.T) {
 		t.Fatalf("registration without a URL: %v", err)
 	}
 }
+
+func TestTLSHostsFromCertHosts(t *testing.T) {
+	c := Config{UpstreamConfig: UpstreamConfig{
+		CertHosts:   "irc.example.com, voice.example.com,auth.example.com auth.example.com,*.bad.example,FILES.example.com.",
+		TLSEdgeAddr: "traefik:443", IRCHost: "irc.example.com", IRCCheck: "ircs://ergo:6697",
+	}}
+	c.ApplyDefaults()
+	want := "irc.example.com:6697,voice.example.com:443@traefik:443,auth.example.com:443@traefik:443,files.example.com:443@traefik:443"
+	if c.UpstreamConfig.TLSCheckHosts != want {
+		t.Fatalf("got %q", c.UpstreamConfig.TLSCheckHosts)
+	}
+	if _, err := c.UpstreamConfig.TLSTargets(); err != nil {
+		t.Fatal(err)
+	}
+	// TLS_CHECK_HOSTS wins; the IRC host falls back to IRC_CHECK_SERVER_NAME.
+	c = Config{UpstreamConfig: UpstreamConfig{CertHosts: "a.example", TLSCheckHosts: "b.example:443"}}
+	c.ApplyDefaults()
+	if c.UpstreamConfig.TLSCheckHosts != "b.example:443" {
+		t.Fatalf("got %q", c.UpstreamConfig.TLSCheckHosts)
+	}
+	u := UpstreamConfig{CertHosts: "irc.example.com,a.example", IRCCheckServerName: "irc.example.com"}
+	if got := strings.Join(u.CertTLSHosts(), ","); got != "irc.example.com:6697,a.example:443" {
+		t.Fatalf("got %q", got)
+	}
+}

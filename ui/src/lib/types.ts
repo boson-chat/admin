@@ -468,6 +468,8 @@ export interface Overview {
 	edge: { name: string };
 	irc: { configured: boolean; target?: string };
 	public_probes?: PublicProbe[];
+	/** enabled: the services shown are the compose project's containers (the Docker socket proxy). */
+	discovery?: { enabled: boolean; error?: string };
 }
 
 export interface PublicProbe {

@@ -100,9 +100,13 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	versions, _ := up.Versions()
 	irc, _ := up.IRC()
 	probes, _ := up.PublicProbes()
-	connect := make([]string, 0, len(probes))
-	for _, p := range probes {
-		connect = append(connect, p.Origin)
+	// The overview's services: the compose project's containers (through the
+	// socket proxy) with the built-in probe map, else the env lists alone.
+	var discover overview.Containers
+	if dc := cfg.DockerConfig; dc.ProxyURL != "" {
+		discover = dockerapi.NewDockerClient(dc.ProxyURL, min(up.Timeout, 3*time.Second), func(op string, status int, err error, d time.Duration) {
+			m.Upstream(context.Background(), "docker", op, status, err, d)
+		})
 	}
 	var prom promql.PromClientImpl
 	if up.MetricsURL != "" {
@@ -121,7 +125,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		IRC:      irc,
 		Edge:     up.EdgeName,
 		Public:   probes,
+		Docker:   discover,
+		Project:  cfg.DockerConfig.Project,
+		Known: overview.Builtins(overview.Hosts{Auth: up.AuthHost, Voice: up.VoiceHost, IRC: up.IRCHostname(),
+			API: up.APIHost, Directory: up.DirectoryHost, Files: up.FilesHost}),
 	})
+	connect := overviewSvc.PublicOrigins()
 
 	key := o.SessionKey
 	if key == nil {

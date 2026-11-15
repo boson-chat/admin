@@ -24,10 +24,10 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
 ## What it shows
 
 - **Stack:** the edge (`EDGE_NAME`, Traefik by default) graded by its
-  certificates, each service from `HEALTH_TARGETS` (up / degraded / down, latency,
+  certificates, each service (see "Which services" below) (up / degraded / down, latency,
   the failing check's status and body), IRC from `IRC_CHECK` (up / down,
-  handshake latency and the Ergo version), versions from `VERSION_TARGETS`, the
-  certificates in `TLS_CHECK_HOSTS` (valid, renews soon, expiring, expired,
+  handshake latency and the Ergo version), their versions, the
+  certificates in `TLS_CHECK_HOSTS` or `CERT_HOSTS` (valid, renews soon, expiring, expired,
   untrusted or unreachable; days left; issuer), and, when `METRICS_URL` is set,
   live numbers with one-hour trends: QUIC connections, live rooms,
   participants, audio frames forwarded per second, logins in the last hour by
@@ -36,7 +36,7 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   `GRAFANA_URL` is set. Refreshes every 15 s while the tab is visible.
   Each row shows two latencies: **internal** (the panel's own check over the
   container network) and **from you** (timed by your browser against the
-  service's public endpoint from `PUBLIC_PROBE_TARGETS`; see below).
+  service's public endpoint; see below).
 - **Services:** every container of the compose project with its state, uptime,
   image version, restarts, CPU and memory; restart, stop and start (with a
   confirmation, and the service name typed for the panel itself and the
@@ -159,8 +159,37 @@ them with `performance.now()`:
   32 per 10 minutes, then a temporary ban). The origin must be allowed by the
   IRC server's WebSocket origin list (`IRC_WEBSOCKET_ORIGINS` in the stack).
 
-Every origin in `PUBLIC_PROBE_TARGETS` (and nothing else) is added to the
-CSP's `connect-src`.
+Every origin in `PUBLIC_PROBE_TARGETS`, and with the socket proxy on every
+built-in public endpoint whose hostname is set (below), is added to the CSP's
+`connect-src`; nothing else is.
+
+### Which services
+
+With the Docker socket proxy on (`DOCKER_PROXY_URL`), the stack view shows
+the compose services of `DOCKER_PROJECT` that have a container (running or
+not; a stopped one shows as down), so an optional profile that is off doesn't
+show up as down. The panel knows how to probe the stack's services:
+
+| Service | Internal health | Version | From you |
+|---|---|---|---|
+| `auth` | `auth:8081/healthz`, `/readyz` | `auth:8081/metrics` | `https://$AUTH_HOST/healthz` |
+| `quicvoiced` | `quicvoiced:8080/healthz` | `quicvoiced:8080/version` | `https://$VOICE_HOST/healthz` |
+| IRC (`ergo`) | `IRC_CHECK` | the IRC handshake | `wss://$IRC_HOST/webirc` |
+| `api` | `api:3000/health` | image tag | `https://$API_HOST/health` |
+| `directory` | `directory:8081/healthz` | `directory:8081/metrics` | `https://$DIRECTORY_HOST/healthz` |
+| `files` | `files:3001/healthz` | `files:3001/metrics` | `https://$FILES_HOST/healthz` |
+| `victoriametrics` | `victoriametrics:8428/health` | image | – |
+| `minio` | `minio:9000/minio/health/live` | image | – |
+
+A version endpoint that fails falls back to the container image's version
+(its `org.opencontainers.image.version` label, else its tag). A public probe
+is only listed when its `*_HOST` is set. `HEALTH_TARGETS`,
+`VERSION_TARGETS` and `PUBLIC_PROBE_TARGETS` still apply on top: a name
+from the table replaces that service's built-in checks (or version source,
+or public endpoint), any other name is added. Names from the table are
+hidden while their container doesn't exist; other names are always shown.
+If the proxy can't be reached, the last listing stands in for 5 minutes,
+then the env lists alone are used, as they are with the proxy off.
 
 ## Running locally
 
@@ -228,13 +257,16 @@ stack's `.env` and recreate the service.
 | `GRAFANA_URL` | – | Grafana base URL for links |
 | `HEALTH_TARGETS` | auth `/healthz` + `/readyz` from `AUTH_INTERNAL_URL` | `name=url,…`. Repeat a name to group checks under one service. 2xx/3xx = healthy; redirects aren't followed |
 | `VERSION_TARGETS` | auth from `AUTH_INTERNAL_URL/metrics` | `name=url,…`: plain text (quicvoiced `/version`), JSON `{"version"}`, or a Prometheus `/metrics` URL (reads `target_info{service_version}`) |
-| `TLS_CHECK_HOSTS` | – | *default*: `admin.tls_check_hosts` in the config file wins. `host:port[@dial-host:dial-port],…`. The name is sent as SNI and verified; the optional dial address lets you check a public name over the internal network. Results are cached 5 minutes |
+| `TLS_CHECK_HOSTS` | from `CERT_HOSTS` | *default*: `admin.tls_check_hosts` in the config file wins. `host:port[@dial-host:dial-port],…`. The name is sent as SNI and verified; the optional dial address lets you check a public name over the internal network. Results are cached 5 minutes |
+| `CERT_HOSTS` | – | the stack's certificate hostnames (`a.example.com,b.example.com`). With `TLS_CHECK_HOSTS` empty each is checked as `host:443@TLS_EDGE_ADDR`, and the IRC host (`IRC_HOST`, else `IRC_CHECK_SERVER_NAME`) as `host:6697` (`IRC_CHECK`'s port), dialled directly |
+| `TLS_EDGE_ADDR` | – | where `CERT_HOSTS`' 443 checks are dialled, e.g. `traefik:443`. Empty = each hostname itself |
+| `AUTH_HOST`, `VOICE_HOST`, `IRC_HOST`, `API_HOST`, `DIRECTORY_HOST`, `FILES_HOST` | – | the stack's public hostnames: the built-in "from you" probes (with `DOCKER_PROXY_URL`; see "Which services") |
 | `IRC_CHECK` | – | IRC server to probe: `ircs://host[:6697]` (TLS) or `irc://host[:6667]`, e.g. `ircs://ergo:6697`. Empty = IRC "not configured" |
 | `IRC_CHECK_SERVER_NAME` | `IRC_CHECK`'s host | TLS SNI for the probe, e.g. the public `IRC_HOST` when dialling the container |
 | `PUBLIC_PROBE_TARGETS` | – | `name=url,…` public endpoints your browser times (`https://`, `http://`, `wss://`, `ws://`). Names match services (`auth`, `api`, `quicvoiced`, `irc`); `admin` overrides the panel's own `/healthz`. Origins are added to the CSP `connect-src` |
 | `EDGE_NAME` | `Traefik` | what the stack view calls the reverse proxy in front of everything |
 | `UPSTREAM_TIMEOUT` | `5s` | per upstream request (health and TLS checks use at most 3 s / 5 s) |
-| `DOCKER_PROXY_URL` | – | the Docker socket proxy, e.g. `http://docker-proxy:2375`. Empty = services control off. A `unix:` URL or a `docker.sock` path is refused |
+| `DOCKER_PROXY_URL` | – | the Docker socket proxy, e.g. `http://docker-proxy:2375`. Empty = services control off, and the stack view probes the env lists alone. A `unix:` URL or a `docker.sock` path is refused |
 | `DOCKER_PROJECT` | `boson` | compose project whose containers are shown and controlled; nothing outside it is touched |
 | `DOCKER_PROTECTED_SERVICES` | `admin,traefik` | compose services whose name must be typed to stop or restart them (the panel's own container always is) |
 | `DOCKER_TIMEOUT` | `20s` | per Docker call (stats take about a second) |
@@ -331,16 +363,19 @@ the stack's Traefik setup:
       TRUSTED_PROXIES: ${PROXY_SUBNET:-172.16.0.0/12}
       AUTH_URL: http://auth:8080
       AUTH_INTERNAL_URL: http://auth:8081
+      # Without the socket proxy (below), list what to probe:
       HEALTH_TARGETS: >-
         auth=http://auth:8081/healthz,auth=http://auth:8081/readyz,
         quicvoiced=http://quicvoiced:8080/healthz
       VERSION_TARGETS: auth=http://auth:8081/metrics,quicvoiced=http://quicvoiced:8080/version
-      TLS_CHECK_HOSTS: ${IRC_HOST}:6697,${VOICE_HOST}:443,${ADMIN_HOST}:443
-      IRC_CHECK: ircs://ergo:6697                 # irc profile; leave unset without it
-      IRC_CHECK_SERVER_NAME: ${IRC_HOST}
       PUBLIC_PROBE_TARGETS: >-
         auth=https://${AUTH_HOST}/healthz,api=https://${API_HOST}/health,
         quicvoiced=https://${VOICE_HOST}/healthz,irc=wss://${IRC_HOST}/webirc
+      # Certificates: every hostname, 443 through the edge, IRC on 6697.
+      CERT_HOSTS: ${CERT_HOSTS}
+      TLS_EDGE_ADDR: traefik:443
+      IRC_CHECK: ircs://ergo:6697                 # irc profile; leave unset without it
+      IRC_CHECK_SERVER_NAME: ${IRC_HOST}
       METRICS_URL: ${METRICS_URL:-}            # http://victoriametrics:8428 when enabled
       GRAFANA_URL: ${GRAFANA_URL:-}
     labels:
@@ -359,6 +394,14 @@ With services control (see below) the panel also joins the proxy's network:
     environment:
       DOCKER_PROXY_URL: http://docker-proxy:2375
       DOCKER_PROJECT: ${COMPOSE_PROJECT_NAME:-boson}
+      # The stack view then shows the services that have a container, with
+      # built-in checks (HEALTH_TARGETS etc. can go) and these public probes:
+      AUTH_HOST: ${AUTH_HOST}
+      VOICE_HOST: ${VOICE_HOST}
+      IRC_HOST: ${IRC_HOST}
+      API_HOST: ${API_HOST}
+      DIRECTORY_HOST: ${DIRECTORY_HOST}
+      FILES_HOST: ${FILES_HOST}
       BOSON_API_URL: http://api:3000
     networks: [default, docker-proxy]
 ```

@@ -143,11 +143,15 @@
 		{ env: 'ADMIN_METRICS_URL', what: 'The metrics backend for live numbers on the Stack page.' },
 		{
 			env: 'ADMIN_DOCKER_PROXY_URL',
-			what: 'The Docker socket proxy behind Services and the Restart buttons.'
+			what: 'The Docker socket proxy behind Services, the Restart buttons and which services the Stack page shows.'
 		},
 		{ env: 'ADMIN_BOSON_API_URL', what: 'The boson API for profiles on user pages.' },
 		{ env: 'ADMIN_IRC_CHECK', what: 'The IRC server the Stack page connects to.' },
-		{ env: 'HEALTH_TARGETS', what: 'The services’ health URLs (set in compose.yaml).' }
+		{
+			env: 'ADMIN_HEALTH_TARGETS',
+			what: 'Extra or replacement health URLs for the Stack page (built in for the stack’s services).'
+		},
+		{ env: 'CERT_HOSTS', what: 'The hostnames whose certificates the Stack page checks.' }
 	];
 </script>
 

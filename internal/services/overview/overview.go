@@ -63,6 +63,17 @@ type Overview struct {
 	// PublicProbes are endpoints the browser times itself
 	// (PUBLIC_PROBE_TARGETS), plus the panel's own /healthz as "admin".
 	PublicProbes []config.PublicProbe `json:"public_probes"`
+	// Discovery says whether the services come from the compose project's
+	// containers (the Docker socket proxy) or only the env lists.
+	Discovery DiscoveryInfo `json:"discovery"`
+}
+
+// DiscoveryInfo: Enabled = the services shown are the ones that have a
+// container; Error = the last listing failed (an older one, or the env
+// lists, stand in).
+type DiscoveryInfo struct {
+	Enabled bool   `json:"enabled"`
+	Error   string `json:"error,omitempty"`
 }
 
 type EdgeInfo struct {
@@ -102,7 +113,13 @@ type OverviewService struct {
 	IRC      *config.IRCTarget // nil = IRC not checked
 	Edge     string
 	Public   []config.PublicProbe
-	Now      func() time.Time
+	// Docker lists the compose project's containers; nil = the env lists
+	// alone say what to probe.
+	Docker  Containers
+	Project string
+	// Known is the probe map for compose services (Builtins).
+	Known []Known
+	Now   func() time.Time
 	// IRCTTL caches the IRC probe: each probe is a connection the IRC
 	// server logs, and several open panels poll every 15 s.
 	IRCTTL time.Duration
@@ -116,6 +133,8 @@ type OverviewService struct {
 	certKey   string
 	ircCache  *Service
 	ircAt     time.Time
+	discCache map[string]present
+	discAt    time.Time
 }
 
 type Options struct {
@@ -132,6 +151,9 @@ type Options struct {
 	IRC      *config.IRCTarget
 	Edge     string
 	Public   []config.PublicProbe
+	Docker   Containers
+	Project  string
+	Known    []Known
 	Now      func() time.Time
 }
 
@@ -142,9 +164,13 @@ func NewOverviewService(o Options) *OverviewService {
 	if o.Edge == "" {
 		o.Edge = "Traefik"
 	}
+	if o.Project == "" {
+		o.Project = "boson"
+	}
 	return &OverviewService{Health: o.Health, TLS: o.TLS, Prom: o.Prom, Targets: o.Targets, Versions: o.Versions,
 		Certs: o.Certs, CertsFn: o.CertsFn, Grafana: o.Grafana, Version: o.Version, IRCProbe: o.IRCProbe, IRC: o.IRC, Edge: o.Edge,
-		Public: withSelfProbe(o.Public), Now: o.Now, CertTTL: 5 * time.Minute, IRCTTL: 30 * time.Second}
+		Public: withSelfProbe(o.Public), Docker: o.Docker, Project: o.Project, Known: o.Known,
+		Now: o.Now, CertTTL: 5 * time.Minute, IRCTTL: 30 * time.Second}
 }
 
 // withSelfProbe adds the panel's own /healthz (same origin, through the
@@ -160,19 +186,30 @@ func withSelfProbe(in []config.PublicProbe) []config.PublicProbe {
 
 func (s *OverviewService) Overview(ctx context.Context) *Overview {
 	out := &Overview{CheckedAt: s.Now().UTC(), Panel: PanelInfo{Version: s.Version}, GrafanaURL: s.Grafana,
-		Edge: EdgeInfo{Name: s.Edge}, PublicProbes: s.Public}
-	var irc *Service
+		Edge: EdgeInfo{Name: s.Edge}}
 	var wg sync.WaitGroup
-	wg.Go(func() { out.Services = s.services(ctx) })
 	wg.Go(func() { out.Certificates = s.certificates(ctx) })
 	wg.Go(func() { out.Metrics = s.metrics(ctx) })
-	if s.IRC != nil && s.IRCProbe != nil {
+
+	d, ok := s.discover(ctx)
+	out.Discovery = DiscoveryInfo{Enabled: ok, Error: d.err}
+	p := s.planFor(d, ok)
+	out.PublicProbes = s.publicFor(d, ok)
+	var irc *Service
+	wg.Go(func() { out.Services = s.services(ctx, p) })
+	if p.irc {
 		out.IRC = IRCInfo{Configured: true, Target: s.IRC.Label}
 		wg.Go(func() { irc = s.irc(ctx) })
 	}
 	wg.Wait()
 	if irc != nil {
 		out.Services = mergeIRC(out.Services, *irc)
+	}
+	for i := range out.Services {
+		sv := &out.Services[i]
+		if v := p.images[sv.Name]; v != "" && sv.Version == "" {
+			sv.Version, sv.VersionError = v, ""
+		}
 	}
 	return out
 }
@@ -219,7 +256,7 @@ func mergeIRC(services []Service, irc Service) []Service {
 	return append(services, irc)
 }
 
-func (s *OverviewService) services(ctx context.Context) []Service {
+func (s *OverviewService) services(ctx context.Context, p plan) []Service {
 	byName := map[string]*Service{}
 	var order []string
 	get := func(name string) *Service {
@@ -231,14 +268,17 @@ func (s *OverviewService) services(ctx context.Context) []Service {
 		order = append(order, name)
 		return sv
 	}
-	results := make([]health.Result, len(s.Targets))
-	versions := make([]string, len(s.Versions))
-	verrs := make([]string, len(s.Versions))
+	for _, name := range p.order {
+		get(name)
+	}
+	results := make([]health.Result, len(p.health))
+	versions := make([]string, len(p.versions))
+	verrs := make([]string, len(p.versions))
 	var wg sync.WaitGroup
-	for i, t := range s.Targets {
+	for i, t := range p.health {
 		wg.Go(func() { results[i] = s.Health.Check(ctx, t.URL) })
 	}
-	for i, t := range s.Versions {
+	for i, t := range p.versions {
 		wg.Go(func() {
 			v, err := s.Health.Version(ctx, t.URL)
 			versions[i] = v
@@ -248,11 +288,11 @@ func (s *OverviewService) services(ctx context.Context) []Service {
 		})
 	}
 	wg.Wait()
-	for i, t := range s.Targets {
+	for i, t := range p.health {
 		sv := get(t.Name)
 		sv.Checks = append(sv.Checks, results[i])
 	}
-	for i, t := range s.Versions {
+	for i, t := range p.versions {
 		sv := get(t.Name)
 		sv.Version, sv.VersionError = versions[i], verrs[i]
 	}
