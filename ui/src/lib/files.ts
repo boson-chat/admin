@@ -19,6 +19,8 @@ export const KEYS = {
 	guest_quota: 'files.guest.quota',
 	guest_max_file: 'files.guest.max_file',
 	driver: 'files.storage.driver',
+	min_free: 'files.storage.min_free',
+	capacity: 'files.storage.capacity',
 	s3_endpoint: 'files.storage.s3.endpoint',
 	s3_bucket: 'files.storage.s3.bucket',
 	s3_region: 'files.storage.s3.region',
@@ -38,6 +40,8 @@ export const DEFAULTS = {
 	guest_quota: '500MB',
 	guest_max_file: '25MB',
 	driver: 'local' as Driver,
+	min_free: '2GB',
+	capacity: '',
 	s3_endpoint: '',
 	s3_bucket: '',
 	s3_region: 'auto',
@@ -51,30 +55,51 @@ export type Driver = 'local' | 's3';
 
 export interface FilesLimits {
 	quota_bytes: number;
-	window_seconds: number;
 	max_file_bytes: number;
 }
 export interface FilesConfigEcho {
 	enabled: boolean;
-	guest_enabled: boolean;
-	limits: { account: FilesLimits; guest: FilesLimits };
 	retention_seconds: number;
+	window_seconds: number;
+	account: FilesLimits;
+	guest: FilesLimits;
+	guest_enabled: boolean;
+	storage: {
+		driver: string;
+		s3: { endpoint: string; bucket: string; region: string; path_style: boolean; public_base_url: string };
+		min_free_bytes: number;
+		capacity_bytes: number;
+	};
+	source?: string;
 }
 export interface FilesStatus {
-	version?: string;
+	ok: boolean;
 	storage: {
 		driver: string;
 		ok: boolean;
 		error?: string;
-		path?: string;
-		bucket?: string;
-		endpoint?: string;
+		latency_ms?: number;
 		free_bytes?: number | null;
 		total_bytes?: number | null;
+		used_bytes: number;
+		min_free_bytes: number;
+		capacity_bytes: number;
+		/** New uploads are refused (507 storage_full). */
+		full: boolean;
 	};
-	totals: { files: number; bytes: number; window_uploads: number; window_bytes: number; uploaders: number };
+	totals: {
+		live_files: number;
+		live_bytes: number;
+		stored_bytes: number;
+		window_uploads: number;
+		window_bytes: number;
+		window_users: number;
+		pending: number;
+		awaiting_purge: number;
+	};
 	config?: FilesConfigEcho;
-	errors: string[];
+	restart_required: string[];
+	errors: { at: string; op: string; error: string }[];
 }
 /** GET /api/files/status. */
 export interface FilesView {
@@ -85,6 +110,7 @@ export interface FilesView {
 	error_code?: string;
 	checked_at: string;
 }
+export type FileStatus = 'live' | 'all' | 'ready' | 'pending' | 'deleted' | 'expired';
 export interface FileRecord {
 	id: string;
 	url: string;
@@ -93,15 +119,26 @@ export interface FileRecord {
 	content_type: string;
 	created_at: string;
 	expires_at: string;
-	deleted_at?: string | null;
 	width?: number;
 	height?: number;
-	owner: { kind: 'account' | 'guest' | string; id: string; ip_hash?: string };
+	/** An auth user id (usr_…) or a guest key (gst_…). */
+	user: string;
+	user_kind: 'account' | 'guest' | string;
+	status: string;
+	deleted_at?: string | null;
+	/** "admin:<name>" for moderation deletes. */
+	deleted_by?: string | null;
 	username?: string;
 }
 export interface FilePage {
 	files: FileRecord[];
 	next_cursor?: string;
+}
+export interface FilesOverride {
+	quota_bytes: number | null;
+	max_file_bytes: number | null;
+	updated_at?: string;
+	updated_by?: string | null;
 }
 export interface FilesUsage {
 	used: number;
@@ -109,40 +146,66 @@ export interface FilesUsage {
 	window_seconds: number;
 	max_file: number;
 	frees: { bytes: number; at: string }[];
-	files?: number;
+	user?: string;
+	user_kind?: string;
+	live_files?: number;
+	live_bytes?: number;
+	override?: FilesOverride | null;
+	defaults?: FilesLimits;
 }
 
-// ---- sizes (binary: 1 GB = 1024 MB, as the files service reads them) ----
+// ---- sizes, as the files service reads them: KB/MB/GB/TB are powers of
+// 1000, KiB/MiB/GiB/TiB powers of 1024 ----
 
-const UNITS: [string, number][] = [
-	['TB', 2 ** 40],
-	['GB', 2 ** 30],
-	['MB', 2 ** 20],
-	['KB', 2 ** 10],
-	['B', 1]
-];
-const sizeRe = /^\s*(\d+(?:\.\d+)?)\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)?\s*$/i;
+const UNITS: Record<string, number> = {
+	'': 1,
+	b: 1,
+	k: 1e3,
+	kb: 1e3,
+	m: 1e6,
+	mb: 1e6,
+	g: 1e9,
+	gb: 1e9,
+	t: 1e12,
+	tb: 1e12,
+	kib: 2 ** 10,
+	mib: 2 ** 20,
+	gib: 2 ** 30,
+	tib: 2 ** 40
+};
+const sizeRe = /^\s*(\d+(?:\.\d+)?)\s*([a-z]*)\s*$/i;
 
-/** Bytes of "5GB", "500 MB", "1.5gb"; null when it isn't a size. */
+/** Bytes of "5GB", "500 MB", "1.5gb", "25MiB"; null when it isn't a size. */
 export function parseSize(s: string): number | null {
 	const m = sizeRe.exec(s ?? '');
 	if (!m) return null;
-	const u = (m[2] ?? 'B').toUpperCase().replace(/IB$/, '').replace(/B$/, '');
-	const mul = u === '' ? 1 : (UNITS.find(([n]) => n.startsWith(u))?.[1] ?? 1);
-	return Math.floor(Number(m[1]) * mul);
+	const mul = UNITS[m[2].toLowerCase()];
+	if (mul === undefined) return null;
+	return Math.round(Number(m[1]) * mul);
 }
 
-/** The file's form: the largest whole unit (5GB, 1536MB). */
+const FORMAT: [string, number][] = [
+	['TB', 1e12],
+	['GB', 1e9],
+	['MB', 1e6],
+	['KB', 1e3],
+	['TiB', 2 ** 40],
+	['GiB', 2 ** 30],
+	['MiB', 2 ** 20],
+	['KiB', 2 ** 10]
+];
+
+/** The file's form: the largest decimal unit that divides it (5GB, 1500MB), else binary, else bytes. */
 export function formatSize(n: number): string {
-	for (const [name, b] of UNITS) if (n >= b && n % b === 0) return `${n / b}${name}`;
-	return `${Math.round(n)}B`;
+	for (const [name, b] of FORMAT) if (n >= b && n % b === 0) return `${n / b}${name}`;
+	return `${Math.round(n)}`;
 }
 
-/** For people: 1.2 GB, 512 MB, 900 B. */
+/** For people: 1.2 GB, 512 MB, 900 B (decimal). */
 export function humanSize(n: number | null | undefined): string {
 	if (n === null || n === undefined || Number.isNaN(n)) return '—';
-	for (const [name, b] of UNITS) {
-		if (n >= b && b > 1) {
+	for (const [name, b] of FORMAT.slice(0, 4)) {
+		if (n >= b) {
 			const v = n / b;
 			return `${v >= 100 || Number.isInteger(v) ? Math.round(v) : v.toFixed(1)} ${name}`;
 		}
@@ -150,9 +213,9 @@ export function humanSize(n: number | null | undefined): string {
 	return `${n} B`;
 }
 
-export const MIN_FILE = 2 ** 10;
-export const MIN_QUOTA = 2 ** 20;
-export const MAX_SIZE = 100 * 2 ** 40;
+export const MIN_FILE = 1e3;
+export const MIN_QUOTA = 1e6;
+export const MAX_SIZE = 1e14;
 
 // ---- durations (Go durations in the file: 72h, 90m) ----
 
@@ -205,6 +268,8 @@ export interface Draft {
 	guest_quota: string;
 	guest_max_file: string;
 	driver: Driver;
+	min_free: string;
+	capacity: string;
 	s3_endpoint: string;
 	s3_bucket: string;
 	s3_region: string;
@@ -222,24 +287,26 @@ export type Source = 'file' | 'service' | 'default';
 export function draftFrom(view: ConfigView | null, status?: FilesStatus | null) {
 	const sources = {} as Record<Field, Source>;
 	const c = status?.config;
+	const size = (n?: number) => (n ? formatSize(n) : undefined);
+	const st = c?.storage;
 	const svc: Partial<Draft> = c
 		? {
 				enabled: c.enabled,
 				guest_enabled: c.guest_enabled,
 				retention: c.retention_seconds ? formatDuration(c.retention_seconds) : undefined,
-				window: c.limits?.account?.window_seconds
-					? formatDuration(c.limits.account.window_seconds)
-					: undefined,
-				account_quota: c.limits?.account?.quota_bytes ? formatSize(c.limits.account.quota_bytes) : undefined,
-				account_max_file: c.limits?.account?.max_file_bytes
-					? formatSize(c.limits.account.max_file_bytes)
-					: undefined,
-				guest_quota: c.limits?.guest?.quota_bytes ? formatSize(c.limits.guest.quota_bytes) : undefined,
-				guest_max_file: c.limits?.guest?.max_file_bytes
-					? formatSize(c.limits.guest.max_file_bytes)
-					: undefined,
-				driver:
-					status?.storage?.driver === 's3' ? 's3' : status?.storage?.driver === 'local' ? 'local' : undefined
+				window: c.window_seconds ? formatDuration(c.window_seconds) : undefined,
+				account_quota: size(c.account?.quota_bytes),
+				account_max_file: size(c.account?.max_file_bytes),
+				guest_quota: size(c.guest?.quota_bytes),
+				guest_max_file: size(c.guest?.max_file_bytes),
+				driver: st?.driver === 's3' ? 's3' : st?.driver === 'local' ? 'local' : undefined,
+				min_free: st ? formatSize(st.min_free_bytes ?? 0) : undefined,
+				capacity: size(st?.capacity_bytes),
+				s3_endpoint: st?.s3?.endpoint || undefined,
+				s3_bucket: st?.s3?.bucket || undefined,
+				s3_region: st?.s3?.region || undefined,
+				s3_path_style: st?.s3 ? st.s3.path_style : undefined,
+				s3_public_base_url: st?.s3?.public_base_url || undefined
 			}
 		: {};
 	const draft = {} as Record<Field, unknown>;
@@ -259,7 +326,14 @@ export function draftFrom(view: ConfigView | null, status?: FilesStatus | null) 
 	return { draft: draft as unknown as Draft, sources };
 }
 
-const SIZE_FIELDS = ['account_quota', 'account_max_file', 'guest_quota', 'guest_max_file'] as const;
+const SIZE_FIELDS = [
+	'account_quota',
+	'account_max_file',
+	'guest_quota',
+	'guest_max_file',
+	'min_free',
+	'capacity'
+] as const;
 const DURATION_FIELDS = ['retention', 'window'] as const;
 type SizeField = (typeof SIZE_FIELDS)[number];
 type DurationField = (typeof DURATION_FIELDS)[number];
@@ -306,6 +380,8 @@ export function validate(d: Draft): Partial<Record<Field, string>> {
 	set('guest_quota', sizeError(d.guest_quota, MIN_QUOTA));
 	set('account_max_file', sizeError(d.account_max_file, MIN_FILE));
 	set('guest_max_file', sizeError(d.guest_max_file, MIN_FILE));
+	set('min_free', sizeError(d.min_free, 0));
+	set('capacity', sizeError(d.capacity, 0));
 	for (const [q, m] of [
 		['account_quota', 'account_max_file'],
 		['guest_quota', 'guest_max_file']
@@ -388,9 +464,22 @@ export function usedShare(used: number, quota: number): number {
 }
 
 export type StorageState = 'ok' | 'failing' | 'unknown';
-export function storageState(s?: FilesStatus | null): StorageState {
+export function storageState(s?: FilesStatus | null): StorageState | 'full' {
 	if (!s) return 'unknown';
-	return s.storage?.ok ? 'ok' : 'failing';
+	if (!s.storage?.ok) return 'failing';
+	return s.storage.full ? 'full' : 'ok';
+}
+
+/** Keys that only apply after the files service restarts. */
+export const RESTART_KEYS: string[] = Object.values(KEYS).filter(
+	(k) => k === 'files.storage.driver' || k.startsWith('files.storage.s3.')
+);
+
+/** The admin who deleted a file, from "admin:<name>". */
+export function deletedBy(by?: string | null): string {
+	if (!by) return '';
+	if (by.startsWith('admin:')) return by.slice(6);
+	return by === 'owner' || by === 'user' ? 'the uploader' : by;
 }
 
 export type SizeOrDuration = SizeField | DurationField;

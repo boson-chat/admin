@@ -4,7 +4,9 @@
 	import { api } from '$lib/api';
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
-	import { humanSize, type FilePage, type FileRecord } from '$lib/files';
+	import { deletedBy, humanSize, type FilePage, type FileRecord, type FileStatus } from '$lib/files';
+	import Dropdown from '$lib/components/Dropdown.svelte';
+	import type { DropdownOption } from '$lib/dropdown';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
@@ -22,12 +24,21 @@
 	let off = $state(false);
 	let loadingMore = $state(false);
 	let reason = $state('');
+	const statuses: DropdownOption<FileStatus>[] = [
+		{ value: 'live', label: 'Live', description: 'Still downloadable' },
+		{ value: 'all', label: 'All', description: 'Including deleted and expired' },
+		{ value: 'deleted', label: 'Deleted', description: 'By the uploader or a moderator' },
+		{ value: 'expired', label: 'Expired', description: 'Past the retention' },
+		{ value: 'pending', label: 'Uploading', description: 'Not finished yet' }
+	];
+	let status = $state<FileStatus>((page.url.searchParams.get('status') as FileStatus) || 'live');
 	let configured = $derived(session.info?.features.files !== false);
 
 	async function fetchPage(after = '') {
 		const p = new URLSearchParams();
 		if (user) p.set('user', user);
 		if (applied.trim()) p.set('q', applied.trim());
+		if (status !== 'live') p.set('status', status);
 		if (after) p.set('cursor', after);
 		return api<FilePage>('GET', `/files${p.size ? '?' + p : ''}`);
 	}
@@ -66,6 +77,7 @@
 	$effect(() => {
 		void user;
 		void applied;
+		void status;
 		load();
 	});
 
@@ -95,7 +107,16 @@
 		try {
 			const p = reason.trim() ? `?reason=${encodeURIComponent(reason.trim())}` : '';
 			await api('DELETE', `/files/${encodeURIComponent(f.id)}${p}`);
-			list = (list ?? []).map((x) => (x.id === f.id ? { ...x, deleted_at: new Date().toISOString() } : x));
+			list = (list ?? []).map((x) =>
+				x.id === f.id
+					? {
+							...x,
+							status: 'deleted',
+							deleted_at: new Date().toISOString(),
+							deleted_by: `admin:${session.info?.user.username ?? ''}`
+						}
+					: x
+			);
 			toasts.push(`Deleted ${f.name}. Its link stops working; it still counts against the uploader’s quota.`);
 		} catch (e) {
 			toasts.push(errorText(e), 'bad');
@@ -143,6 +164,10 @@
 			<input id="f-q" type="search" bind:value={q} placeholder="Search file names" autocomplete="off" />
 			<button class="btn" type="submit">Search</button>
 		</form>
+		<div class="status-filter">
+			<span class="lbl" id="f-status-l">Show</span>
+			<Dropdown options={statuses} bind:value={status} labelledby="f-status-l" />
+		</div>
 		<div class="who">
 			{#if user}
 				<span class="chip" data-testid="user-filter">
@@ -199,18 +224,26 @@
 								{/if}
 								<div class="muted small mono">
 									{kind(f.content_type)}{#if f.width && f.height}&nbsp;· {f.width}×{f.height}{/if}
-									{#if f.deleted_at}<span class="tag tag-bad">Deleted</span>{:else if expired(f)}<span
-											class="tag">Expired</span
-										>{/if}
+									{#if f.deleted_at}<span class="tag tag-bad">Deleted</span
+										>{#if deletedBy(f.deleted_by)}&nbsp;by {deletedBy(
+												f.deleted_by
+											)}{/if}{:else if f.status === 'pending'}<span class="tag">Uploading</span
+										>{:else if expired(f)}<span class="tag">Expired</span>{/if}
 								</div>
 							</td>
 							<td class="num">{humanSize(f.size)}</td>
 							<td>
-								{#if f.owner.kind === 'account'}
-									<a href="/users/{encodeURIComponent(f.owner.id)}">{f.username || f.owner.id}</a>
+								{#if f.user_kind === 'account'}
+									<a href="/users/{encodeURIComponent(f.user)}">{f.username || f.user}</a>
 								{:else}
 									<span class="tag">Guest</span>
-									<span class="muted small mono" title="Hashed address">{f.owner.ip_hash || f.owner.id}</span>
+									<a
+										class="muted small mono"
+										href="/files?user={encodeURIComponent(f.user)}&name={encodeURIComponent(
+											'guest ' + f.user
+										)}"
+										title="This guest’s files">{f.user}</a
+									>
 								{/if}
 							</td>
 							<td class="hide-s"><Time at={f.created_at} /></td>
@@ -224,7 +257,7 @@
 											>{/snippet}
 										<p>
 											The file and its link go away now, for everyone. The upload ({humanSize(f.size)}) keeps
-											counting against {f.owner.kind === 'account'
+											counting against {f.user_kind === 'account'
 												? f.username || 'the uploader'
 												: 'the guest'}’s quota.
 										</p>
@@ -272,6 +305,17 @@
 	.searchbox input {
 		flex: 1;
 		min-width: 0;
+	}
+	.status-filter {
+		display: grid;
+		gap: var(--space-1);
+	}
+	.lbl {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+		letter-spacing: var(--tracking-label);
+		text-transform: uppercase;
 	}
 	.who {
 		flex: 1 1 260px;

@@ -19,74 +19,93 @@ import (
 //	GET    /internal/files?user=&q=&cursor=&limit=
 //	DELETE /internal/files/{id}
 //	GET    /internal/files/usage?user=
+//	PUT    /internal/quota/{user}  {quota_bytes, max_file_bytes} (DELETE clears)
 
 // FilesEndpoints names what the panel needs from the files service.
-const FilesEndpoints = "GET /internal/files/status, GET /internal/files, DELETE /internal/files/{id} and GET /internal/files/usage"
+const FilesEndpoints = "GET /internal/files/status, GET /internal/files, DELETE /internal/files/{id}, GET /internal/files/usage and PUT /internal/quota/{user}"
 
 // FilesStorage is the storage backend's health.
 type FilesStorage struct {
-	Driver string `json:"driver"`
-	OK     bool   `json:"ok"`
-	Error  string `json:"error,omitempty"`
-	// Local: the data directory; s3: the bucket and endpoint.
-	Path     string `json:"path,omitempty"`
-	Bucket   string `json:"bucket,omitempty"`
-	Endpoint string `json:"endpoint,omitempty"`
-	// Free / total space of the volume (local driver; nil when unknown).
-	FreeBytes  *int64 `json:"free_bytes,omitempty"`
-	TotalBytes *int64 `json:"total_bytes,omitempty"`
+	Driver    string `json:"driver"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	LatencyMS int64  `json:"latency_ms"`
+	// Local: the volume (statfs); s3: the capacity budget minus stored
+	// bytes (nil: s3 without a capacity).
+	FreeBytes  *int64 `json:"free_bytes"`
+	TotalBytes *int64 `json:"total_bytes"`
+	// UsedBytes are the bodies the service has in storage.
+	UsedBytes     int64 `json:"used_bytes"`
+	MinFreeBytes  int64 `json:"min_free_bytes"`
+	CapacityBytes int64 `json:"capacity_bytes"`
+	// Full: new uploads are refused (507 storage_full).
+	Full bool `json:"full"`
 }
 
 // FilesTotals are the service's counters.
 type FilesTotals struct {
-	// Live files and their bytes (not yet expired or deleted).
-	Files int64 `json:"files"`
-	Bytes int64 `json:"bytes"`
-	// Uploads (incl. deleted / expired) still inside the quota window.
+	LiveFiles     int64 `json:"live_files"`
+	LiveBytes     int64 `json:"live_bytes"`
+	StoredBytes   int64 `json:"stored_bytes"`
 	WindowUploads int64 `json:"window_uploads"`
 	WindowBytes   int64 `json:"window_bytes"`
-	// Distinct uploaders inside the window.
-	Uploaders int64 `json:"uploaders"`
+	WindowUsers   int64 `json:"window_users"`
+	Pending       int64 `json:"pending"`
+	AwaitingPurge int64 `json:"awaiting_purge"`
 }
 
-// FilesLimits is one class's limits (account or guest), in bytes.
+// FilesLimits is one class's limits, in bytes.
 type FilesLimits struct {
-	QuotaBytes    int64 `json:"quota_bytes"`
-	WindowSeconds int64 `json:"window_seconds"`
-	MaxFileBytes  int64 `json:"max_file_bytes"`
+	QuotaBytes   int64 `json:"quota_bytes"`
+	MaxFileBytes int64 `json:"max_file_bytes"`
 }
 
 // FilesConfigEcho is the configuration the service runs with (file > env
-// > defaults), the same shape as its public GET /v1/config.
+// > defaults).
 type FilesConfigEcho struct {
-	Enabled      bool `json:"enabled"`
-	GuestEnabled bool `json:"guest_enabled"`
-	Limits       struct {
-		Account FilesLimits `json:"account"`
-		Guest   FilesLimits `json:"guest"`
-	} `json:"limits"`
-	RetentionSeconds int64 `json:"retention_seconds"`
+	Enabled          bool        `json:"enabled"`
+	RetentionSeconds int64       `json:"retention_seconds"`
+	WindowSeconds    int64       `json:"window_seconds"`
+	Account          FilesLimits `json:"account"`
+	Guest            FilesLimits `json:"guest"`
+	GuestEnabled     bool        `json:"guest_enabled"`
+	Storage          struct {
+		Driver string `json:"driver"`
+		S3     struct {
+			Endpoint      string `json:"endpoint"`
+			Bucket        string `json:"bucket"`
+			Region        string `json:"region"`
+			PathStyle     bool   `json:"path_style"`
+			PublicBaseURL string `json:"public_base_url"`
+		} `json:"s3"`
+		MinFreeBytes  int64 `json:"min_free_bytes"`
+		CapacityBytes int64 `json:"capacity_bytes"`
+	} `json:"storage"`
+	// Source: "file" (the config file's files: section) or "env".
+	Source string `json:"source"`
+}
+
+// FilesError is a recent background or storage error.
+type FilesError struct {
+	At    time.Time `json:"at"`
+	Op    string    `json:"op"`
+	Error string    `json:"error"`
 }
 
 // FilesStatus is GET /internal/files/status.
 type FilesStatus struct {
-	Version string           `json:"version,omitempty"`
+	OK      bool             `json:"ok"`
 	Storage FilesStorage     `json:"storage"`
 	Totals  FilesTotals      `json:"totals"`
 	Config  *FilesConfigEcho `json:"config,omitempty"`
-	// Errors are current problems (config rejected, storage failing...).
-	Errors []string `json:"errors"`
+	// ConfigFile is the stack config file's status (as /internal/config/status).
+	ConfigFile      json.RawMessage `json:"config_file,omitempty"`
+	RestartRequired []string        `json:"restart_required"`
+	Errors          []FilesError    `json:"errors"`
 }
 
-// FileOwner is who uploaded a file: an account (ID = auth user id) or a
-// guest (ID = the guest token id; IPHash the hashed client IP).
-type FileOwner struct {
-	Kind   string `json:"kind"`
-	ID     string `json:"id"`
-	IPHash string `json:"ip_hash,omitempty"`
-}
-
-// FileRecord is one upload in the moderation list.
+// FileRecord is one upload in the moderation list: the public view plus
+// its owner (an auth user id, or a guest key gst_…) and state.
 type FileRecord struct {
 	ID          string     `json:"id"`
 	URL         string     `json:"url"`
@@ -95,10 +114,13 @@ type FileRecord struct {
 	ContentType string     `json:"content_type"`
 	CreatedAt   time.Time  `json:"created_at"`
 	ExpiresAt   time.Time  `json:"expires_at"`
-	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 	Width       *int       `json:"width,omitempty"`
 	Height      *int       `json:"height,omitempty"`
-	Owner       FileOwner  `json:"owner"`
+	User        string     `json:"user"`
+	UserKind    string     `json:"user_kind"`
+	Status      string     `json:"status"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy   *string    `json:"deleted_by,omitempty"`
 }
 
 // FilePage is GET /internal/files.
@@ -107,11 +129,15 @@ type FilePage struct {
 	NextCursor string       `json:"next_cursor,omitempty"`
 }
 
+// FileStatuses filter the moderation list (live is the service's default).
+var FileStatuses = []string{"live", "all", "ready", "pending", "deleted", "expired"}
+
 // FilesQuery filters the moderation list.
 type FilesQuery struct {
-	// User is an account id or guest key.
+	// User is an auth user id or a guest key.
 	User   string
 	Q      string
+	Status string
 	Cursor string
 	Limit  int
 }
@@ -122,18 +148,33 @@ type FileFree struct {
 	At    time.Time `json:"at"`
 }
 
-// FilesUsage is GET /internal/files/usage?user= (the same shape as the
-// public /v1/me/usage).
+// FilesOverride is a per-user quota override (nil fields = the default).
+type FilesOverride struct {
+	QuotaBytes   *int64     `json:"quota_bytes"`
+	MaxFileBytes *int64     `json:"max_file_bytes"`
+	UpdatedAt    *time.Time `json:"updated_at,omitempty"`
+	UpdatedBy    *string    `json:"updated_by,omitempty"`
+}
+
+// FilesUsage is GET /internal/files/usage?user=.
 type FilesUsage struct {
-	Used          int64      `json:"used"`
-	Quota         int64      `json:"quota"`
-	WindowSeconds int64      `json:"window_seconds"`
-	MaxFile       int64      `json:"max_file"`
-	Frees         []FileFree `json:"frees"`
-	// Live files of the user right now (optional).
-	Files *int64 `json:"files,omitempty"`
-	// Override: a per-user quota set through PUT /internal/quota/{user}.
-	Override json.RawMessage `json:"override,omitempty"`
+	Used          int64          `json:"used"`
+	Quota         int64          `json:"quota"`
+	WindowSeconds int64          `json:"window_seconds"`
+	MaxFile       int64          `json:"max_file"`
+	Frees         []FileFree     `json:"frees"`
+	User          string         `json:"user"`
+	UserKind      string         `json:"user_kind"`
+	LiveFiles     int64          `json:"live_files"`
+	LiveBytes     int64          `json:"live_bytes"`
+	Override      *FilesOverride `json:"override"`
+	Defaults      FilesLimits    `json:"defaults"`
+}
+
+// FilesOverrideInput is PUT /internal/quota/{user}.
+type FilesOverrideInput struct {
+	QuotaBytes   *int64 `json:"quota_bytes"`
+	MaxFileBytes *int64 `json:"max_file_bytes"`
 }
 
 type FilesClientImpl interface {
@@ -141,6 +182,8 @@ type FilesClientImpl interface {
 	List(ctx context.Context, q FilesQuery) (*FilePage, error)
 	Delete(ctx context.Context, actor, id string) error
 	Usage(ctx context.Context, user string) (*FilesUsage, error)
+	// SetOverride sets a user's quota override; nil in clears it.
+	SetOverride(ctx context.Context, actor, user string, in *FilesOverrideInput) (*FilesUsage, error)
 }
 
 type FilesClient struct {
@@ -188,7 +231,10 @@ func (f *FilesClient) Status(ctx context.Context) (*FilesStatus, error) {
 		return nil, f.explain(err)
 	}
 	if out.Errors == nil {
-		out.Errors = []string{}
+		out.Errors = []FilesError{}
+	}
+	if out.RestartRequired == nil {
+		out.RestartRequired = []string{}
 	}
 	return &out, nil
 }
@@ -200,6 +246,9 @@ func (f *FilesClient) List(ctx context.Context, q FilesQuery) (*FilePage, error)
 	}
 	if q.Q != "" {
 		v.Set("q", q.Q)
+	}
+	if q.Status != "" {
+		v.Set("status", q.Status)
 	}
 	if q.Cursor != "" {
 		v.Set("cursor", q.Cursor)
@@ -232,6 +281,24 @@ func (f *FilesClient) Delete(ctx context.Context, actor, id string) error {
 func (f *FilesClient) Usage(ctx context.Context, user string) (*FilesUsage, error) {
 	var out FilesUsage
 	if err := f.c.callH(ctx, "files.usage", http.MethodGet, "/internal/files/usage?user="+url.QueryEscape(user), "", f.headers(""), nil, &out); err != nil {
+		return nil, f.explain(err)
+	}
+	if out.Frees == nil {
+		out.Frees = []FileFree{}
+	}
+	return &out, nil
+}
+
+func (f *FilesClient) SetOverride(ctx context.Context, actor, user string, in *FilesOverrideInput) (*FilesUsage, error) {
+	path := "/internal/quota/" + url.PathEscape(user)
+	if in == nil {
+		if err := f.c.callH(ctx, "files.quota.clear", http.MethodDelete, path, "", f.headers(actor), nil, nil); err != nil {
+			return nil, f.explain(err)
+		}
+		return f.Usage(ctx, user)
+	}
+	var out FilesUsage
+	if err := f.c.callH(ctx, "files.quota.set", http.MethodPut, path, "", f.headers(actor), in, &out); err != nil {
 		return nil, f.explain(err)
 	}
 	if out.Frees == nil {

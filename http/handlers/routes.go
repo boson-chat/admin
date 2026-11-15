@@ -34,6 +34,9 @@ func (h *Handlers) routes() []route {
 		{"GET /api/users/{id}/profile", admin.PermUsersView, false, h.userProfile},
 		{"GET /api/users/{id}/networks", admin.PermUsersView, false, h.userNetworks},
 		{"GET /api/users/{id}/files-usage", admin.PermUsersView, false, h.userFilesUsage},
+		// A user's uploads quota override (the Uploads limits are settings).
+		{"PUT /api/users/{id}/files-quota", admin.PermSettingsManage, true, h.setFilesQuota},
+		{"DELETE /api/users/{id}/files-quota", admin.PermSettingsManage, true, h.clearFilesQuota},
 		{"GET /api/users/{id}", admin.PermUsersView, false, h.getUser},
 		// auth 1.x role switch (user | admin): a role change.
 		{"PATCH /api/users/{id}", admin.PermRolesManage, false, h.updateUser},

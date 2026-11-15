@@ -2,10 +2,12 @@ package stackconfig
 
 import "testing"
 
+// Sizes as the files service reads and writes them (decimal units, binary
+// with KiB/MiB/...).
 func TestParseFormatSize(t *testing.T) {
 	for in, want := range map[string]int64{
-		"5GB": 5 << 30, "5 gb": 5 << 30, "500MB": 500 << 20, "25MiB": 25 << 20, "1.5GB": 1536 << 20,
-		"100": 100, "1KB": 1024, "2tb": 2 << 40, "7 k": 7 << 10,
+		"5GB": 5e9, "5 gb": 5e9, "500MB": 500e6, "25MiB": 25 << 20, "1.5GB": 1500e6,
+		"100": 100, "1KB": 1000, "2tb": 2e12, "7 k": 7000, "0": 0,
 	} {
 		got, err := ParseSize(in)
 		if err != nil || got != want {
@@ -17,7 +19,7 @@ func TestParseFormatSize(t *testing.T) {
 			t.Errorf("ParseSize(%q) accepted", bad)
 		}
 	}
-	for n, want := range map[int64]string{5 << 30: "5GB", 1536 << 20: "1536MB", 100: "100B", 1025: "1025B", 0: "0B"} {
+	for n, want := range map[int64]string{5e9: "5GB", 1500e6: "1500MB", 25 << 20: "25MiB", 100: "100", 1025: "1025", 0: "0"} {
 		if got := FormatSize(n); got != want {
 			t.Errorf("FormatSize(%d) = %q, want %q", n, got, want)
 		}
@@ -28,5 +30,10 @@ func TestParseFormatSize(t *testing.T) {
 	}
 	if v, err := k.Clean("100 mb"); err != nil || v != "100MB" {
 		t.Errorf("clean: %v %v", v, err)
+	}
+	if k, _ := KeyByName(KeyFilesMinFree); true {
+		if v, err := k.Clean("0"); err != nil || v != "0" {
+			t.Errorf("min_free 0: %v %v", v, err)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
+	"github.com/boson-chat/admin/internal/services/files"
 	"github.com/boson-chat/admin/internal/session"
 )
 
@@ -27,7 +28,7 @@ func (h *Handlers) listFiles(w http.ResponseWriter, r *http.Request, s *session.
 		}
 		return u.Username
 	}
-	p, err := h.Files.List(r.Context(), bosonapi.FilesQuery{User: q.Get("user"), Q: q.Get("q"), Cursor: q.Get("cursor"), Limit: limit}, names)
+	p, err := h.Files.List(r.Context(), bosonapi.FilesQuery{User: q.Get("user"), Q: q.Get("q"), Status: q.Get("status"), Cursor: q.Get("cursor"), Limit: limit}, names)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -45,6 +46,31 @@ func (h *Handlers) deleteFile(w http.ResponseWriter, r *http.Request, s *session
 
 func (h *Handlers) userFilesUsage(w http.ResponseWriter, r *http.Request, s *session.Session) {
 	u, err := h.Files.Usage(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+// PUT /api/users/{id}/files-quota {quota, max_file} sets a user's
+// override; DELETE clears it.
+func (h *Handlers) setFilesQuota(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	var in files.OverrideRequest
+	if err := decode(w, r, &in); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	u, err := h.Files.SetOverride(r.Context(), s.Snapshot().Username, r.PathValue("id"), &in)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (h *Handlers) clearFilesQuota(w http.ResponseWriter, r *http.Request, s *session.Session) {
+	u, err := h.Files.SetOverride(r.Context(), s.Snapshot().Username, r.PathValue("id"), nil)
 	if err != nil {
 		writeError(w, r, err)
 		return

@@ -32,17 +32,20 @@ const view = (keys: Record<string, unknown>): ConfigView => ({
 });
 
 describe('sizes', () => {
-	it('parses human units (binary)', () => {
-		expect(parseSize('5GB')).toBe(5 * 2 ** 30);
-		expect(parseSize('500 mb')).toBe(500 * 2 ** 20);
-		expect(parseSize('1.5GB')).toBe(1536 * 2 ** 20);
+	it('parses human units like the files service (decimal; KiB… binary)', () => {
+		expect(parseSize('5GB')).toBe(5e9);
+		expect(parseSize('500 mb')).toBe(500e6);
+		expect(parseSize('1.5GB')).toBe(1500e6);
 		expect(parseSize('25MiB')).toBe(25 * 2 ** 20);
+		expect(parseSize('0')).toBe(0);
 		expect(parseSize('lots')).toBeNull();
+		expect(parseSize('5 PB')).toBeNull();
 	});
 	it('formats in the file’s form and for people', () => {
-		expect(formatSize(5 * 2 ** 30)).toBe('5GB');
-		expect(formatSize(1536 * 2 ** 20)).toBe('1536MB');
-		expect(humanSize(1.2 * 2 ** 30)).toBe('1.2 GB');
+		expect(formatSize(5e9)).toBe('5GB');
+		expect(formatSize(1500e6)).toBe('1500MB');
+		expect(formatSize(25 * 2 ** 20)).toBe('25MiB');
+		expect(humanSize(1.2e9)).toBe('1.2 GB');
 		expect(humanSize(900)).toBe('900 B');
 	});
 });
@@ -66,17 +69,40 @@ describe('durations', () => {
 
 describe('the form', () => {
 	const status: FilesStatus = {
-		storage: { driver: 'local', ok: true },
-		totals: { files: 0, bytes: 0, window_uploads: 0, window_bytes: 0, uploaders: 0 },
+		ok: true,
+		storage: {
+			driver: 'local',
+			ok: true,
+			used_bytes: 0,
+			min_free_bytes: 2e9,
+			capacity_bytes: 0,
+			full: false
+		},
+		totals: {
+			live_files: 0,
+			live_bytes: 0,
+			stored_bytes: 0,
+			window_uploads: 0,
+			window_bytes: 0,
+			window_users: 0,
+			pending: 0,
+			awaiting_purge: 0
+		},
 		config: {
 			enabled: true,
 			guest_enabled: false,
 			retention_seconds: 86400,
-			limits: {
-				account: { quota_bytes: 10 * 2 ** 30, window_seconds: 259200, max_file_bytes: 200 * 2 ** 20 },
-				guest: { quota_bytes: 500 * 2 ** 20, window_seconds: 259200, max_file_bytes: 25 * 2 ** 20 }
+			window_seconds: 259200,
+			account: { quota_bytes: 10e9, max_file_bytes: 200e6 },
+			guest: { quota_bytes: 500e6, max_file_bytes: 25e6 },
+			storage: {
+				driver: 'local',
+				s3: { endpoint: '', bucket: '', region: 'auto', path_style: true, public_base_url: '' },
+				min_free_bytes: 2e9,
+				capacity_bytes: 0
 			}
 		},
+		restart_required: [],
 		errors: []
 	};
 	it('takes the file, then the service, then the defaults', () => {
@@ -87,7 +113,9 @@ describe('the form', () => {
 		expect(sources.retention).toBe('service');
 		expect(draft.guest_enabled).toBe(false);
 		expect(draft.s3_region).toBe('auto');
-		expect(sources.s3_region).toBe('default');
+		expect(sources.s3_region).toBe('service');
+		expect(draft.min_free).toBe('2GB');
+		expect(draft.capacity).toBe('');
 		const plain = draftFrom(null, null).draft;
 		expect(plain).toEqual(DEFAULTS);
 	});
@@ -118,11 +146,11 @@ describe('the form', () => {
 		expect(
 			usageLine(
 				{
-					used: 1.2 * 2 ** 30,
-					quota: 5 * 2 ** 30,
+					used: 1.2e9,
+					quota: 5e9,
 					window_seconds: 259200,
-					max_file: 100 * 2 ** 20,
-					frees: [{ bytes: 2 ** 30, at: '2026-11-14T20:00:00Z' }]
+					max_file: 100e6,
+					frees: [{ bytes: 1e9, at: '2026-11-14T20:00:00Z' }]
 				},
 				now
 			)

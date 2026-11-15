@@ -65,18 +65,25 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
 - **Uploads:** the files service (files people attach in the boson app,
   with a rolling quota; off by default). The switch, how long files are
   kept and the quota window (`72h`, `3d`), account and guest quota and
-  largest file (`5 GB`, `100MB`; 1 GB = 1024 MB, saved as `5GB`), guest
-  uploads on/off, and the storage driver (local disk or S3: endpoint,
-  bucket, region, path-style, optional public base URL) are `files.*` keys
-  of the config file (`settings.manage`). S3 keys stay in `.env`
+  largest file (`5 GB`, `100MB`; as the files service reads them, KB/MB/GB
+  are powers of 1000 and KiB/MiB/GiB powers of 1024; saved as `5GB`), guest
+  uploads on/off, the free space to keep (`storage.min_free`) and, for S3,
+  a capacity budget (`storage.capacity`), and the storage driver (local
+  disk or S3: endpoint, bucket, region, path-style, optional public base
+  URL; these apply after a restart of files, which the page says) are
+  `files.*` keys of the config file (`settings.manage`). S3 keys stay in `.env`
   (`FILES_S3_ACCESS_KEY` / `FILES_S3_SECRET_KEY`). S3 without an endpoint
   and bucket, or a largest file above its quota, is refused. A status card
-  shows storage health, free space, totals and the limits the service runs
-  with, polled every 15 s. Needs `BOSON_FILES_INTERNAL_URL`.
+  shows storage health (healthy, full, failing), stored bytes, free space,
+  totals, recent errors, settings waiting for a restart and the limits the
+  service runs with, polled every 15 s. Needs `BOSON_FILES_INTERNAL_URL`.
 - **Uploaded files:** moderation (`users.moderate` or `users.manage`):
-  search by file name, filter by uploader, open, delete (with an optional
-  reason; logged with the actor and sent as `X-Acting-User`). A user's page
-  shows their usage of the quota and when space frees up (`users.view`).
+  search by file name or id, filter by uploader and state (live, all,
+  deleted, expired, uploading), open, delete (with an optional reason;
+  logged with the actor and sent as `X-Acting-User`, shown as "deleted by").
+  A user's page shows their usage of the quota and when space frees up
+  (`users.view`), and sets or clears a per-user quota override
+  (`settings.manage`).
   Browser checks: `./scripts/e2e-files.sh`.
 - **Directory:** whether the network is listed in the boson directory
   (directory.boson.chat), and listing it with a network key and a DNS TXT
@@ -618,7 +625,7 @@ the page and the buttons.
 | `admin.panel` | sign in, `/api/session`, reading the config file (`GET /api/config`, `/raw`, `/status`), reading `/api/permissions`, `/api/roles`, `/api/roles/{id}` and its members |
 | `services.view` | Stack (`/api/overview`), Services list and logs (`GET /api/services…`) |
 | `services.manage` | restart / stop / start (`POST /api/services/{name}/{action}`); config file keys `irc.*`, `admin.tls_check_hosts` |
-| `settings.manage` | Network settings (`GET/PATCH /api/settings`); config file keys `network.*`, `auth.*`, `voice.*`, `nick_claim.*`, `files.*`; Uploads status (`GET /api/files/status`) |
+| `settings.manage` | Network settings (`GET/PATCH /api/settings`); config file keys `network.*`, `auth.*`, `voice.*`, `nick_claim.*`, `files.*`; Uploads status (`GET /api/files/status`), a user's uploads quota override (`PUT/DELETE /api/users/{id}/files-quota`) |
 | `directory.manage` | Directory (`/api/directory…`); config file keys `directory.*`, `admin.directory_*` |
 | `audit.view` | Audit log (`/api/audit`) |
 | `users.view` | Users, a user's page, sessions, activity, profile, uploads usage (`GET /api/users/{id}/files-usage`) |

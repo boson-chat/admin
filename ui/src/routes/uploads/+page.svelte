@@ -17,6 +17,7 @@
 		parseDuration,
 		parseSize,
 		storageState,
+		RESTART_KEYS,
 		usedShare,
 		validate,
 		type Draft,
@@ -58,6 +59,9 @@
 	let count = $derived(changeCount(change));
 	let dirty = $derived(count > 0);
 	let storage = $derived(storageState(status));
+	let restartChange = $derived(
+		[...Object.keys(change.set ?? {}), ...(change.unset ?? [])].some((k) => RESTART_KEYS.includes(k))
+	);
 	let filesStatus = $derived<ConfigServiceStatus[]>(
 		(stackConfig.statuses ?? []).filter((s) => s.name === 'files')
 	);
@@ -205,7 +209,9 @@
 			/>
 			{#if shownErrors[f]}<p class="err" id={errId(f)}>{shownErrors[f]}</p>{/if}
 			<small id="{id}-hint"
-				>{#if !shownErrors[f]}<span class="means">= {sizeHint(draft[f] as string, f)}</span>{/if}
+				>{#if !shownErrors[f] && sizeHint(draft[f] as string, f)}<span class="means"
+						>= {sizeHint(draft[f] as string, f)}</span
+					>{/if}
 				{hint}
 				{from(f)}</small
 			>
@@ -329,8 +335,9 @@
 					<div class="group-head">
 						<h2 id="fl-acc-h">Signed-in people</h2>
 						<p>
-							Per account, over the quota window. Sizes like <code>5GB</code> or <code>100 MB</code> (1 GB = 1024
-							MB).
+							Per account, over the quota window. Sizes like <code>5GB</code> or <code>100 MB</code> (1 GB =
+							1000 MB;
+							<code>GiB</code> for 1024).
 						</p>
 					</div>
 					<div class="card fields row2">
@@ -373,6 +380,32 @@
 					</div>
 					<div class="card fields">
 						<ChoiceGroup legend="Driver" name="driver" choices={drivers} bind:value={draft.driver} />
+						{#if restartChange}
+							<p class="restart-note small" data-testid="restart-note">
+								The driver and S3 settings apply after the files service restarts:
+								<code>docker compose up -d --force-recreate files</code> once saved.
+							</p>
+						{/if}
+						<div class="row2">
+							{@render sizeField(
+								'min_free',
+								'fl-minfree',
+								'Keep free',
+								draft.driver === 's3'
+									? 'Uploads that would leave less of the capacity are refused (507).'
+									: 'Uploads that would leave less free disk are refused (507).',
+								'2GB'
+							)}
+							{#if draft.driver === 's3'}
+								{@render sizeField(
+									'capacity',
+									'fl-capacity',
+									'Capacity',
+									'Total budget in the bucket. Empty: no guard (S3 has no free-space API). With MinIO on this server, keep it under the disk’s free space.',
+									'15GB'
+								)}
+							{/if}
+						</div>
 						{#if draft.driver === 's3'}
 							<div class="s3" data-testid="s3-fields">
 								<div class="field">
@@ -514,6 +547,7 @@
 				</div>
 				{#if status}
 					{@const st = status.storage}
+					{@const t = status.totals}
 					<dl>
 						<dt>Uploads</dt>
 						<dd>
@@ -524,47 +558,61 @@
 						</dd>
 						<dt>Storage</dt>
 						<dd>
-							<span class="tag {st.ok ? 'tag-ok' : 'tag-bad'}" data-testid="storage-state"
-								><span class="dot" aria-hidden="true"></span>{st.ok ? 'Healthy' : 'Failing'}</span
+							<span
+								class="tag {storage === 'ok' ? 'tag-ok' : storage === 'full' ? 'tag-warn' : 'tag-bad'}"
+								data-testid="storage-state"
+								><span class="dot" aria-hidden="true"></span>{storage === 'ok'
+									? 'Healthy'
+									: storage === 'full'
+										? 'Full'
+										: 'Failing'}</span
 							>
 							<span class="muted"
-								>{st.driver === 's3' ? 'S3' : st.driver === 'local' ? 'Local disk' : st.driver}</span
+								>{st.driver === 's3'
+									? 'S3'
+									: st.driver === 'local'
+										? 'Local disk'
+										: st.driver}{#if st.latency_ms !== undefined}&nbsp;·
+									{st.latency_ms} ms{/if}</span
 							>
 						</dd>
-						{#if st.bucket}
+						{#if st.driver === 's3' && status.config?.storage?.s3?.bucket}
 							<dt>Bucket</dt>
-							<dd class="wrap">{st.bucket}</dd>
+							<dd class="wrap">{status.config.storage.s3.bucket}</dd>
 						{/if}
+						<dt>Stored</dt>
+						<dd>{humanSize(st.used_bytes)}</dd>
 						{#if st.free_bytes !== undefined && st.free_bytes !== null}
-							<dt>Free space</dt>
+							<dt>Free</dt>
 							<dd>
 								{humanSize(st.free_bytes)}{#if st.total_bytes}<span class="muted">
 										of {humanSize(st.total_bytes)}</span
 									>{/if}
 							</dd>
+						{:else if st.driver === 's3'}
+							<dt>Free</dt>
+							<dd class="muted">No capacity set</dd>
 						{/if}
+						<dt>Keeps free</dt>
+						<dd>{humanSize(st.min_free_bytes)}</dd>
 						<dt>Live files</dt>
-						<dd>{status.totals.files.toLocaleString()} · {humanSize(status.totals.bytes)}</dd>
+						<dd>{t.live_files.toLocaleString()} · {humanSize(t.live_bytes)}</dd>
 						<dt>In the window</dt>
-						<dd>
-							{status.totals.window_uploads.toLocaleString()} uploads · {humanSize(
-								status.totals.window_bytes
-							)}
-						</dd>
+						<dd>{t.window_uploads.toLocaleString()} uploads · {humanSize(t.window_bytes)}</dd>
 						<dt>Uploaders</dt>
-						<dd>{status.totals.uploaders.toLocaleString()}</dd>
-						{#if status.version}
-							<dt>Version</dt>
-							<dd>{status.version}</dd>
+						<dd>{t.window_users.toLocaleString()}</dd>
+						{#if t.pending || t.awaiting_purge}
+							<dt>Pending</dt>
+							<dd>{t.pending} uploading · {t.awaiting_purge} to purge</dd>
 						{/if}
 					</dl>
-					{#if st.free_bytes && st.total_bytes}
+					{#if st.free_bytes !== undefined && st.free_bytes !== null && st.total_bytes}
 						{@const used = usedShare(st.total_bytes - st.free_bytes, st.total_bytes)}
 						<div
 							class="meter"
-							class:hot={used > 0.9}
+							class:hot={st.full || used > 0.9}
 							role="meter"
-							aria-label="Disk used"
+							aria-label="Storage used"
 							aria-valuemin="0"
 							aria-valuemax="100"
 							aria-valuenow={Math.round(used * 100)}
@@ -572,10 +620,23 @@
 							<span style:width="{used * 100}%"></span>
 						</div>
 					{/if}
+					{#if st.full}
+						<p class="full small" data-testid="storage-full">
+							New uploads are refused: less than {humanSize(st.min_free_bytes)} would be left free.
+						</p>
+					{/if}
+					{#if status.restart_required?.length}
+						<p class="restart small" data-testid="restart-required">
+							Restart files to apply {status.restart_required.join(', ')}:
+							<code>docker compose up -d --force-recreate files</code>
+						</p>
+					{/if}
 					{#if st.error || status.errors.length}
 						<ul class="problems">
 							{#if st.error}<li>{st.error}</li>{/if}
-							{#each status.errors as e, i (i)}<li>{e}</li>{/each}
+							{#each status.errors.slice(-5) as e, i (i)}<li>
+									<Time at={e.at} /> · {e.op}: {e.error}
+								</li>{/each}
 						</ul>
 					{/if}
 					{#if status.config}
@@ -586,13 +647,14 @@
 							<dd>{humanDuration(c.retention_seconds)}</dd>
 							<dt>Accounts</dt>
 							<dd>
-								{humanSize(c.limits.account.quota_bytes)} / {humanDuration(c.limits.account.window_seconds)},
-								≤ {humanSize(c.limits.account.max_file_bytes)} each
+								{humanSize(c.account.quota_bytes)} / {humanDuration(c.window_seconds)}, ≤ {humanSize(
+									c.account.max_file_bytes
+								)} each
 							</dd>
 							<dt>Guests</dt>
 							<dd>
-								{humanSize(c.limits.guest.quota_bytes)} / {humanDuration(c.limits.guest.window_seconds)}, ≤ {humanSize(
-									c.limits.guest.max_file_bytes
+								{humanSize(c.guest.quota_bytes)} / {humanDuration(c.window_seconds)}, ≤ {humanSize(
+									c.guest.max_file_bytes
 								)} each
 							</dd>
 						</dl>
@@ -720,6 +782,11 @@
 		border-top: 1px solid var(--border-soft);
 		border-bottom: 1px solid var(--border-soft);
 	}
+	.restart-note {
+		font-family: var(--font-mono);
+		line-height: 1.5;
+		color: var(--accent-text);
+	}
 	.means {
 		font-family: var(--font-mono);
 		color: var(--fg-2);
@@ -807,6 +874,16 @@
 	}
 	[data-storage='ok'] .dot {
 		background: var(--success);
+	}
+	[data-storage='full'] .dot {
+		background: var(--warn);
+	}
+	.full,
+	.restart {
+		font-family: var(--font-mono);
+		line-height: 1.5;
+		color: var(--warn-text);
+		overflow-wrap: anywhere;
 	}
 	[data-storage='failing'] .dot {
 		background: var(--danger);

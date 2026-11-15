@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ type fakeFiles struct {
 	deleted []string
 	actors  []string
 	queries []string
+	quotas  []string
 }
 
 func newFakeFiles(t *testing.T) *fakeFiles {
@@ -33,10 +35,10 @@ func newFakeFiles(t *testing.T) *fakeFiles {
 		}
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/internal/files/status":
-			_, _ = w.Write([]byte(`{"storage":{"driver":"local","ok":true,"free_bytes":1073741824},"totals":{"files":2,"bytes":2048,"window_uploads":3,"window_bytes":4096,"uploaders":2},"config":{"enabled":true,"guest_enabled":true,"limits":{"account":{"quota_bytes":5368709120,"window_seconds":259200,"max_file_bytes":104857600},"guest":{"quota_bytes":524288000,"window_seconds":259200,"max_file_bytes":26214400}},"retention_seconds":259200},"errors":[]}`))
+			_, _ = w.Write([]byte(`{"ok":true,"storage":{"driver":"local","ok":true,"error":"","latency_ms":1,"free_bytes":1000000000,"total_bytes":24000000000,"used_bytes":2048,"min_free_bytes":2000000000,"capacity_bytes":0,"full":true},"totals":{"live_files":2,"live_bytes":2048,"stored_bytes":2048,"window_uploads":3,"window_bytes":4096,"window_users":2,"pending":0,"awaiting_purge":0},"config":{"enabled":true,"retention_seconds":259200,"window_seconds":259200,"account":{"quota_bytes":5000000000,"max_file_bytes":100000000},"guest":{"quota_bytes":500000000,"max_file_bytes":25000000},"guest_enabled":true,"storage":{"driver":"local","s3":{"endpoint":"","bucket":"","region":"auto","path_style":true,"public_base_url":""},"min_free_bytes":2000000000,"capacity_bytes":0},"source":"file"},"config_file":{"ok":true},"restart_required":["files.storage.driver"],"errors":[{"at":"2026-11-14T10:00:00Z","op":"purge","error":"boom"}]}`))
 		case r.Method == "GET" && r.URL.Path == "/internal/files":
 			f.queries = append(f.queries, r.URL.RawQuery)
-			_, _ = w.Write([]byte(`{"files":[{"id":"aaaaaaaaaaaaaaaaaaaaaa","url":"https://files.example.com/f/aaaaaaaaaaaaaaaaaaaaaa/cat.png","name":"cat.png","size":1024,"content_type":"image/png","created_at":"2026-11-14T10:00:00Z","expires_at":"2026-11-17T10:00:00Z","owner":{"kind":"account","id":"usr_admin"}},{"id":"bbbbbbbbbbbbbbbbbbbbbb","url":"https://files.example.com/f/bbbbbbbbbbbbbbbbbbbbbb/x.pdf","name":"x.pdf","size":1024,"content_type":"application/pdf","created_at":"2026-11-14T10:00:00Z","expires_at":"2026-11-17T10:00:00Z","owner":{"kind":"guest","id":"g1","ip_hash":"ab12"}}],"next_cursor":"c2"}`))
+			_, _ = w.Write([]byte(`{"files":[{"id":"aaaaaaaaaaaaaaaaaaaaaa","url":"https://files.example.com/f/aaaaaaaaaaaaaaaaaaaaaa/cat.png","name":"cat.png","size":1024,"content_type":"image/png","created_at":"2026-11-14T10:00:00Z","expires_at":"2026-11-17T10:00:00Z","user":"usr_admin","user_kind":"account","status":"live"},{"id":"bbbbbbbbbbbbbbbbbbbbbb","url":"https://files.example.com/f/bbbbbbbbbbbbbbbbbbbbbb/x.pdf","name":"x.pdf","size":1024,"content_type":"application/pdf","created_at":"2026-11-14T10:00:00Z","expires_at":"2026-11-17T10:00:00Z","user":"gst_ab12","user_kind":"guest","status":"live"}],"next_cursor":"c2"}`))
 		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/internal/files/"):
 			id := strings.TrimPrefix(r.URL.Path, "/internal/files/")
 			if id == "missing" {
@@ -48,7 +50,17 @@ func newFakeFiles(t *testing.T) *fakeFiles {
 			f.actors = append(f.actors, r.Header.Get("X-Acting-User"))
 			w.WriteHeader(204)
 		case r.Method == "GET" && r.URL.Path == "/internal/files/usage":
-			_, _ = w.Write([]byte(`{"used":1024,"quota":5368709120,"window_seconds":259200,"max_file":104857600,"frees":[{"bytes":1024,"at":"2026-11-17T10:00:00Z"}]}`))
+			_, _ = w.Write([]byte(`{"used":1024,"quota":5000000000,"window_seconds":259200,"max_file":100000000,"frees":[{"bytes":1024,"at":"2026-11-17T10:00:00Z"}],"user":"usr_admin","user_kind":"account","live_files":1,"live_bytes":1024,"override":null,"defaults":{"quota_bytes":5000000000,"max_file_bytes":100000000}}`))
+		case strings.HasPrefix(r.URL.Path, "/internal/quota/"):
+			f.actors = append(f.actors, r.Header.Get("X-Acting-User"))
+			if r.Method == "DELETE" {
+				f.quotas = append(f.quotas, "clear")
+				w.WriteHeader(204)
+				return
+			}
+			b, _ := io.ReadAll(r.Body)
+			f.quotas = append(f.quotas, string(b))
+			_, _ = w.Write([]byte(`{"used":0,"quota":10000000000,"window_seconds":259200,"max_file":100000000,"frees":[],"user":"usr_admin","user_kind":"account","override":{"quota_bytes":10000000000,"max_file_bytes":null},"defaults":{"quota_bytes":5000000000,"max_file_bytes":100000000}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -77,22 +89,26 @@ func TestFilesStatusListDeleteUsage(t *testing.T) {
 	w := h.do("GET", "/api/files/status", nil, withCookie(c))
 	var v files.View
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != 200 || !v.Configured || v.Status == nil ||
-		v.Status.Config == nil || v.Status.Config.Limits.Account.QuotaBytes != 5<<30 || len(v.KeysEnv) != 2 {
+		v.Status.Config == nil || v.Status.Config.Account.QuotaBytes != 5e9 || len(v.KeysEnv) != 2 || !v.Status.Storage.Full ||
+		len(v.Status.Errors) != 1 || v.Status.RestartRequired[0] != "files.storage.driver" || v.Status.Totals.WindowUsers != 2 {
 		t.Fatalf("status: %d %s", w.Code, w.Body)
 	}
 	if w := h.do("GET", "/api/session", nil, withCookie(c)); !strings.Contains(w.Body.String(), `"files":true`) {
 		t.Fatalf("features: %s", w.Body)
 	}
 
-	w = h.do("GET", "/api/files?user=usr_admin&q=cat&cursor=c1", nil, withCookie(c))
+	if w := h.do("GET", "/api/files?status=bogus", nil, withCookie(c)); w.Code != 400 {
+		t.Fatalf("bad status: %d %s", w.Code, w.Body)
+	}
+	w = h.do("GET", "/api/files?user=usr_admin&q=cat&cursor=c1&status=all", nil, withCookie(c))
 	var p files.Page
 	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil || w.Code != 200 || len(p.Files) != 2 || p.NextCursor != "c2" {
 		t.Fatalf("list: %d %s", w.Code, w.Body)
 	}
-	if p.Files[0].Username != "root" || p.Files[1].Username != "" || p.Files[1].Owner.Kind != "guest" {
+	if p.Files[0].Username != "root" || p.Files[1].Username != "" || p.Files[1].UserKind != "guest" {
 		t.Fatalf("names: %+v", p.Files)
 	}
-	if len(f.queries) != 1 || !strings.Contains(f.queries[0], "user=usr_admin") || !strings.Contains(f.queries[0], "q=cat") || !strings.Contains(f.queries[0], "cursor=c1") {
+	if len(f.queries) != 1 || !strings.Contains(f.queries[0], "user=usr_admin") || !strings.Contains(f.queries[0], "q=cat") || !strings.Contains(f.queries[0], "cursor=c1") || !strings.Contains(f.queries[0], "status=all") {
 		t.Fatalf("query: %v", f.queries)
 	}
 
@@ -109,8 +125,23 @@ func TestFilesStatusListDeleteUsage(t *testing.T) {
 	}
 
 	w = h.do("GET", "/api/users/usr_admin/files-usage", nil, withCookie(c))
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"used":1024`) || !strings.Contains(w.Body.String(), `"frees":[{`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"used":1024`) || !strings.Contains(w.Body.String(), `"frees":[{`) ||
+		!strings.Contains(w.Body.String(), `"defaults":{"quota_bytes":5000000000`) {
 		t.Fatalf("usage: %d %s", w.Code, w.Body)
+	}
+
+	// Quota override: human sizes in, bytes out; empty fields = default.
+	w = h.do("PUT", "/api/users/usr_admin/files-quota", map[string]any{"quota": "10 GB", "max_file": ""}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || len(f.quotas) != 1 || f.quotas[0] != `{"quota_bytes":10000000000,"max_file_bytes":null}` || !strings.Contains(w.Body.String(), `"override":{"quota_bytes":10000000000`) {
+		t.Fatalf("override: %d %s %v", w.Code, w.Body, f.quotas)
+	}
+	w = h.do("PUT", "/api/users/usr_admin/files-quota", map[string]any{"quota": "1MB", "max_file": "2MB"}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 400 || errField(w.Body.String()) != "max_file" {
+		t.Fatalf("max > quota: %d %s", w.Code, w.Body)
+	}
+	w = h.do("DELETE", "/api/users/usr_admin/files-quota", nil, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || f.quotas[len(f.quotas)-1] != "clear" || !strings.Contains(w.Body.String(), `"used":1024`) {
+		t.Fatalf("clear: %d %s %v", w.Code, w.Body, f.quotas)
 	}
 }
 
@@ -196,12 +227,13 @@ func TestFilesSaveValidation(t *testing.T) {
 		stackconfig.KeyFilesS3Bucket:       "boson-files",
 		stackconfig.KeyFilesS3Region:       "auto",
 		stackconfig.KeyFilesS3PathStyle:    true,
+		stackconfig.KeyFilesMinFree:        "3 gb",
 	})
 	if code != 200 {
 		t.Fatalf("save: %d %s", code, body)
 	}
 	b, _ := os.ReadFile(path)
-	for _, want := range []string{"files:", "enabled: true", "retention: 48h", "quota: 10GB", "max_file: 1536MB", "guest:", "driver: s3", "endpoint: http://minio:9000", "bucket: boson-files", "path_style: true"} {
+	for _, want := range []string{"files:", "enabled: true", "retention: 48h", "quota: 10GB", "max_file: 1500MB", "min_free: 3GB", "guest:", "driver: s3", "endpoint: http://minio:9000", "bucket: boson-files", "path_style: true"} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("file lacks %q:\n%s", want, b)
 		}
@@ -228,6 +260,7 @@ func TestFilesPermissions(t *testing.T) {
 	}
 	for _, w := range []*httptest.ResponseRecorder{
 		h.do("GET", "/api/files/status", nil, opts...),
+		h.do("PUT", "/api/users/usr_mod/files-quota", map[string]any{"quota": "1GB"}, opts...),
 		h.do("PATCH", "/api/config", map[string]any{"set": map[string]any{stackconfig.KeyFilesEnabled: true}}, opts...),
 	} {
 		if w.Code != 403 || !strings.Contains(w.Body.String(), admin.PermSettingsManage) {

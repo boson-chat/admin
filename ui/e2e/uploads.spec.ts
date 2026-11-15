@@ -117,6 +117,19 @@ test('S3 storage needs an endpoint and a bucket; keys stay in .env', async ({ pa
 	await expect(page.locator('aside')).toContainText('boson-files');
 });
 
+test('storage full and restart-only settings', async ({ page }) => {
+	await fakeState(page, { full: true, restart: ['files.storage.driver'] });
+	await open(page);
+	await expect(page.getByTestId('storage-state')).toContainText('Full');
+	await expect(page.getByTestId('storage-full')).toContainText('less than 2 GB');
+	await expect(page.getByTestId('restart-required')).toContainText('files.storage.driver');
+	await page.getByText('S3-compatible', { exact: true }).click();
+	await expect(page.getByTestId('restart-note')).toBeVisible();
+	await expect(page.getByRole('textbox', { name: 'Capacity' })).toBeVisible();
+	await page.getByRole('textbox', { name: 'Keep free' }).fill('3 gb');
+	await expect(page.getByText('= 3 GB')).toBeVisible();
+});
+
 test('shows a failing storage', async ({ page }) => {
 	await fakeState(page, { storage_ok: false });
 	await open(page);
@@ -152,8 +165,16 @@ test('moderation: search, filter by uploader, delete', async ({ page }) => {
 	await dlg.getByRole('button', { name: 'Delete file' }).click();
 	await expect(row).toContainText('Deleted');
 	await expect(row.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+	// Live files only by default: after a reload it's gone; "All" shows who deleted it.
+	await page.reload();
+	await expect(page.locator('tbody tr')).toHaveCount(4);
+	await page.getByRole('combobox', { name: 'Show' }).click();
+	await page.getByRole('option', { name: /^All/ }).click();
+	const gone = page.locator('tbody tr').filter({ hasText: 'clip.mp4' });
+	await expect(gone).toContainText('Deleted by admin');
+	await expect(gone.getByRole('button', { name: 'Delete' })).toHaveCount(0);
 
-	await page.goto('/files?user=usr_admin&name=admin');
+	await page.goto('/files?user=usr_admin&name=admin&status=all');
 	await expect(page.getByTestId('user-filter')).toContainText('admin');
 	await expect(page.locator('tbody tr')).toHaveCount(3);
 });
@@ -163,6 +184,13 @@ test('a user’s page shows their usage', async ({ page }) => {
 	const u = page.getByTestId('files-usage');
 	await expect(u).toContainText('of 5 GB');
 	await expect(u).toContainText('1 GB frees in 20 h');
+	await expect(page.getByTestId('files-override')).toContainText('Network default: 5 GB per window');
+	await page.getByRole('textbox', { name: 'Quota' }).fill('10 GB');
+	await page.getByRole('button', { name: 'Set override' }).click();
+	await expect(u).toContainText('of 10 GB');
+	await expect(page.getByTestId('files-override')).toContainText('set by admin');
+	await page.getByRole('button', { name: 'Back to default' }).click();
+	await expect(u).toContainText('of 5 GB');
 	await page.getByRole('link', { name: 'Their files' }).click();
 	await expect(page).toHaveURL(/\/files\?user=usr_admin/);
 });

@@ -11,6 +11,7 @@ package files
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,6 +52,8 @@ type ServiceImpl interface {
 	List(ctx context.Context, q bosonapi.FilesQuery, names Resolver) (*Page, error)
 	Delete(ctx context.Context, actor, id, reason string) error
 	Usage(ctx context.Context, userID string) (*bosonapi.FilesUsage, error)
+	// SetOverride sets (in) or clears (nil) a user's quota override.
+	SetOverride(ctx context.Context, actor, userID string, in *OverrideRequest) (*bosonapi.FilesUsage, error)
 	// Check is a stackconfig.CheckFunc for the files section.
 	Check(ctx context.Context, after, before stackconfig.Lookup) error
 }
@@ -120,7 +123,10 @@ func (s *Service) List(ctx context.Context, q bosonapi.FilesQuery, names Resolve
 	if s.o.Client == nil {
 		return nil, ErrOff
 	}
-	q.User, q.Q = strings.TrimSpace(q.User), strings.TrimSpace(q.Q)
+	q.User, q.Q, q.Status = strings.TrimSpace(q.User), strings.TrimSpace(q.Q), strings.TrimSpace(q.Status)
+	if q.Status != "" && !slices.Contains(bosonapi.FileStatuses, q.Status) {
+		return nil, apperr.InvalidField("status", "status must be one of "+strings.Join(bosonapi.FileStatuses, ", "))
+	}
 	if len(q.Q) > maxQuery || len(q.User) > maxQuery || len(q.Cursor) > 1024 {
 		return nil, apperr.InvalidField("q", "the search is too long")
 	}
@@ -135,13 +141,13 @@ func (s *Service) List(ctx context.Context, q bosonapi.FilesQuery, names Resolve
 	seen := map[string]string{}
 	for i, f := range p.Files {
 		out.Files[i] = Record{FileRecord: f}
-		if names == nil || f.Owner.Kind != "account" || f.Owner.ID == "" {
+		if names == nil || f.UserKind != "account" || f.User == "" {
 			continue
 		}
-		name, ok := seen[f.Owner.ID]
+		name, ok := seen[f.User]
 		if !ok && len(seen) < maxNames {
-			name = names(ctx, f.Owner.ID)
-			seen[f.Owner.ID] = name
+			name = names(ctx, f.User)
+			seen[f.User] = name
 		}
 		out.Files[i].Username = name
 	}
@@ -178,6 +184,68 @@ func (s *Service) Usage(ctx context.Context, userID string) (*bosonapi.FilesUsag
 		return nil, ErrOff
 	}
 	return s.o.Client.Usage(ctx, userID)
+}
+
+// OverrideRequest is PUT /api/users/{id}/files-quota: sizes like 10GB;
+// "" or absent = the class default.
+type OverrideRequest struct {
+	Quota   string `json:"quota"`
+	MaxFile string `json:"max_file"`
+}
+
+func (s *Service) SetOverride(ctx context.Context, actor, userID string, in *OverrideRequest) (*bosonapi.FilesUsage, error) {
+	if s.o.Client == nil {
+		return nil, ErrOff
+	}
+	var body *bosonapi.FilesOverrideInput
+	if in != nil {
+		body = &bosonapi.FilesOverrideInput{}
+		parse := func(field, v string, min int64) (*int64, error) {
+			if strings.TrimSpace(v) == "" {
+				return nil, nil
+			}
+			n, err := stackconfig.ParseSize(v)
+			if err != nil {
+				return nil, apperr.InvalidField(field, err.Error())
+			}
+			if n < min || n > stackconfig.MaxSize {
+				return nil, apperr.InvalidField(field, "must be from "+stackconfig.FormatSize(min)+" to "+stackconfig.FormatSize(stackconfig.MaxSize))
+			}
+			return &n, nil
+		}
+		var err error
+		if body.QuotaBytes, err = parse("quota", in.Quota, stackconfig.MinQuota); err != nil {
+			return nil, err
+		}
+		if body.MaxFileBytes, err = parse("max_file", in.MaxFile, stackconfig.MinFile); err != nil {
+			return nil, err
+		}
+		if body.QuotaBytes != nil && body.MaxFileBytes != nil && *body.MaxFileBytes > *body.QuotaBytes {
+			return nil, apperr.InvalidField("max_file", "the largest file can't be bigger than the quota")
+		}
+		if body.QuotaBytes == nil && body.MaxFileBytes == nil {
+			body = nil // nothing left: clear it
+		}
+	}
+	u, err := s.o.Client.SetOverride(ctx, actor, userID, body)
+	ev := logger.FromCtx(ctx).Info()
+	outcome := "success"
+	if err != nil {
+		ev, outcome = logger.FromCtx(ctx).Warn().Err(err), "error"
+	}
+	ev = ev.Str("actor", actor).Str("action", "files.quota").Str("outcome", outcome).Str("user", userID)
+	if body != nil {
+		if body.QuotaBytes != nil {
+			ev = ev.Int64("quota_bytes", *body.QuotaBytes)
+		}
+		if body.MaxFileBytes != nil {
+			ev = ev.Int64("max_file_bytes", *body.MaxFileBytes)
+		}
+	} else {
+		ev = ev.Bool("cleared", true)
+	}
+	ev.Msg("uploads quota override")
+	return u, err
 }
 
 // Check refuses a files: section that can't work: the s3 driver without
