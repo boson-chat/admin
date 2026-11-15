@@ -62,6 +62,15 @@ func (p Pane) empty() bool {
 	return p.BG == "" && p.Image == "" && p.Dim == nil && p.Blur == nil && p.Position == ""
 }
 
+// Variant is the theme for the other base (variants.<base>): its own
+// colours, nick tuning and pane overrides, laid over the primary's panes
+// field by field. Radius, font and the logo / sign-in images are shared.
+type Variant struct {
+	Colors map[string]string `json:"colors,omitempty" yaml:"colors,omitempty"`
+	Nick   *Nick             `json:"nick,omitempty" yaml:"nick,omitempty"`
+	Panes  map[string]Pane   `json:"panes,omitempty" yaml:"panes,omitempty"`
+}
+
 // Theme is a boson-theme/1 document. Field order is the order written to
 // the config file.
 type Theme struct {
@@ -72,6 +81,8 @@ type Theme struct {
 	Radius  *int              `json:"radius,omitempty" yaml:"radius,omitempty"`
 	Font    string            `json:"font,omitempty" yaml:"font,omitempty"`
 	Panes   map[string]Pane   `json:"panes,omitempty" yaml:"panes,omitempty"`
+	// Variants holds at most the base that isn't Base.
+	Variants map[string]Variant `json:"variants,omitempty" yaml:"variants,omitempty"`
 	// Image URLs: public documents only (the directory push and the auth
 	// service's GET /v1/branding fill them).
 	Logo            string `json:"logo,omitempty" yaml:"-"`
@@ -118,38 +129,9 @@ func Clean(v any) (Theme, error) {
 		}
 		t.Base = s
 	}
-	if c, ok := m["colors"]; ok && c != nil {
-		cm, ok := c.(map[string]any)
-		if !ok {
-			return t, fmt.Errorf("colors must be an object of token: #rrggbb")
-		}
-		for _, tok := range Tokens {
-			raw, ok := cm[tok]
-			if !ok || raw == nil || raw == "" {
-				continue
-			}
-			s, _ := raw.(string)
-			c, err := Color(s)
-			if err != nil {
-				return t, fmt.Errorf("colors.%s: %v", tok, err)
-			}
-			if t.Colors == nil {
-				t.Colors = map[string]string{}
-			}
-			t.Colors[tok] = c
-		}
-	}
-	if n, ok := m["nick"]; ok && n != nil {
-		nm, ok := n.(map[string]any)
-		if !ok {
-			return t, fmt.Errorf("nick must be {saturation, lightness}")
-		}
-		sat, ok1 := num(nm["saturation"])
-		lig, ok2 := num(nm["lightness"])
-		if !ok1 || !ok2 || sat < 0 || sat > 100 || lig < 0 || lig > 100 {
-			return t, fmt.Errorf("nick saturation and lightness must be whole numbers from 0 to 100")
-		}
-		t.Nick = &Nick{Saturation: sat, Lightness: lig}
+	var err error
+	if t.Colors, t.Nick, err = cleanColorsNick(m); err != nil {
+		return t, err
 	}
 	if r, ok := m["radius"]; ok && r != nil {
 		n, ok := num(r)
@@ -165,30 +147,110 @@ func Clean(v any) (Theme, error) {
 		}
 		t.Font = s
 	}
-	if p, ok := m["panes"]; ok && p != nil {
-		pm, ok := p.(map[string]any)
+	if t.Panes, err = cleanPanes(m); err != nil {
+		return t, err
+	}
+	if v, ok := m["variants"]; ok && v != nil {
+		vm, ok := v.(map[string]any)
 		if !ok {
-			return t, fmt.Errorf("panes must be an object")
+			return t, fmt.Errorf("variants must be an object of dark / light")
 		}
-		for _, name := range Panes {
-			raw, ok := pm[name]
-			if !ok || raw == nil {
+		for _, base := range []string{"dark", "light"} {
+			raw, ok := vm[base]
+			// Only the other base: a variant for the theme's own is dropped.
+			if !ok || raw == nil || base == t.Base {
 				continue
 			}
-			pane, err := cleanPane(raw)
-			if err != nil {
-				return t, fmt.Errorf("panes.%s: %v", name, err)
+			vv, ok := raw.(map[string]any)
+			if !ok {
+				return t, fmt.Errorf("variants.%s must be an object", base)
 			}
-			if pane.empty() {
-				continue
+			var variant Variant
+			if variant.Colors, variant.Nick, err = cleanColorsNick(vv); err != nil {
+				return t, fmt.Errorf("variants.%s.%v", base, err)
 			}
-			if t.Panes == nil {
-				t.Panes = map[string]Pane{}
+			if variant.Panes, err = cleanPanes(vv); err != nil {
+				return t, fmt.Errorf("variants.%s.%v", base, err)
 			}
-			t.Panes[name] = pane
+			if t.Variants == nil {
+				t.Variants = map[string]Variant{}
+			}
+			t.Variants[base] = variant
 		}
 	}
 	return t, nil
+}
+
+// cleanColorsNick checks the colors and nick of the primary or a variant.
+func cleanColorsNick(m map[string]any) (map[string]string, *Nick, error) {
+	var colors map[string]string
+	var nick *Nick
+	if c, ok := m["colors"]; ok && c != nil {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("colors must be an object of token: #rrggbb")
+		}
+		for _, tok := range Tokens {
+			raw, ok := cm[tok]
+			if !ok || raw == nil || raw == "" {
+				continue
+			}
+			s, _ := raw.(string)
+			c, err := Color(s)
+			if err != nil {
+				return nil, nil, fmt.Errorf("colors.%s: %v", tok, err)
+			}
+			if colors == nil {
+				colors = map[string]string{}
+			}
+			colors[tok] = c
+		}
+	}
+	if n, ok := m["nick"]; ok && n != nil {
+		nm, ok := n.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("nick must be {saturation, lightness}")
+		}
+		sat, ok1 := num(nm["saturation"])
+		lig, ok2 := num(nm["lightness"])
+		if !ok1 || !ok2 || sat < 0 || sat > 100 || lig < 0 || lig > 100 {
+			return nil, nil, fmt.Errorf("nick saturation and lightness must be whole numbers from 0 to 100")
+		}
+		nick = &Nick{Saturation: sat, Lightness: lig}
+	}
+	return colors, nick, nil
+}
+
+// cleanPanes checks the panes of the primary or a variant; empty panes are
+// dropped.
+func cleanPanes(m map[string]any) (map[string]Pane, error) {
+	p, ok := m["panes"]
+	if !ok || p == nil {
+		return nil, nil
+	}
+	pm, ok := p.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("panes must be an object")
+	}
+	var out map[string]Pane
+	for _, name := range Panes {
+		raw, ok := pm[name]
+		if !ok || raw == nil {
+			continue
+		}
+		pane, err := cleanPane(raw)
+		if err != nil {
+			return nil, fmt.Errorf("panes.%s: %v", name, err)
+		}
+		if pane.empty() {
+			continue
+		}
+		if out == nil {
+			out = map[string]Pane{}
+		}
+		out[name] = pane
+	}
+	return out, nil
 }
 
 func cleanPane(v any) (Pane, error) {
@@ -251,16 +313,40 @@ func num(v any) (int, bool) {
 
 // ---- images ----
 
-// Slots are the images a theme can have, as branding.images keys.
-var Slots = []string{"logo", "logo_wide", "login_background",
-	"panes.servers.image", "panes.channels.image", "panes.messages.image", "panes.members.image"}
+// Slots are the images a theme can have, as branding.images keys: the
+// shared logo and sign-in images, each pane's image, and each pane's image
+// in a variant (variants.<base>.panes.<pane>.image; without one the
+// variant uses the primary pane's).
+var Slots = func() []string {
+	out := []string{"logo", "logo_wide", "login_background"}
+	for _, prefix := range []string{"", "variants.dark.", "variants.light."} {
+		for _, p := range Panes {
+			out = append(out, prefix+"panes."+p+".image")
+		}
+	}
+	return out
+}()
+
+// SlotVariant is the variant a slot belongs to ("" for the primary's).
+func SlotVariant(slot string) string {
+	for _, b := range []string{"dark", "light"} {
+		if strings.HasPrefix(slot, "variants."+b+".") {
+			return b
+		}
+	}
+	return ""
+}
 
 // ValidSlot reports whether s is a branding.images key.
 func ValidSlot(s string) bool { return slices.Contains(Slots, s) }
 
 // FileStem is the slot's file name prefix in config/branding/
-// (panes.messages.image → pane-messages).
+// (panes.messages.image → pane-messages, variants.light.panes.messages.image
+// → pane-messages-light).
 func FileStem(slot string) string {
+	if v := SlotVariant(slot); v != "" {
+		return FileStem(strings.TrimPrefix(slot, "variants."+v+".")) + "-" + v
+	}
 	if p, ok := strings.CutPrefix(slot, "panes."); ok {
 		return "pane-" + strings.TrimSuffix(p, ".image")
 	}
@@ -268,7 +354,7 @@ func FileStem(slot string) string {
 }
 
 // FileRe matches the files the panel writes: <stem>-<hash>.<ext>.
-var FileRe = regexp.MustCompile(`^[a-z_]+(-[a-z]+)?-[0-9a-f]{12,64}\.(webp|svg)$`)
+var FileRe = regexp.MustCompile(`^[a-z_]+(-[a-z]+){0,2}-[0-9a-f]{12,64}\.(webp|svg)$`)
 
 // WithImages fills t's image URLs from images (slot → URL).
 func (t Theme) WithImages(images map[string]string) Theme {

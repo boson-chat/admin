@@ -137,6 +137,84 @@ test('editing updates the preview and warns about contrast', async ({ page }) =>
 	await expect(page.getByText(/Text on Background is/)).toBeHidden();
 });
 
+test('light version: add, edit, preview, save, remove', async ({ page }) => {
+	await page.goto('/branding');
+	const preview = page.getByRole('img', { name: /preview of the boson app/i });
+	const cssVar = (name: string) =>
+		preview.evaluate((el, n) => getComputedStyle(el.parentElement!).getPropertyValue(n), name);
+	const modes = page.getByRole('radiogroup', { name: 'Mode' });
+	await expect(modes.getByRole('radio', { name: /Dark/ })).toHaveAttribute('aria-checked', 'true');
+
+	// No light version yet: light mode shows the dark theme.
+	await modes.getByRole('radio', { name: /Light/ }).click();
+	await expect(page.getByRole('heading', { name: 'No light version' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: /^Colours/ })).toBeHidden();
+	await expect.poll(() => cssVar('--accent')).toBe('#8b5cf6');
+
+	// From Boson's Daylight.
+	await page.getByRole('button', { name: 'Also provide a light version' }).click();
+	await expect.poll(() => cssVar('--bg')).toBe('#f4f4f0');
+	const accent = page.getByRole('textbox', { name: /^Accent --accent$/ });
+	await accent.fill('#6d28d9');
+	await accent.blur();
+	await expect.poll(() => cssVar('--accent')).toBe('#6d28d9');
+	// The contrast guard looks at the version being edited.
+	const text = page.getByRole('textbox', { name: /^Text --fg$/ });
+	await text.fill('#eeeeee');
+	await text.blur();
+	await expect(page.getByText(/Hard to read in light mode/)).toBeVisible();
+	await text.fill('#1b1b21');
+	await text.blur();
+	await expect(page.getByText(/Hard to read/)).toBeHidden();
+	await page.getByRole('button', { name: 'Save theme' }).click();
+	await expect(page.getByText(/Light mode · As saved/)).toBeVisible();
+
+	// Saved through the config: the dark primary is untouched.
+	const saved = await page.evaluate(async () => {
+		const v = await (await fetch('/api/config')).json();
+		return v.keys.find((k: { key: string }) => k.key === 'branding.theme').value;
+	});
+	expect(saved.base).toBe('dark');
+	expect(saved.colors.accent).toBe('#8b5cf6');
+	expect(saved.variants.light.colors.accent).toBe('#6d28d9');
+
+	await page.reload();
+	await modes.getByRole('radio', { name: /Dark/ }).click();
+	await expect.poll(() => cssVar('--accent')).toBe('#8b5cf6');
+	await modes.getByRole('radio', { name: /Light/ }).click();
+	await expect.poll(() => cssVar('--accent')).toBe('#6d28d9');
+	await expect(page.getByRole('button', { name: 'Remove light version' })).toBeVisible();
+});
+
+for (const mode of ['dark', 'light'] as const) {
+	test(`branding page with a light version (${mode})`, async ({ page }, info) => {
+		await setTheme(page, mode);
+		await page.goto('/branding');
+		const preview = page.getByRole('img', { name: /preview of the boson app/i });
+		await expect(preview).toBeVisible();
+		await shoot(page, `${dir}/branding-variant-dark-${info.project.name}-${mode}.png`);
+		await page.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: /Light/ }).click();
+		await expect(page.getByRole('button', { name: 'Remove light version' })).toBeVisible();
+		await noHorizontalOverflow(page);
+		await shoot(page, `${dir}/branding-variant-light-${info.project.name}-${mode}.png`);
+	});
+}
+
+test('remove the light version', async ({ page }) => {
+	await page.goto('/branding');
+	const modes = page.getByRole('radiogroup', { name: 'Mode' });
+	await modes.getByRole('radio', { name: /Light/ }).click();
+	await page.getByRole('button', { name: 'Remove light version' }).click();
+	await expect(page.getByRole('heading', { name: 'No light version' })).toBeVisible();
+	await page.getByRole('button', { name: 'Save theme' }).click();
+	await expect(page.getByText(/As saved/)).toBeVisible();
+	const saved = await page.evaluate(async () => {
+		const v = await (await fetch('/api/config')).json();
+		return v.keys.find((k: { key: string }) => k.key === 'branding.theme').value;
+	});
+	expect(saved.variants).toBeUndefined();
+});
+
 for (const mode of ['dark', 'light'] as const) {
 	test(`emails page (${mode})`, async ({ page }, info) => {
 		await setTheme(page, mode);

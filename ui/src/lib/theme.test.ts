@@ -7,7 +7,10 @@ import {
 	contrast,
 	contrastIssues,
 	emptyTheme,
+	imagesFor,
 	nickColor,
+	themeFor,
+	variantFromBuiltin,
 	resolve,
 	sameTheme,
 	themeVars,
@@ -150,5 +153,61 @@ describe('themeVars', () => {
 	it('nick colours follow the theme', () => {
 		expect(nickColor('ada', { version: 1, base: 'light' })).toMatch(/60% 38%\)$/);
 		expect(nickColor('ada', emptyTheme())).toBe(nickColor('ada', emptyTheme()));
+	});
+});
+
+describe('variants', () => {
+	const t: NetworkTheme = {
+		version: 1,
+		base: 'dark',
+		colors: { accent: '#8b5cf6', bg: '#0b0b12' },
+		radius: 6,
+		font: 'system',
+		panes: { messages: { dim: 0.7, blur: 6, bg: '#000000' } },
+		variants: { light: { colors: { accent: '#6D28D9' }, panes: { messages: { dim: 0.3 } } } }
+	};
+
+	it('clean keeps only the other base, empty variants included', () => {
+		expect(clean(t).variants).toEqual({
+			light: { colors: { accent: '#6d28d9' }, panes: { messages: { dim: 0.3 } } }
+		});
+		expect(clean({ ...t, variants: { dark: { colors: { bg: '#ffffff' } } } }).variants).toBeUndefined();
+		expect(clean({ version: 1, base: 'light', variants: { dark: {} } }).variants).toEqual({ dark: {} });
+		expect(sameTheme(t, { ...t, variants: undefined })).toBe(false);
+	});
+
+	it('themeFor picks the variant for its mode and overlays panes', () => {
+		expect(themeFor(t, 'dark').variants).toBeUndefined();
+		expect(themeFor(t, 'dark').colors?.accent).toBe('#8b5cf6');
+		const light = themeFor(t, 'light');
+		expect(light.base).toBe('light');
+		expect(light.colors).toEqual({ accent: '#6D28D9' });
+		expect(light.radius).toBe(6);
+		expect(light.font).toBe('system');
+		expect(light.panes?.messages).toEqual({ dim: 0.3, blur: 6, bg: '#000000' });
+		expect(resolve(light).bg).toBe(DAYLIGHT.colors.bg.toLowerCase());
+		// No variant: the primary everywhere.
+		expect(themeFor({ ...t, variants: undefined }, 'light').base).toBe('dark');
+	});
+
+	it('imagesFor uses a variant pane image over the primary one', () => {
+		const imgs = {
+			'panes.messages.image': '/a.webp',
+			'variants.light.panes.messages.image': '/b.webp'
+		} as const;
+		expect(imagesFor(t, 'light', imgs)['panes.messages.image']).toBe('/b.webp');
+		expect(imagesFor(t, 'dark', imgs)['panes.messages.image']).toBe('/a.webp');
+		expect(imagesFor(t, 'light', { 'panes.messages.image': '/a.webp' })['panes.messages.image']).toBe(
+			'/a.webp'
+		);
+	});
+
+	it('starts a variant from Boson’s built-in', () => {
+		const v = variantFromBuiltin('light');
+		expect(v.colors?.bg).toBe(DAYLIGHT.colors.bg.toLowerCase());
+		expect(v.nick).toEqual(DAYLIGHT.nick);
+		expect(contrastIssues(themeFor({ version: 1, base: 'dark', variants: { light: v } }, 'light'))).toEqual(
+			[]
+		);
 	});
 });
