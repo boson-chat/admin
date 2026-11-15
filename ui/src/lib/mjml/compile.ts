@@ -38,6 +38,7 @@ export const PLACEHOLDERS = [
 	'link',
 	'logo_url',
 	'accent',
+	'accent_text',
 	'footer',
 	'sender_name'
 ] as const;
@@ -51,6 +52,7 @@ export const PLACEHOLDER_HELP: Record<string, string> = {
 	link: 'The link to click (a URL)',
 	logo_url: 'The logo’s URL',
 	accent: 'The accent colour, #rrggbb',
+	accent_text: 'A text colour readable on the accent (for button labels)',
 	footer: 'The footer line',
 	sender_name: 'The sender name'
 };
