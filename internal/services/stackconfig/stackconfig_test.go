@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -288,5 +289,27 @@ func TestRoomsAcceptBareIDs(t *testing.T) {
 	}
 	if _, err := k.Clean("7 days"); err == nil {
 		t.Error("bad duration accepted")
+	}
+}
+
+func TestRoleChannelKeys(t *testing.T) {
+	a, ok := KeyByName(KeyRoleChannelsAutojoin)
+	if !ok || a.Kind != KindBool || a.Perm != admin.PermSettingsManage {
+		t.Fatalf("autojoin key: %+v", a)
+	}
+	r, ok := KeyByName(KeyRoleChannelsRejoin)
+	if !ok || r.Kind != KindEnum {
+		t.Fatalf("rejoin key: %+v", r)
+	}
+	for _, v := range []string{RejoinLogin, RejoinOnce} {
+		if got, err := r.Clean(v); err != nil || got != v {
+			t.Errorf("%s: %v %v", v, got, err)
+		}
+	}
+	if _, err := r.Clean("always"); err == nil {
+		t.Error("rejoin took always")
+	}
+	if !slices.Contains(readsSections("ergo"), "roles") || !slices.Contains(readsSections("auth"), "roles") {
+		t.Error("auth and ergo read roles:")
 	}
 }

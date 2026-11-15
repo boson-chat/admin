@@ -7,21 +7,24 @@
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { defaultWhois, hexOk, nameProblem, permLock, roleLock, vhostFor, vhostProblem } from '$lib/perms';
 	import { refreshSession, rolesState } from '$lib/roles.svelte';
+	import { EVERYONE } from '$lib/channels';
 	import type { Permission, Role, RoleMember, User } from '$lib/types';
 	import Time from '$lib/components/Time.svelte';
 	import ColorPicker from '$lib/components/ColorPicker.svelte';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import Notice from '$lib/components/Notice.svelte';
+	import RoleChannels from '$lib/components/RoleChannels.svelte';
 	import RoleChip from '$lib/components/RoleChip.svelte';
 	import State from '$lib/components/State.svelte';
 	import Toggle from '$lib/components/Toggle.svelte';
 	import UserSearch from '$lib/components/UserSearch.svelte';
 	import WhoisPreview from '$lib/components/WhoisPreview.svelte';
 
-	type Tab = 'display' | 'permissions' | 'irc' | 'members';
+	type Tab = 'display' | 'permissions' | 'channels' | 'irc' | 'members';
 	const tabs: { id: Tab; label: string }[] = [
 		{ id: 'display', label: 'Display' },
 		{ id: 'permissions', label: 'Permissions' },
+		{ id: 'channels', label: 'Channels' },
 		{ id: 'irc', label: 'IRC' },
 		{ id: 'members', label: 'Members' }
 	];
@@ -334,295 +337,306 @@
 	</div>
 
 	<div id="panel-{tab}" role="tabpanel" aria-labelledby="tab-{tab}">
-		<form class="panel" onsubmit={save}>
-			<fieldset disabled={!!lock} class="fs">
-				{#if tab === 'display'}
-					<div class="stack">
-						<label class="field">
-							<span>Name</span>
-							<input
-								type="text"
-								bind:this={nameInput}
-								bind:value={draft.name}
-								maxlength="32"
-								disabled={!!role.builtin}
-								aria-invalid={!!nameIssue || undefined}
-								aria-describedby="name-hint"
-							/>
-							<small id="name-hint"
-								>{#if role.builtin}Built-in roles keep their names.{:else if nameIssue}{nameIssue}{:else}Up to
-									32 letters, digits, spaces, - and _. It also names the IRC oper class{#if role.slug}
-										(<code>{role.slug}</code>){/if}.{/if}</small
-							>
-						</label>
-
-						<div class="field">
-							<span id="color-l">Colour</span>
-							<ColorPicker bind:value={draft.color} labelledby="color-l" disabled={!!lock} />
-							<small>Used for the role’s name in member lists and on chips like this one.</small>
-							<div class="sample">
-								<RoleChip role={{ id: role.id, name: draft.name.trim() || 'role', color: draft.color }} />
-							</div>
-						</div>
-
-						<div class="toggles">
-							<Toggle
-								label="Show holders separately"
-								detail="In the app’s member list, people with this role are grouped under its name."
-								bind:checked={draft.hoist}
-								disabled={!!lock}
-							/>
-							<Toggle
-								label="Allow anyone to mention this role"
-								detail="People can @mention the role to notify everyone who has it."
-								bind:checked={draft.mentionable}
-								disabled={!!lock}
-							/>
-						</div>
-
-						<section class="danger" aria-labelledby="del-h">
-							<h3 id="del-h">Delete this role</h3>
-							{#if role.builtin}
-								<p class="muted">
-									Built-in roles can’t be deleted. You can rename it, recolour it and change its permissions.
-								</p>
-							{:else}
-								<p class="muted">
-									{role.member_count === 0
-										? 'Nobody has it.'
-										: `${role.member_count} ${role.member_count === 1 ? 'person loses' : 'people lose'} it and its permissions straight away, and its oper class on their next IRC login.`}
-								</p>
-								<Confirm
-									title="Delete {role.name}?"
-									action="Delete role"
-									danger
-									typed={role.name}
-									onconfirm={remove}
-								>
-									{#snippet trigger(open)}
-										<button type="button" class="btn btn-danger btn-small" onclick={open} disabled={!!lock}
-											>Delete role</button
-										>
-									{/snippet}
-									This can’t be undone. Its WHOIS line and vhost go with it.
-								</Confirm>
-							{/if}
-						</section>
-					</div>
-				{:else if tab === 'permissions'}
-					<div class="perm-tools">
-						<label class="search">
-							<span class="sr-only">Filter permissions</span>
-							<input
-								type="search"
-								placeholder="Filter permissions"
-								bind:value={filter}
-								autocomplete="off"
-								spellcheck="false"
-							/>
-						</label>
-						{#if !isOwnerRole && !lock}
-							<span class="muted small">{draft.permissions.length} on</span>
-						{/if}
-					</div>
-					{#if isOwnerRole}
-						<Notice tone="info"
-							>Owner has every permission and outranks every role. Its permissions can’t be narrowed.</Notice
-						>
-					{:else if !lock && lockedPerms && !v.owner}
-						<Notice tone="info">
-							{lockedPerms === 1 ? 'One permission is' : `${lockedPerms} permissions are`} locked: you can only
-							grant permissions you have yourself.
-						</Notice>
-					{/if}
-					{#each grouped as g (g.id)}
-						<section class="pgroup" aria-labelledby="pg-{g.id}">
-							<div class="pg-head">
-								<h3 id="pg-{g.id}">{g.label}</h3>
-								<p>{g.detail}</p>
-								{#if g.id === 'irc' && !isOwnerRole}
-									<p class="warn-line">
-										{#if ircPerms}Holders are IRC operators (oper class <code>{role.slug ?? role.name}</code>)
-											while any of these is on.{:else}Turning any of these on makes holders IRC operators.{/if}
-									</p>
-								{/if}
-							</div>
-							<ul>
-								{#each g.items as p (p.id)}
-									{@const why = isOwnerRole ? 'Owner has every permission.' : lock || permLock(p.id, v)}
-									<li title={why || undefined}>
-										<Toggle
-											label={p.label}
-											detail={p.description}
-											checked={isOwnerRole || draft.permissions.includes(p.id)}
-											disabled={!!why}
-											onchange={(on) => setPerm(p.id, on)}
-										/>
-										{#if p.label !== p.id}<code class="pid">{p.id}</code>{/if}
-									</li>
-								{/each}
-							</ul>
-						</section>
-					{:else}
-						<p class="muted">No permission matches “{filter}”.</p>
-					{/each}
-				{:else if tab === 'irc'}
-					<div class="irc">
+		{#if tab === 'channels'}
+			<RoleChannels
+				roleId={role.builtin === 'member' ? EVERYONE : role.id}
+				roleName={role.builtin === 'member' ? 'Everyone' : role.name}
+				everyone={role.builtin === 'member'}
+				{lock}
+			/>
+		{:else}
+			<form class="panel" onsubmit={save}>
+				<fieldset disabled={!!lock} class="fs">
+					{#if tab === 'display'}
 						<div class="stack">
-							<div class="toggles">
-								<Toggle
-									label="Oper up on IRC"
-									detail={ircPerms
-										? 'Always on while the role has IRC permissions. Holders get them and the WHOIS line on their next IRC login.'
-										: 'Holders become IRC operators with this role’s WHOIS line. It takes effect on their next IRC login.'}
-									checked={draft.irc.oper || ircPerms}
-									onchange={(on) => draft && (draft.irc.oper = on)}
-									disabled={!!lock || ircPerms}
-								/>
-							</div>
 							<label class="field">
-								<span>WHOIS line</span>
-								<span class="affix">
-									<span class="pre" aria-hidden="true">{previewNick || 'nick'}</span>
-									<input
-										type="text"
-										bind:value={draft.irc.whois_line}
-										maxlength="120"
-										placeholder={defaultWhois(draft.name || role.name)}
-										aria-describedby="whois-hint"
-										spellcheck="true"
-									/>
-								</span>
-								<small id="whois-hint"
-									>What <code>/whois</code> says about holders, after their nick. Empty uses “{defaultWhois(
-										draft.name || role.name
-									)}”. {draft.irc.whois_line.length}/120.</small
-								>
-							</label>
-							<label class="field">
-								<span>Vhost</span>
-								<span class="affix">
-									<input
-										type="text"
-										bind:this={vhostEl}
-										bind:value={draft.irc.vhost}
-										maxlength="80"
-										placeholder={'{username}.staff.' + ircHost.replace(/^irc\./, '')}
-										spellcheck="false"
-										autocapitalize="off"
-										aria-invalid={!!vhostIssue || undefined}
-										aria-describedby="vhost-hint"
-									/>
-									<button type="button" class="btn btn-small ins" onclick={insertUsername} disabled={!!lock}
-										>{'{username}'}</button
-									>
-								</span>
-								<small id="vhost-hint" class:bad={!!vhostIssue}>
-									{#if vhostIssue}{vhostIssue}{:else}Replaces the hidden host in their hostmask, so everyone
-										on IRC sees the role. Leave it empty to keep the server’s cloak.{/if}
-								</small>
-							</label>
-							<label class="field narrow">
-								<span>Preview as</span>
+								<span>Name</span>
 								<input
 									type="text"
-									bind:value={previewNick}
-									maxlength="30"
+									bind:this={nameInput}
+									bind:value={draft.name}
+									maxlength="32"
+									disabled={!!role.builtin}
+									aria-invalid={!!nameIssue || undefined}
+									aria-describedby="name-hint"
+								/>
+								<small id="name-hint"
+									>{#if role.builtin}Built-in roles keep their names.{:else if nameIssue}{nameIssue}{:else}Up
+										to 32 letters, digits, spaces, - and _. It also names the IRC oper class{#if role.slug}
+											(<code>{role.slug}</code>){/if}.{/if}</small
+								>
+							</label>
+
+							<div class="field">
+								<span id="color-l">Colour</span>
+								<ColorPicker bind:value={draft.color} labelledby="color-l" disabled={!!lock} />
+								<small>Used for the role’s name in member lists and on chips like this one.</small>
+								<div class="sample">
+									<RoleChip role={{ id: role.id, name: draft.name.trim() || 'role', color: draft.color }} />
+								</div>
+							</div>
+
+							<div class="toggles">
+								<Toggle
+									label="Show holders separately"
+									detail="In the app’s member list, people with this role are grouped under its name."
+									bind:checked={draft.hoist}
+									disabled={!!lock}
+								/>
+								<Toggle
+									label="Allow anyone to mention this role"
+									detail="People can @mention the role to notify everyone who has it."
+									bind:checked={draft.mentionable}
+									disabled={!!lock}
+								/>
+							</div>
+
+							<section class="danger" aria-labelledby="del-h">
+								<h3 id="del-h">Delete this role</h3>
+								{#if role.builtin}
+									<p class="muted">
+										Built-in roles can’t be deleted. You can rename it, recolour it and change its
+										permissions.
+									</p>
+								{:else}
+									<p class="muted">
+										{role.member_count === 0
+											? 'Nobody has it.'
+											: `${role.member_count} ${role.member_count === 1 ? 'person loses' : 'people lose'} it and its permissions straight away, and its oper class on their next IRC login.`}
+									</p>
+									<Confirm
+										title="Delete {role.name}?"
+										action="Delete role"
+										danger
+										typed={role.name}
+										onconfirm={remove}
+									>
+										{#snippet trigger(open)}
+											<button type="button" class="btn btn-danger btn-small" onclick={open} disabled={!!lock}
+												>Delete role</button
+											>
+										{/snippet}
+										This can’t be undone. Its WHOIS line and vhost go with it.
+									</Confirm>
+								{/if}
+							</section>
+						</div>
+					{:else if tab === 'permissions'}
+						<div class="perm-tools">
+							<label class="search">
+								<span class="sr-only">Filter permissions</span>
+								<input
+									type="search"
+									placeholder="Filter permissions"
+									bind:value={filter}
+									autocomplete="off"
 									spellcheck="false"
-									autocapitalize="off"
 								/>
 							</label>
+							{#if !isOwnerRole && !lock}
+								<span class="muted small">{draft.permissions.length} on</span>
+							{/if}
 						</div>
-						<WhoisPreview
-							nick={previewNick}
-							host={shownHost}
-							whois={draft.irc.whois_line.trim() || defaultWhois(draft.name || role.name)}
-							oper={draft.irc.oper || ircPerms}
-							server={ircHost}
-						/>
-					</div>
-				{:else if tab === 'members'}
-					{#if role.builtin === 'member'}
-						<State kind="empty" title="Everyone is a Member">
-							Member is the role every account has. Its permissions are the baseline for the whole network;
-							give people more with other roles.
-						</State>
-					{:else}
-						<div class="add">
-							<UserSearch
-								label="Add a member"
-								placeholder="Add someone: search by username or email"
-								exclude={members?.map((m) => m.id) ?? []}
-								onpick={addMember}
-								disabled={!!lock || !!memberBusy}
+						{#if isOwnerRole}
+							<Notice tone="info"
+								>Owner has every permission and outranks every role. Its permissions can’t be narrowed.</Notice
+							>
+						{:else if !lock && lockedPerms && !v.owner}
+							<Notice tone="info">
+								{lockedPerms === 1 ? 'One permission is' : `${lockedPerms} permissions are`} locked: you can only
+								grant permissions you have yourself.
+							</Notice>
+						{/if}
+						{#each grouped as g (g.id)}
+							<section class="pgroup" aria-labelledby="pg-{g.id}">
+								<div class="pg-head">
+									<h3 id="pg-{g.id}">{g.label}</h3>
+									<p>{g.detail}</p>
+									{#if g.id === 'irc' && !isOwnerRole}
+										<p class="warn-line">
+											{#if ircPerms}Holders are IRC operators (oper class <code>{role.slug ?? role.name}</code
+												>) while any of these is on.{:else}Turning any of these on makes holders IRC
+												operators.{/if}
+										</p>
+									{/if}
+								</div>
+								<ul>
+									{#each g.items as p (p.id)}
+										{@const why = isOwnerRole ? 'Owner has every permission.' : lock || permLock(p.id, v)}
+										<li title={why || undefined}>
+											<Toggle
+												label={p.label}
+												detail={p.description}
+												checked={isOwnerRole || draft.permissions.includes(p.id)}
+												disabled={!!why}
+												onchange={(on) => setPerm(p.id, on)}
+											/>
+											{#if p.label !== p.id}<code class="pid">{p.id}</code>{/if}
+										</li>
+									{/each}
+								</ul>
+							</section>
+						{:else}
+							<p class="muted">No permission matches “{filter}”.</p>
+						{/each}
+					{:else if tab === 'irc'}
+						<div class="irc">
+							<div class="stack">
+								<div class="toggles">
+									<Toggle
+										label="Oper up on IRC"
+										detail={ircPerms
+											? 'Always on while the role has IRC permissions. Holders get them and the WHOIS line on their next IRC login.'
+											: 'Holders become IRC operators with this role’s WHOIS line. It takes effect on their next IRC login.'}
+										checked={draft.irc.oper || ircPerms}
+										onchange={(on) => draft && (draft.irc.oper = on)}
+										disabled={!!lock || ircPerms}
+									/>
+								</div>
+								<label class="field">
+									<span>WHOIS line</span>
+									<span class="affix">
+										<span class="pre" aria-hidden="true">{previewNick || 'nick'}</span>
+										<input
+											type="text"
+											bind:value={draft.irc.whois_line}
+											maxlength="120"
+											placeholder={defaultWhois(draft.name || role.name)}
+											aria-describedby="whois-hint"
+											spellcheck="true"
+										/>
+									</span>
+									<small id="whois-hint"
+										>What <code>/whois</code> says about holders, after their nick. Empty uses “{defaultWhois(
+											draft.name || role.name
+										)}”. {draft.irc.whois_line.length}/120.</small
+									>
+								</label>
+								<label class="field">
+									<span>Vhost</span>
+									<span class="affix">
+										<input
+											type="text"
+											bind:this={vhostEl}
+											bind:value={draft.irc.vhost}
+											maxlength="80"
+											placeholder={'{username}.staff.' + ircHost.replace(/^irc\./, '')}
+											spellcheck="false"
+											autocapitalize="off"
+											aria-invalid={!!vhostIssue || undefined}
+											aria-describedby="vhost-hint"
+										/>
+										<button type="button" class="btn btn-small ins" onclick={insertUsername} disabled={!!lock}
+											>{'{username}'}</button
+										>
+									</span>
+									<small id="vhost-hint" class:bad={!!vhostIssue}>
+										{#if vhostIssue}{vhostIssue}{:else}Replaces the hidden host in their hostmask, so everyone
+											on IRC sees the role. Leave it empty to keep the server’s cloak.{/if}
+									</small>
+								</label>
+								<label class="field narrow">
+									<span>Preview as</span>
+									<input
+										type="text"
+										bind:value={previewNick}
+										maxlength="30"
+										spellcheck="false"
+										autocapitalize="off"
+									/>
+								</label>
+							</div>
+							<WhoisPreview
+								nick={previewNick}
+								host={shownHost}
+								whois={draft.irc.whois_line.trim() || defaultWhois(draft.name || role.name)}
+								oper={draft.irc.oper || ircPerms}
+								server={ircHost}
 							/>
 						</div>
-						{#if membersError}
-							<State kind="error">
-								{membersError}
-								{#snippet action()}<button type="button" class="btn btn-small" onclick={() => loadMembers()}
-										>Try again</button
-									>{/snippet}
+					{:else if tab === 'members'}
+						{#if role.builtin === 'member'}
+							<State kind="empty" title="Everyone is a Member">
+								Member is the role every account has. Its permissions are the baseline for the whole network;
+								give people more with other roles.
 							</State>
-						{:else if members === null}
-							<State kind="loading" title="Loading members…" />
-						{:else if members.length === 0}
-							<State kind="empty" title="Nobody has {role.name} yet"
-								>Search above to give it to someone.</State
-							>
 						{:else}
-							<ul class="members">
-								{#each members as m (m.id)}
-									<li>
-										<div class="who">
-											{#if session.can('users.view')}<a class="uname" href="/users/{m.id}">{m.username}</a
-												>{:else}<span class="uname">{m.username}</span>{/if}
-											{#if m.display_name && m.display_name !== m.username}<span class="muted small"
-													>{m.display_name}</span
-												>{/if}
-										</div>
-										<div class="others muted small">
-											{#if m.disabled}<span class="tag tag-bad">Disabled</span>{/if}
-											{#if m.assigned_at}Since <Time at={m.assigned_at} />{/if}
-										</div>
-										<button
-											type="button"
-											class="btn btn-small btn-ghost"
-											onclick={() => removeMember(m)}
-											disabled={!!lock || memberBusy === m.id}
-											aria-label="Remove {role.name} from {m.username}"
-											>{memberBusy === m.id ? 'Removing…' : 'Remove'}</button
-										>
-									</li>
-								{/each}
-							</ul>
-							{#if membersNext}
-								<button type="button" class="btn btn-small more" onclick={() => loadMembers(membersNext)}
-									>Show more</button
+							<div class="add">
+								<UserSearch
+									label="Add a member"
+									placeholder="Add someone: search by username or email"
+									exclude={members?.map((m) => m.id) ?? []}
+									onpick={addMember}
+									disabled={!!lock || !!memberBusy}
+								/>
+							</div>
+							{#if membersError}
+								<State kind="error">
+									{membersError}
+									{#snippet action()}<button type="button" class="btn btn-small" onclick={() => loadMembers()}
+											>Try again</button
+										>{/snippet}
+								</State>
+							{:else if members === null}
+								<State kind="loading" title="Loading members…" />
+							{:else if members.length === 0}
+								<State kind="empty" title="Nobody has {role.name} yet"
+									>Search above to give it to someone.</State
 								>
+							{:else}
+								<ul class="members">
+									{#each members as m (m.id)}
+										<li>
+											<div class="who">
+												{#if session.can('users.view')}<a class="uname" href="/users/{m.id}">{m.username}</a
+													>{:else}<span class="uname">{m.username}</span>{/if}
+												{#if m.display_name && m.display_name !== m.username}<span class="muted small"
+														>{m.display_name}</span
+													>{/if}
+											</div>
+											<div class="others muted small">
+												{#if m.disabled}<span class="tag tag-bad">Disabled</span>{/if}
+												{#if m.assigned_at}Since <Time at={m.assigned_at} />{/if}
+											</div>
+											<button
+												type="button"
+												class="btn btn-small btn-ghost"
+												onclick={() => removeMember(m)}
+												disabled={!!lock || memberBusy === m.id}
+												aria-label="Remove {role.name} from {m.username}"
+												>{memberBusy === m.id ? 'Removing…' : 'Remove'}</button
+											>
+										</li>
+									{/each}
+								</ul>
+								{#if membersNext}
+									<button type="button" class="btn btn-small more" onclick={() => loadMembers(membersNext)}
+										>Show more</button
+									>
+								{/if}
 							{/if}
 						{/if}
 					{/if}
-				{/if}
-			</fieldset>
+				</fieldset>
 
-			{#if tab !== 'members' && !lock}
-				<div class="bar" class:dirty={changes > 0}>
-					<p class="meta" aria-live="polite">
-						{#if changes}{changes === 1 ? 'One unsaved change' : `${changes} unsaved changes`}{:else}All
-							changes saved{/if}
-					</p>
-					<div class="btns">
-						<button class="btn btn-ghost" type="button" disabled={!changes || saving} onclick={discard}
-							>Discard</button
-						>
-						<button class="btn btn-primary" disabled={!changes || saving || !!vhostIssue || !!nameIssue}
-							>{saving ? 'Saving…' : 'Save changes'}</button
-						>
+				{#if tab !== 'members' && !lock}
+					<div class="bar" class:dirty={changes > 0}>
+						<p class="meta" aria-live="polite">
+							{#if changes}{changes === 1 ? 'One unsaved change' : `${changes} unsaved changes`}{:else}All
+								changes saved{/if}
+						</p>
+						<div class="btns">
+							<button class="btn btn-ghost" type="button" disabled={!changes || saving} onclick={discard}
+								>Discard</button
+							>
+							<button class="btn btn-primary" disabled={!changes || saving || !!vhostIssue || !!nameIssue}
+								>{saving ? 'Saving…' : 'Save changes'}</button
+							>
+						</div>
 					</div>
-				</div>
-			{/if}
-		</form>
+				{/if}
+			</form>
+		{/if}
 	</div>
 {/if}
 

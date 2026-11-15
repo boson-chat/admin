@@ -7,6 +7,8 @@
 // small default layout.
 //
 //   node e2e/fake-auth.mjs            # public :18680, internal :18681
+//   FAKE_AUTH_ROLES=1 node e2e/fake-auth.mjs   # an auth with roles (admin is
+//                                          # Owner) and role channels
 //   POST <internal>/__mode {"mode":"old"}  # act like auth 1.10.x: ignore
 //                                          # "email", send no from
 //
@@ -31,6 +33,71 @@ const access = new Set();
 const refresh = new Set();
 let n = 0;
 let mode = 'new';
+const ROLES = process.env.FAKE_AUTH_ROLES === '1';
+const PANEL_PERMS = [
+	'admin.panel',
+	'audit.view',
+	'directory.manage',
+	'invites.manage',
+	'roles.manage',
+	'roles.owner',
+	'services.manage',
+	'services.view',
+	'settings.manage',
+	'sso.manage',
+	'users.manage',
+	'users.moderate',
+	'users.view'
+];
+const role = (id, name, color, position, builtin, permissions, member_count) => ({
+	id,
+	name,
+	slug: name.toLowerCase(),
+	color,
+	position,
+	builtin,
+	permissions,
+	irc: { whois_line: null, vhost: null, oper: position >= 500 },
+	hoist: position >= 500,
+	mentionable: false,
+	member_count
+});
+const roles = [
+	role('rol_owner', 'Owner', '#f1c40f', 1000, 'owner', PANEL_PERMS, 1),
+	role(
+		'rol_admin',
+		'Admin',
+		'#e74c3c',
+		900,
+		'admin',
+		PANEL_PERMS.filter((p) => p !== 'roles.owner'),
+		0
+	),
+	role('rol_mods', 'Mods', '#3498db', 500, null, ['users.view', 'users.moderate'], 4),
+	role('rol_events', 'Event hosts', '#9b59b6', 200, null, [], 2),
+	role('rol_member', 'Member', null, 0, 'member', ['channel.create', 'voice.create'], 12)
+];
+// role id (or "everyone") → [{channel, autojoin}]; [{channel, private}]
+const initialRoleChannels = {
+	rol_mods: [
+		{ channel: '#mods', autojoin: true },
+		{ channel: '#staff', autojoin: true },
+		{ channel: '#mod-log', autojoin: false }
+	],
+	rol_admin: [{ channel: '#staff', autojoin: true }],
+	everyone: [
+		{ channel: '#lobby', autojoin: true },
+		{ channel: '#help', autojoin: false }
+	]
+};
+const initialAccess = [
+	{ channel: '#staff', private: true },
+	{ channel: '#mod-log', private: true }
+];
+let roleChannels = structuredClone(initialRoleChannels);
+let channelAccess = structuredClone(initialAccess);
+const audit = [];
+const sortCh = (l) => [...l].sort((a, b) => a.channel.localeCompare(b.channel));
 const saved = { sender_name: 'Example Chat', accent: '#3b5bdb', footer: '', logo: true };
 
 function tokens() {
@@ -222,7 +289,50 @@ createServer(async (req, res) => {
 	if (req.method === 'POST' && p === '/v1/logout') return send(res, 204);
 	if (req.method === 'GET' && p === '/v1/me') {
 		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		if (ROLES)
+			return send(res, 200, {
+				user,
+				roles: [{ id: 'rol_owner', name: 'Owner', color: '#f1c40f', position: 1000 }],
+				permissions: PANEL_PERMS
+			});
 		return send(res, 200, { user });
+	}
+	if (
+		ROLES &&
+		p.startsWith('/v1/admin/') &&
+		(p.startsWith('/v1/admin/roles') ||
+			p.startsWith('/v1/admin/permissions') ||
+			p.startsWith('/v1/admin/channel-access'))
+	) {
+		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		if (req.method === 'GET' && p === '/v1/admin/permissions')
+			return send(res, 200, {
+				permissions: PANEL_PERMS.map((id) => ({ id, group: 'admin', label: id, description: '' }))
+			});
+		if (req.method === 'GET' && p === '/v1/admin/roles') return send(res, 200, { roles });
+		if (p === '/v1/admin/channel-access') {
+			if (req.method === 'PUT') {
+				channelAccess = sortCh((await json(req)).channels ?? []);
+				audit.push({ event: 'channel_access_updated', channels: channelAccess });
+			}
+			return send(res, 200, { channels: channelAccess });
+		}
+		const m = p.match(/^\/v1\/admin\/roles\/([^/]+)(\/channels|\/members)?$/);
+		if (m) {
+			const id = decodeURIComponent(m[1]);
+			const r = roles.find((x) => x.id === id);
+			if (!r && id !== 'everyone')
+				return send(res, 404, { error: 'role_not_found', message: 'no such role' });
+			if (m[2] === '/channels') {
+				if (req.method === 'PUT') {
+					roleChannels[id] = sortCh((await json(req)).channels ?? []);
+					audit.push({ event: 'role_channels_updated', role_id: id, channels: roleChannels[id] });
+				}
+				return send(res, 200, { channels: roleChannels[id] ?? [] });
+			}
+			if (m[2] === '/members') return send(res, 200, { users: [], next_cursor: null });
+			if (req.method === 'GET') return send(res, 200, { role: r });
+		}
 	}
 	// The admin user reads the Users pages need (uploads e2e).
 	if (req.method === 'GET' && p.startsWith('/v1/admin/')) {
@@ -240,6 +350,13 @@ createServer(async (req, res) => {
 createServer(async (req, res) => {
 	const p = new URL(req.url, 'http://x').pathname;
 	if (p === '/healthz' || p === '/readyz') return send(res, 200, { status: 'ok' });
+	if (req.method === 'GET' && p === '/__audit') return send(res, 200, { audit });
+	if (req.method === 'POST' && p === '/__reset') {
+		roleChannels = structuredClone(initialRoleChannels);
+		channelAccess = structuredClone(initialAccess);
+		audit.length = 0;
+		return send(res, 200, {});
+	}
 	if (req.method === 'POST' && p === '/__mode') {
 		mode = (await json(req)).mode === 'old' ? 'old' : 'new';
 		return send(res, 200, { mode });

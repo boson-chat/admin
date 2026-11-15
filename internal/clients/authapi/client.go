@@ -63,6 +63,12 @@ type AuthClientImpl interface {
 	ReorderRoles(ctx context.Context, accessToken string, order []string) ([]Role, error)
 	RoleMembers(ctx context.Context, accessToken, id, cursor string, limit int) (*MemberPage, error)
 	SetUserRoles(ctx context.Context, accessToken, userID string, roleIDs []string) ([]RoleRef, error)
+
+	// Role channels and channel access (auth >= RequiresRoleChannels).
+	RoleChannels(ctx context.Context, accessToken, roleID string) ([]RoleChannel, error)
+	SetRoleChannels(ctx context.Context, accessToken, roleID string, list []RoleChannel) ([]RoleChannel, error)
+	ChannelAccessList(ctx context.Context, accessToken string) ([]ChannelAccess, error)
+	SetChannelAccess(ctx context.Context, accessToken string, list []ChannelAccess) ([]ChannelAccess, error)
 }
 
 // Observer is told about every upstream call (for metrics).

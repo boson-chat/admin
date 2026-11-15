@@ -5,12 +5,15 @@
 		label,
 		detail,
 		disabled = false,
+		ariaLabel,
 		onchange
 	}: {
 		checked?: boolean;
 		label: string;
 		detail?: string;
 		disabled?: boolean;
+		/** Overrides the accessible name when the visible label repeats (one per row). */
+		ariaLabel?: string;
 		onchange?: (v: boolean) => void;
 	} = $props();
 </script>
@@ -20,7 +23,14 @@
 		<span class="label">{label}</span>
 		{#if detail}<span class="detail">{detail}</span>{/if}
 	</span>
-	<input type="checkbox" role="switch" bind:checked {disabled} onchange={() => onchange?.(checked)} />
+	<input
+		type="checkbox"
+		role="switch"
+		aria-label={ariaLabel}
+		bind:checked
+		{disabled}
+		onchange={() => onchange?.(checked)}
+	/>
 	<span class="track" aria-hidden="true"><span class="knob"></span></span>
 </label>
 
