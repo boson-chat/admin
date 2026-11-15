@@ -49,6 +49,14 @@ type Fake struct {
 	// LastOrder is the last reorder request.
 	LastOrder []string
 
+	// NoRoleChannels makes the fake an auth with roles but without role
+	// channels and channel access.
+	NoRoleChannels bool
+	// RoleChans are role (or "everyone") → channels; ChanAccess the
+	// channel-access list.
+	RoleChans  map[string][]authapi.RoleChannel
+	ChanAccess []authapi.ChannelAccess
+
 	// RefreshDelay slows refreshes down (to provoke races in tests).
 	RefreshDelay time.Duration
 	// RefreshErr, when set, is returned by Refresh.

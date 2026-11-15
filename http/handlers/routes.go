@@ -126,6 +126,15 @@ func (h *Handlers) routes() []route {
 		{"DELETE /api/roles/{id}", admin.PermRolesManage, false, h.deleteRole},
 		{"PUT /api/roles/{id}/members/{user}", admin.PermRolesManage, false, h.addRoleMember},
 		{"DELETE /api/roles/{id}/members/{user}", admin.PermRolesManage, false, h.removeRoleMember},
+
+		// Role channels and channel access: auth needs roles.manage to read
+		// them too. The auto-join switches are roles.channels.* config keys
+		// (settings.manage, through PATCH /api/config).
+		{"GET /api/roles/{id}/channels", admin.PermRolesManage, false, h.roleChannels},
+		{"PUT /api/roles/{id}/channels", admin.PermRolesManage, false, h.setRoleChannels},
+		{"GET /api/channel-access", admin.PermRolesManage, false, h.channelAccess},
+		{"PUT /api/channel-access", admin.PermRolesManage, false, h.setChannelAccess},
+		{"GET /api/channels", admin.PermRolesManage, false, h.channelOverview},
 	}
 }
 

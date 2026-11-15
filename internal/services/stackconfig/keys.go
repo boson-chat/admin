@@ -291,6 +291,11 @@ var Keys = append([]Key{
 	{Key: "irc.roles_poll_seconds", Kind: KindInt, Min: 1, Max: 3600, Perm: admin.PermServicesManage, Services: []string{ergo}, Env: "ROLES_POLL_SECONDS"},
 	{Key: "irc.settings_poll_seconds", Kind: KindInt, Min: 1, Max: 3600, Perm: admin.PermServicesManage, Services: []string{ergo}, Env: "SETTINGS_POLL_SECONDS"},
 
+	// Role channels (the contract's roles.channels): auth serves them in
+	// its feeds and RoleServ in the Ergo helper acts on them.
+	{Key: KeyRoleChannelsAutojoin, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth, ergo}},
+	{Key: KeyRoleChannelsRejoin, Kind: KindEnum, Enum: []string{RejoinLogin, RejoinOnce}, Perm: admin.PermSettingsManage, Services: []string{auth, ergo}},
+
 	{Key: "voice.rooms", Kind: KindRooms, MaxItems: 50, Perm: admin.PermSettingsManage, Services: []string{voice}, Env: "VOICE_ROOMS"},
 	{Key: "voice.rooms_strict", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{voice}},
 	{Key: "voice.max_rooms_per_user", Kind: KindInt, Min: 0, Max: 1000, Perm: admin.PermSettingsManage, Services: []string{voice}},
@@ -380,6 +385,16 @@ func MailHost(s string) (string, error) {
 	}
 	return s, nil
 }
+
+// Role channel keys: auto-join members to their roles' channels (default
+// off), and whether someone who left one is joined again at every login
+// (login, the default) or only when first granted (once).
+const (
+	KeyRoleChannelsAutojoin = "roles.channels.autojoin"
+	KeyRoleChannelsRejoin   = "roles.channels.rejoin"
+	RejoinLogin             = "login"
+	RejoinOnce              = "once"
+)
 
 // Uploads keys (the files service's files: section).
 const (

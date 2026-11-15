@@ -13,6 +13,7 @@ export const pagePerms: { prefix: string; perm: string; label: string }[] = [
 	{ prefix: '/users', perm: 'users.view', label: 'Users' },
 	{ prefix: '/files', perm: 'users.moderate', label: 'Uploaded files' },
 	{ prefix: '/roles', perm: 'roles.manage', label: 'Roles' },
+	{ prefix: '/channels', perm: 'roles.manage', label: 'Channel access' },
 	{ prefix: '/invites', perm: 'invites.manage', label: 'Invites' },
 	{ prefix: '/sso', perm: 'sso.manage', label: 'Sign-in providers' }
 ];

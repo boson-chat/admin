@@ -566,3 +566,32 @@ export interface ConfigChange {
 	set?: Record<string, ConfigValue | object>;
 	unset?: string[];
 }
+
+/** A channel a role (or everyone) lists. */
+export interface RoleChannel {
+	channel: string;
+	autojoin: boolean;
+}
+
+/** A channel marked private (role members and opers only) or public. */
+export interface ChannelAccess {
+	channel: string;
+	private: boolean;
+}
+
+/** GET /api/channels: every role's channels, every channel's access. */
+export interface ChannelOverview {
+	roles: {
+		id: string;
+		name: string;
+		color: string | null;
+		position: number;
+		everyone?: boolean;
+		channels: RoleChannel[];
+	}[];
+	channels: {
+		channel: string;
+		private: boolean;
+		roles: { id: string; name: string; color: string | null; autojoin: boolean }[];
+	}[];
+}

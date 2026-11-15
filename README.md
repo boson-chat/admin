@@ -111,6 +111,16 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   their effective permissions. You can only change roles below your own
   highest role and grant permissions you have; Owner bypasses that. The
   auth service enforces it, the panel disables what you can't do.
+- **Role channels and Channel access** (auth ≥ 1.16.0, `roles.manage`): a
+  role's **Channels** tab (Member's is "everyone") adds and removes `#channels`,
+  with an auto-join box each, a private/public badge and a preview ("Members
+  of Mods will be joined to #mods and #staff"). The **Channel access** page
+  marks channels private (only the roles that list them, plus IRC operators,
+  can join), shows who gets joined where, and holds the auto-join switches:
+  `roles.channels.autojoin` and `roles.channels.rejoin` (`login` | `once`),
+  config keys that need `settings.manage`. auth audits the writes
+  (`role_channels_updated`, `channel_access_updated`) and the panel logs them.
+  Browser checks: `./scripts/e2e-channels.sh`.
 - **Invites:** create (uses, expiry, note), with the code shown once; list with
   status (active, used up, expired, revoked); revoke. Warns when registration
   is open or closed rather than invite-only.

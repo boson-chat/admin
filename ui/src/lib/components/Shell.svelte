@@ -37,6 +37,7 @@
 				{ href: '/users', label: 'Users' },
 				{ href: '/files', label: 'Uploaded files' },
 				{ href: '/roles', label: 'Roles' },
+				{ href: '/channels', label: 'Channel access' },
 				{ href: '/invites', label: 'Invites' },
 				{ href: '/sso', label: 'Sign-in providers' }
 			]

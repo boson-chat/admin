@@ -46,14 +46,15 @@
 	let eventOptions = $derived<DropdownOption[]>([
 		{ value: '', label: 'All events', group: 'Groups' },
 		{
-			value: 'admin_*,settings_updated,sso_provider_*,role_*,user_roles_changed',
+			value: 'admin_*,settings_updated,sso_provider_*,role_*,user_roles_changed,channel_access_updated',
 			label: 'Admin actions',
 			description: 'Accounts, roles, invites, settings, sign-in providers',
 			group: 'Groups'
 		},
 		{
-			value: 'role_*,user_roles_changed,admin_role_changed',
+			value: 'role_*,user_roles_changed,admin_role_changed,channel_access_updated',
 			label: 'Roles and role changes',
+			description: 'Including role channels and channel access',
 			group: 'Groups'
 		},
 		{ value: 'login,login_failed,sso_login_failed', label: 'Sign-ins and failures', group: 'Groups' },

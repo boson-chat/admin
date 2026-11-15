@@ -118,6 +118,14 @@ type AdminServiceImpl interface {
 	// AddRoleMember / RemoveRoleMember change one role of one user.
 	AddRoleMember(ctx context.Context, s *session.Session, roleID, userID string) ([]authapi.RoleRef, error)
 	RemoveRoleMember(ctx context.Context, s *session.Session, roleID, userID string) ([]authapi.RoleRef, error)
+
+	// Role channels and channel access. A role ID of "everyone" (or the
+	// Member role's ID) is the channels everyone gets.
+	RoleChannels(ctx context.Context, s *session.Session, roleID string) ([]authapi.RoleChannel, error)
+	SetRoleChannels(ctx context.Context, s *session.Session, roleID string, list []authapi.RoleChannel) ([]authapi.RoleChannel, error)
+	ChannelAccess(ctx context.Context, s *session.Session) ([]authapi.ChannelAccess, error)
+	SetChannelAccess(ctx context.Context, s *session.Session, list []authapi.ChannelAccess) ([]authapi.ChannelAccess, error)
+	ChannelOverview(ctx context.Context, s *session.Session) (*ChannelOverview, error)
 }
 
 type AdminService struct {

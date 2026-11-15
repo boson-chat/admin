@@ -102,7 +102,9 @@ const eventNames: Record<string, string> = {
 	role_created: 'Created a role',
 	role_updated: 'Changed a role',
 	role_deleted: 'Deleted a role',
-	user_roles_changed: 'Changed someone’s roles'
+	user_roles_changed: 'Changed someone’s roles',
+	role_channels_updated: 'Changed a role’s channels',
+	channel_access_updated: 'Changed channel access'
 };
 export function eventName(e: string): string {
 	return eventNames[e] ?? e.replaceAll('_', ' ');
@@ -116,6 +118,7 @@ export function eventTone(e: string): 'bad' | 'admin' | 'plain' {
 		e.startsWith('sso_provider_') ||
 		e.startsWith('role_') ||
 		e === 'user_roles_changed' ||
+		e === 'channel_access_updated' ||
 		e === 'settings_updated' ||
 		e === 'signing_key_created'
 	)
