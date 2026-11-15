@@ -21,6 +21,7 @@
 	import UserRoles from '$lib/components/UserRoles.svelte';
 	import { userLock } from '$lib/perms';
 	import { rolesState } from '$lib/roles.svelte';
+	import { formatSize, humanDuration, humanIn, humanSize, usedShare, type FilesUsage } from '$lib/files';
 
 	let id = $derived(page.params.id ?? '');
 	let user = $state<User | null>(null);
@@ -31,6 +32,10 @@
 	// otherwise the boson API's profile read lists them.
 	let owned = $state<OwnedNetworksResponse | null>(null);
 	let ownedFromDirectory = $derived(!!session.info?.features.directory_local);
+	// Uploads: their usage of the rolling quota (files service).
+	let usage = $state<{ usage?: FilesUsage; error?: string } | null>(null);
+	let filesOn = $derived(!!session.info?.features.files);
+	let canModerateFiles = $derived(session.can('users.moderate') || session.can('users.manage'));
 	let error = $state('');
 	let mailing = $state<'' | 'reset' | 'verification'>('');
 
@@ -99,8 +104,51 @@
 		}
 	}
 
+	let canSetQuota = $derived(session.can('settings.manage'));
+	let ovQuota = $state('');
+	let ovMax = $state('');
+	let savingOv = $state(false);
+	async function saveOverride(e: Event) {
+		e.preventDefault();
+		savingOv = true;
+		try {
+			const u = await api<FilesUsage>('PUT', `/users/${encodeURIComponent(id)}/files-quota`, {
+				quota: ovQuota,
+				max_file: ovMax
+			});
+			usage = { usage: u };
+			ovQuota = ovMax = '';
+			toasts.push(`Set ${user?.username}’s uploads quota.`);
+		} catch (err) {
+			toasts.push(errorText(err), 'bad');
+		} finally {
+			savingOv = false;
+		}
+	}
+	async function clearOverride() {
+		savingOv = true;
+		try {
+			usage = { usage: await api<FilesUsage>('DELETE', `/users/${encodeURIComponent(id)}/files-quota`) };
+			toasts.push(`${user?.username} is back on the network’s uploads quota.`);
+		} catch (err) {
+			toasts.push(errorText(err), 'bad');
+		} finally {
+			savingOv = false;
+		}
+	}
+
+	async function loadUsage() {
+		try {
+			usage = { usage: await api<FilesUsage>('GET', `/users/${encodeURIComponent(id)}/files-usage`) };
+		} catch (e) {
+			usage = { error: errorText(e) };
+		}
+	}
+
 	$effect(() => {
 		void id;
+		usage = null;
+		if (filesOn) loadUsage();
 		user = null;
 		sessions = null;
 		activity = null;
@@ -410,6 +458,111 @@
 		{/if}
 	</section>
 
+	{#if filesOn}
+		<section class="section" aria-labelledby="up-h">
+			<div class="section-head">
+				<h2 id="up-h">Uploads</h2>
+				<p>
+					{#if canModerateFiles}<a
+							href="/files?user={encodeURIComponent(user.id)}&name={encodeURIComponent(user.username)}"
+							>Their files</a
+						>{:else}What they uploaded in the quota window.{/if}
+				</p>
+			</div>
+			{#if usage === null}
+				<State kind="loading" title="Asking the files service…" />
+			{:else if usage.error}
+				<State kind="error" title="Usage didn’t load">
+					{usage.error}
+					{#snippet action()}<button class="btn btn-small" onclick={loadUsage}>Try again</button>{/snippet}
+				</State>
+			{:else if usage.usage}
+				{@const u = usage.usage}
+				{@const share = usedShare(u.used, u.quota)}
+				{@const next = u.frees.find((f) => new Date(f.at).getTime() > Date.now())}
+				<div class="usage" data-testid="files-usage">
+					<p class="usage-line">
+						<strong>{humanSize(u.used)}</strong> of {humanSize(u.quota)}
+						<span class="muted">per {humanDuration(u.window_seconds)}</span>
+					</p>
+					<div
+						class="meter"
+						class:hot={share >= 0.9}
+						role="meter"
+						aria-label="Quota used"
+						aria-valuemin="0"
+						aria-valuemax="100"
+						aria-valuenow={Math.round(share * 100)}
+					>
+						<span style:width="{share * 100}%"></span>
+					</div>
+					<p class="muted small">
+						{#if next}{humanSize(next.bytes)} frees in {humanIn(
+								new Date(next.at).getTime() - Date.now()
+							)}.{:else if u.used > 0}Frees as uploads leave the window.{:else}Nothing uploaded in the window.{/if}
+						Largest file {humanSize(u.max_file)}.{#if u.live_files !== undefined}&nbsp;{u.live_files} live
+							{u.live_files === 1 ? 'file' : 'files'} ({humanSize(u.live_bytes)}).{/if}
+						Deleted files still count until they leave the window.
+					</p>
+					<div class="override" data-testid="files-override">
+						<p class="small">
+							{#if u.override && (u.override.quota_bytes !== null || u.override.max_file_bytes !== null)}
+								<span class="tag tag-accent">Override</span>
+								{u.override.quota_bytes !== null ? humanSize(u.override.quota_bytes) : 'default'} quota,
+								{u.override.max_file_bytes !== null ? humanSize(u.override.max_file_bytes) : 'default'} largest
+								file{#if u.override.updated_by}&nbsp;· set by {u.override.updated_by.replace(
+										/^admin:/,
+										''
+									)}{/if}
+							{:else}
+								Network default{#if u.defaults}: {humanSize(u.defaults.quota_bytes)} per window, {humanSize(
+										u.defaults.max_file_bytes
+									)} per file{/if}.
+							{/if}
+						</p>
+						{#if canSetQuota}
+							<form class="ov-form" onsubmit={saveOverride}>
+								<label>
+									<span>Quota</span>
+									<input
+										type="text"
+										bind:value={ovQuota}
+										placeholder={u.defaults ? formatSize(u.defaults.quota_bytes) : '5GB'}
+										autocomplete="off"
+										spellcheck="false"
+									/>
+								</label>
+								<label>
+									<span>Largest file</span>
+									<input
+										type="text"
+										bind:value={ovMax}
+										placeholder={u.defaults ? formatSize(u.defaults.max_file_bytes) : '100MB'}
+										autocomplete="off"
+										spellcheck="false"
+									/>
+								</label>
+								<div class="ov-btns">
+									<button class="btn btn-small" disabled={savingOv || (!ovQuota.trim() && !ovMax.trim())}
+										>{savingOv ? 'Saving…' : 'Set override'}</button
+									>
+									{#if u.override}
+										<button
+											class="btn btn-small btn-ghost"
+											type="button"
+											onclick={clearOverride}
+											disabled={savingOv}>Back to default</button
+										>
+									{/if}
+								</div>
+							</form>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		</section>
+	{/if}
+
 	{#if ownedFromDirectory}
 		<section class="section" aria-labelledby="own-h">
 			<div class="section-head">
@@ -591,6 +744,59 @@
 		gap: var(--space-4);
 		align-items: center;
 		min-width: 0;
+	}
+	.usage {
+		display: grid;
+		gap: var(--space-2);
+		max-width: 36rem;
+	}
+	.override {
+		display: grid;
+		gap: var(--space-2);
+		margin-top: var(--space-2);
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--border-soft);
+	}
+	.ov-form {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2) var(--space-3);
+		align-items: end;
+	}
+	.ov-form label {
+		display: grid;
+		gap: var(--space-1);
+		flex: 1 1 8rem;
+		max-width: 11rem;
+	}
+	.ov-form label span {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+		letter-spacing: var(--tracking-label);
+		text-transform: uppercase;
+	}
+	.ov-btns {
+		display: flex;
+		gap: var(--space-2);
+	}
+	.usage-line {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+	.meter {
+		height: 8px;
+		border-radius: 4px;
+		background: var(--border-soft);
+		overflow: hidden;
+	}
+	.meter span {
+		display: block;
+		height: 100%;
+		background: var(--accent);
+	}
+	.meter.hot span {
+		background: var(--danger);
 	}
 	.profile {
 		display: flex;

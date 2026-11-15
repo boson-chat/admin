@@ -25,6 +25,7 @@
 				{ href: '/branding', label: 'Branding' },
 				{ href: '/emails', label: 'Emails' },
 				{ href: '/nick-registration', label: 'Nick registration' },
+				{ href: '/uploads', label: 'Uploads' },
 				{ href: '/config', label: 'Stack config' },
 				{ href: '/directory', label: 'Directory' },
 				{ href: '/audit', label: 'Audit log' }
@@ -34,6 +35,7 @@
 			group: 'Accounts',
 			items: [
 				{ href: '/users', label: 'Users' },
+				{ href: '/files', label: 'Uploaded files' },
 				{ href: '/roles', label: 'Roles' },
 				{ href: '/invites', label: 'Invites' },
 				{ href: '/sso', label: 'Sign-in providers' }

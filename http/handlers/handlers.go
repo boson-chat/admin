@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/files"
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
@@ -60,6 +61,9 @@ type Features struct {
 	// auth's internal email API is configured.
 	Branding     bool `json:"branding"`
 	EmailPreview bool `json:"email_preview"`
+	// Files: BOSON_FILES_INTERNAL_URL is set (uploads status, moderation,
+	// users' usage).
+	Files bool `json:"files"`
 }
 
 // Handlers is the DI container for the HTTP layer.
@@ -78,7 +82,9 @@ type Handlers struct {
 	Branding branding.BrandingServiceImpl
 	// NickClaims: the Nick registration page (never nil after Register).
 	NickClaims nickclaim.ServiceImpl
-	Sessions   *session.Codec
+	// Files: the Uploads and Uploaded files pages (never nil after Register).
+	Files    files.ServiceImpl
+	Sessions *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features
@@ -96,6 +102,7 @@ func (h *Handlers) features() Features {
 	}
 	f.Branding = h.Branding != nil && f.ConfigFile
 	f.EmailPreview = h.Branding != nil && h.Branding.EmailEnabled()
+	f.Files = h.Files != nil && h.Files.Configured()
 	return f
 }
 
@@ -106,6 +113,9 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	}
 	if h.NickClaims == nil {
 		h.NickClaims = nickclaim.New(nickclaim.Options{})
+	}
+	if h.Files == nil {
+		h.Files = files.New(files.Options{})
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

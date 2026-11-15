@@ -224,6 +224,14 @@ createServer(async (req, res) => {
 		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
 		return send(res, 200, { user });
 	}
+	// The admin user reads the Users pages need (uploads e2e).
+	if (req.method === 'GET' && p.startsWith('/v1/admin/')) {
+		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		if (p === '/v1/admin/users') return send(res, 200, { users: [user], total: 1 });
+		if (p === `/v1/admin/users/${user.id}`) return send(res, 200, { user });
+		if (p === `/v1/admin/users/${user.id}/sessions`) return send(res, 200, { sessions: [] });
+		if (p === '/v1/admin/audit') return send(res, 200, { entries: [] });
+	}
 	if (req.method === 'GET' && p === '/v1/config')
 		return send(res, 200, { registration: 'invite', require_email_verification: true, sso_providers: [] });
 	send(res, 404, { error: 'not_found', message: 'not found' });
