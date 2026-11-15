@@ -7,9 +7,11 @@ export const pagePerms: { prefix: string; perm: string; label: string }[] = [
 	{ prefix: '/branding', perm: 'settings.manage', label: 'Branding' },
 	{ prefix: '/emails', perm: 'settings.manage', label: 'Emails' },
 	{ prefix: '/nick-registration', perm: 'settings.manage', label: 'Nick registration' },
+	{ prefix: '/uploads', perm: 'settings.manage', label: 'Uploads' },
 	{ prefix: '/directory', perm: 'directory.manage', label: 'Directory' },
 	{ prefix: '/audit', perm: 'audit.view', label: 'Audit log' },
 	{ prefix: '/users', perm: 'users.view', label: 'Users' },
+	{ prefix: '/files', perm: 'users.moderate', label: 'Uploaded files' },
 	{ prefix: '/roles', perm: 'roles.manage', label: 'Roles' },
 	{ prefix: '/invites', perm: 'invites.manage', label: 'Invites' },
 	{ prefix: '/sso', perm: 'sso.manage', label: 'Sign-in providers' }

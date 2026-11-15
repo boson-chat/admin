@@ -252,6 +252,7 @@ const (
 	dir       = "directory"
 	self      = "admin"
 	api       = "api"
+	files     = "files"
 	everybody = "*"
 )
 
@@ -318,6 +319,24 @@ var Keys = append([]Key{
 	{Key: KeyNickClaimTLS, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "POP3_TLS"},
 	{Key: KeyNickClaimUser, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{api}, Env: "POP3_USER", item: text(254)},
 
+	// Uploads (the files service, docs/files.md). auth also reads
+	// files.enabled (files_url in its /v1/config). S3 keys stay in .env
+	// (FILES_S3_ACCESS_KEY / FILES_S3_SECRET_KEY).
+	{Key: KeyFilesEnabled, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{files, auth}, Env: "FILES_ENABLED"},
+	{Key: KeyFilesRetention, Kind: KindDuration, Min: 60, Max: 365 * 24 * 3600, Perm: admin.PermSettingsManage, Services: []string{files}},
+	{Key: KeyFilesWindow, Kind: KindDuration, Min: 60, Max: 365 * 24 * 3600, Perm: admin.PermSettingsManage, Services: []string{files}},
+	{Key: KeyFilesAccountQuota, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: sizeBetween(MinQuota, MaxSize)},
+	{Key: KeyFilesAccountMaxFile, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: sizeBetween(MinFile, MaxSize)},
+	{Key: KeyFilesGuestEnabled, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{files}},
+	{Key: KeyFilesGuestQuota, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: sizeBetween(MinQuota, MaxSize)},
+	{Key: KeyFilesGuestMaxFile, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: sizeBetween(MinFile, MaxSize)},
+	{Key: KeyFilesDriver, Kind: KindEnum, Enum: []string{"local", "s3"}, Perm: admin.PermSettingsManage, Services: []string{files}},
+	{Key: KeyFilesS3Endpoint, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: s3Endpoint},
+	{Key: KeyFilesS3Bucket, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: s3Bucket},
+	{Key: KeyFilesS3Region, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: s3Region},
+	{Key: KeyFilesS3PathStyle, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{files}},
+	{Key: KeyFilesS3PublicBaseURL, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, item: httpsURL},
+
 	// Branding (auth serves it at /v1/branding; the panel pushes it to the
 	// directory listing). Images are written by the Branding page's uploads.
 	{Key: KeyBrandingTheme, Kind: KindTheme, Perm: admin.PermSettingsManage, Services: []string{auth}},
@@ -354,6 +373,121 @@ func MailHost(s string) (string, error) {
 	}
 	if err := dialHost(s); err != nil {
 		return "", fmt.Errorf("%q isn't a hostname or IP address, like pop3.example.com", s)
+	}
+	return s, nil
+}
+
+// Uploads keys (the files service's files: section).
+const (
+	KeyFilesEnabled         = "files.enabled"
+	KeyFilesRetention       = "files.retention"
+	KeyFilesWindow          = "files.window"
+	KeyFilesAccountQuota    = "files.account.quota"
+	KeyFilesAccountMaxFile  = "files.account.max_file"
+	KeyFilesGuestEnabled    = "files.guest.enabled"
+	KeyFilesGuestQuota      = "files.guest.quota"
+	KeyFilesGuestMaxFile    = "files.guest.max_file"
+	KeyFilesDriver          = "files.storage.driver"
+	KeyFilesS3Endpoint      = "files.storage.s3.endpoint"
+	KeyFilesS3Bucket        = "files.storage.s3.bucket"
+	KeyFilesS3Region        = "files.storage.s3.region"
+	KeyFilesS3PathStyle     = "files.storage.s3.path_style"
+	KeyFilesS3PublicBaseURL = "files.storage.s3.public_base_url"
+)
+
+// Size bounds for the files: limits.
+const (
+	MinFile  int64 = 1 << 10   // 1KB
+	MinQuota int64 = 1 << 20   // 1MB
+	MaxSize  int64 = 100 << 40 // 100TB
+)
+
+var sizeRe = regexp.MustCompile(`^(?i)\s*(\d+(?:\.\d+)?)\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)?\s*$`)
+
+var sizeUnits = []struct {
+	name  string
+	bytes int64
+}{{"TB", 1 << 40}, {"GB", 1 << 30}, {"MB", 1 << 20}, {"KB", 1 << 10}, {"B", 1}}
+
+// ParseSize reads a size like 5GB, 500 MB, 1.5gb or 25MiB (binary units:
+// 1 GB = 1024 MB). A bare number is bytes.
+func ParseSize(s string) (int64, error) {
+	m := sizeRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("%q must be a size like 100MB or 5GB", strings.TrimSpace(s))
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q must be a size like 100MB or 5GB", strings.TrimSpace(s))
+	}
+	mul := int64(1)
+	if u := strings.ToUpper(m[2]); u != "" && u != "B" {
+		u = strings.TrimSuffix(strings.TrimSuffix(u, "IB"), "B")
+		for _, x := range sizeUnits {
+			if strings.HasPrefix(x.name, u) {
+				mul = x.bytes
+				break
+			}
+		}
+	}
+	f := n * float64(mul)
+	if f > float64(MaxSize)*2 {
+		return 0, fmt.Errorf("%q is too big", strings.TrimSpace(s))
+	}
+	return int64(f), nil
+}
+
+// FormatSize writes bytes as the largest whole unit: 5GB, 1536MB, 100B.
+func FormatSize(n int64) string {
+	for _, u := range sizeUnits {
+		if n >= u.bytes && n%u.bytes == 0 {
+			return strconv.FormatInt(n/u.bytes, 10) + u.name
+		}
+	}
+	return strconv.FormatInt(n, 10) + "B"
+}
+
+// sizeBetween checks a size and writes it in the file's form (5GB).
+func sizeBetween(lo, hi int64) func(string) (string, error) {
+	return func(s string) (string, error) {
+		n, err := ParseSize(s)
+		if err != nil {
+			return "", err
+		}
+		if n < lo || n > hi {
+			return "", fmt.Errorf("must be from %s to %s", FormatSize(lo), FormatSize(hi))
+		}
+		return FormatSize(n), nil
+	}
+}
+
+// s3Endpoint: an http(s) base URL, like https://<account>.r2.cloudflarestorage.com
+// or http://minio:9000 inside the stack.
+func s3Endpoint(s string) (string, error) {
+	s = strings.TrimRight(strings.TrimSpace(s), "/")
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" {
+		return "", fmt.Errorf("%q must be a URL like https://s3.example.com or http://minio:9000 (keys go in .env, not here)", s)
+	}
+	return s, nil
+}
+
+var bucketRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+func s3Bucket(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if !bucketRe.MatchString(s) || strings.Contains(s, "..") {
+		return "", fmt.Errorf("%q must be a bucket name: 3–63 lowercase letters, digits, dots or dashes", s)
+	}
+	return s, nil
+}
+
+var regionRe = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+func s3Region(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if !regionRe.MatchString(s) {
+		return "", fmt.Errorf("%q must be a region like auto or us-east-1", s)
 	}
 	return s, nil
 }

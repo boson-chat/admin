@@ -104,6 +104,8 @@ export interface Features {
 	branding?: boolean;
 	/** auth's internal email preview and test API is configured. */
 	email_preview?: boolean;
+	/** The files service's internal listener is configured (BOSON_FILES_INTERNAL_URL). */
+	files?: boolean;
 }
 
 export interface SessionInfo {

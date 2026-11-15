@@ -74,6 +74,12 @@ type BosonConfig struct {
 	// isn't reachable.
 	APIInternalURL   string `env:"BOSON_API_INTERNAL_URL"`
 	APIInternalToken string `env:"BOSON_API_INTERNAL_TOKEN"`
+	// The files (uploads) service's internal listener (http://files:3001)
+	// and its INTERNAL_TOKEN (X-Internal-Token): the Uploads page's live
+	// status, the Uploaded files moderation list and users' usage. Empty
+	// URL = those say the files service isn't reachable.
+	FilesInternalURL   string `env:"BOSON_FILES_INTERNAL_URL"`
+	FilesInternalToken string `env:"BOSON_FILES_INTERNAL_TOKEN"`
 	// Where avatars and server icons are served from (img-src in the CSP).
 	CDNURL string `default:"https://cdn.boson.chat" env:"BOSON_CDN_URL"`
 	// The directory this network is listed in (github.com/boson-chat/directory).
@@ -195,6 +201,7 @@ func (c *Config) ApplyDefaults() {
 	b := &c.BosonConfig
 	b.APIURL, b.CDNURL, b.DirectoryURL = trim(b.APIURL), trim(b.CDNURL), trim(b.DirectoryURL)
 	b.APIInternalURL, b.APIInternalToken = trim(b.APIInternalURL), strings.TrimSpace(b.APIInternalToken)
+	b.FilesInternalURL, b.FilesInternalToken = trim(b.FilesInternalURL), strings.TrimSpace(b.FilesInternalToken)
 	b.DirectoryLocalURL, b.DirectoryInternalToken = trim(b.DirectoryLocalURL), strings.TrimSpace(b.DirectoryInternalToken)
 	if b.DirectoryHostname == "" {
 		b.DirectoryHostname = strings.TrimSpace(u.IRCCheckServerName)
@@ -234,7 +241,8 @@ func (c Config) Validate() error {
 		"METRICS_URL": c.UpstreamConfig.MetricsURL, "GRAFANA_URL": c.UpstreamConfig.GrafanaURL,
 		"DOCKER_PROXY_URL": c.DockerConfig.ProxyURL, "BOSON_API_URL": c.BosonConfig.APIURL,
 		"BOSON_CDN_URL": c.BosonConfig.CDNURL, "DIRECTORY_API_URL": c.BosonConfig.DirectoryURL,
-		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL, "BOSON_API_INTERNAL_URL": c.BosonConfig.APIInternalURL} {
+		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL, "BOSON_API_INTERNAL_URL": c.BosonConfig.APIInternalURL,
+		"BOSON_FILES_INTERNAL_URL": c.BosonConfig.FilesInternalURL} {
 		if v == "" {
 			continue
 		}

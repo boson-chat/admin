@@ -21,6 +21,7 @@
 	import UserRoles from '$lib/components/UserRoles.svelte';
 	import { userLock } from '$lib/perms';
 	import { rolesState } from '$lib/roles.svelte';
+	import { humanDuration, humanIn, humanSize, usedShare, type FilesUsage } from '$lib/files';
 
 	let id = $derived(page.params.id ?? '');
 	let user = $state<User | null>(null);
@@ -31,6 +32,10 @@
 	// otherwise the boson API's profile read lists them.
 	let owned = $state<OwnedNetworksResponse | null>(null);
 	let ownedFromDirectory = $derived(!!session.info?.features.directory_local);
+	// Uploads: their usage of the rolling quota (files service).
+	let usage = $state<{ usage?: FilesUsage; error?: string } | null>(null);
+	let filesOn = $derived(!!session.info?.features.files);
+	let canModerateFiles = $derived(session.can('users.moderate') || session.can('users.manage'));
 	let error = $state('');
 	let mailing = $state<'' | 'reset' | 'verification'>('');
 
@@ -99,8 +104,18 @@
 		}
 	}
 
+	async function loadUsage() {
+		try {
+			usage = { usage: await api<FilesUsage>('GET', `/users/${encodeURIComponent(id)}/files-usage`) };
+		} catch (e) {
+			usage = { error: errorText(e) };
+		}
+	}
+
 	$effect(() => {
 		void id;
+		usage = null;
+		if (filesOn) loadUsage();
 		user = null;
 		sessions = null;
 		activity = null;
@@ -410,6 +425,57 @@
 		{/if}
 	</section>
 
+	{#if filesOn}
+		<section class="section" aria-labelledby="up-h">
+			<div class="section-head">
+				<h2 id="up-h">Uploads</h2>
+				<p>
+					{#if canModerateFiles}<a
+							href="/files?user={encodeURIComponent(user.id)}&name={encodeURIComponent(user.username)}"
+							>Their files</a
+						>{:else}What they uploaded in the quota window.{/if}
+				</p>
+			</div>
+			{#if usage === null}
+				<State kind="loading" title="Asking the files service…" />
+			{:else if usage.error}
+				<State kind="error" title="Usage didn’t load">
+					{usage.error}
+					{#snippet action()}<button class="btn btn-small" onclick={loadUsage}>Try again</button>{/snippet}
+				</State>
+			{:else if usage.usage}
+				{@const u = usage.usage}
+				{@const share = usedShare(u.used, u.quota)}
+				{@const next = u.frees.find((f) => new Date(f.at).getTime() > Date.now())}
+				<div class="usage" data-testid="files-usage">
+					<p class="usage-line">
+						<strong>{humanSize(u.used)}</strong> of {humanSize(u.quota)}
+						<span class="muted">per {humanDuration(u.window_seconds)}</span>
+					</p>
+					<div
+						class="meter"
+						class:hot={share >= 0.9}
+						role="meter"
+						aria-label="Quota used"
+						aria-valuemin="0"
+						aria-valuemax="100"
+						aria-valuenow={Math.round(share * 100)}
+					>
+						<span style:width="{share * 100}%"></span>
+					</div>
+					<p class="muted small">
+						{#if next}{humanSize(next.bytes)} frees in {humanIn(
+								new Date(next.at).getTime() - Date.now()
+							)}.{:else if u.used > 0}Frees as uploads leave the window.{:else}Nothing uploaded in the window.{/if}
+						Largest file {humanSize(u.max_file)}.{#if u.files !== undefined}&nbsp;{u.files} live
+							{u.files === 1 ? 'file' : 'files'}.{/if}
+						Deleted files still count until they leave the window.
+					</p>
+				</div>
+			{/if}
+		</section>
+	{/if}
+
 	{#if ownedFromDirectory}
 		<section class="section" aria-labelledby="own-h">
 			<div class="section-head">
@@ -591,6 +657,29 @@
 		gap: var(--space-4);
 		align-items: center;
 		min-width: 0;
+	}
+	.usage {
+		display: grid;
+		gap: var(--space-2);
+		max-width: 36rem;
+	}
+	.usage-line {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+	}
+	.meter {
+		height: 8px;
+		border-radius: 4px;
+		background: var(--border-soft);
+		overflow: hidden;
+	}
+	.meter span {
+		display: block;
+		height: 100%;
+		background: var(--accent);
+	}
+	.meter.hot span {
+		background: var(--danger);
 	}
 	.profile {
 		display: flex;

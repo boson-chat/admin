@@ -29,6 +29,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/files"
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
@@ -202,6 +203,14 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	nickSvc := nickclaim.New(nickclaim.Options{Client: nickClient})
 	h.NickClaims = nickSvc
 	stack.AddCheck("nick_claim.", nickSvc.Check)
+	// Uploads: the files service's internal listener (status, moderation, usage).
+	var filesClient bosonapi.FilesClientImpl
+	if bc.FilesInternalURL != "" {
+		filesClient = bosonapi.NewFilesClient(bc.FilesInternalURL, bc.FilesInternalToken, up.Timeout, upstream("files_internal"))
+	}
+	filesSvc := files.New(files.Options{Client: filesClient})
+	h.Files = filesSvc
+	stack.AddCheck("files.", filesSvc.Check)
 	if bc.DirectoryLocalURL != "" {
 		h.LocalDirectory = directory.NewLocalService(directory.LocalOptions{
 			Client: bosonapi.NewOperatorClient(bc.DirectoryLocalURL, bc.DirectoryInternalToken, up.Timeout, upstream("directory_local")),
