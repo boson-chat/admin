@@ -76,7 +76,7 @@ func TestRefreshesExpiredTokenBeforeCall(t *testing.T) {
 	s := login(t, svc)
 	*now = now.Add(15 * time.Minute)
 	f.ExpireAccess()
-	if _, err := svc.ListUsers(context.Background(), s, "", 10, 0); err != nil {
+	if _, err := svc.ListUsers(context.Background(), s, "", "", 10, 0); err != nil {
 		t.Fatal(err)
 	}
 	if f.RefreshCalls.Load() != 1 || !s.Dirty() {
@@ -117,7 +117,7 @@ func TestDemotedAdminLosesSessionOnRefresh(t *testing.T) {
 		s := login(t, svc)
 		f.SetRoles("usr_admin") // only Member left: no admin.panel
 		f.ExpireAccess()
-		_, err := svc.ListUsers(context.Background(), s, "", 10, 0)
+		_, err := svc.ListUsers(context.Background(), s, "", "", 10, 0)
 		if !errors.Is(err, apperr.ErrNotAdmin) {
 			t.Fatalf("got %v, want ErrNotAdmin", err)
 		}
@@ -128,7 +128,7 @@ func TestDemotedAdminLosesSessionOnRefresh(t *testing.T) {
 		s := login(t, svc)
 		f.Users["usr_admin"].Role = RoleUser
 		f.ExpireAccess()
-		_, err := svc.ListUsers(context.Background(), s, "", 10, 0)
+		_, err := svc.ListUsers(context.Background(), s, "", "", 10, 0)
 		if !errors.Is(err, apperr.ErrNotAdmin) {
 			t.Fatalf("got %v, want ErrNotAdmin", err)
 		}
@@ -148,7 +148,7 @@ func TestConcurrentRefreshIsSingleFlight(t *testing.T) {
 	sessions := make([]*session.Session, 8)
 	for i := range 8 {
 		sessions[i] = session.New(base) // each request decodes its own copy of the cookie
-		wg.Go(func() { _, errs[i] = svc.ListUsers(context.Background(), sessions[i], "", 10, 0) })
+		wg.Go(func() { _, errs[i] = svc.ListUsers(context.Background(), sessions[i], "", "", 10, 0) })
 	}
 	wg.Wait()
 	for i, err := range errs {
@@ -173,7 +173,7 @@ func TestConcurrentRefreshIsSingleFlight(t *testing.T) {
 	// Set-Cookie) gets the remembered result instead of tripping reuse.
 	late := session.New(base)
 	f.RefreshDelay = 0
-	if _, err := svc.ListUsers(context.Background(), late, "", 10, 0); err != nil {
+	if _, err := svc.ListUsers(context.Background(), late, "", "", 10, 0); err != nil {
 		t.Fatalf("late request: %v", err)
 	}
 	if f.RefreshCalls.Load() != 1 || f.Reuses.Load() != 0 {

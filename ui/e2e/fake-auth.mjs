@@ -10,7 +10,8 @@
 //   FAKE_AUTH_ROLES=1 node e2e/fake-auth.mjs   # an auth with roles (admin is
 //                                          # Owner) and role channels
 //   POST <internal>/__mode {"mode":"old"}  # act like auth 1.10.x: ignore
-//                                          # "email", send no from
+//                                          # "email", send no from, no
+//                                          # last sign-in / activity
 //
 // Its password is "e2e-password" for the user "admin".
 import { createServer } from 'node:http';
@@ -29,6 +30,46 @@ const user = {
 	role: 'admin',
 	created_at: '2026-01-01T00:00:00Z'
 };
+const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
+const activity = (signIn, method, ip, active) => ({
+	last_sign_in_at: signIn === null ? null : ago(signIn),
+	last_sign_in_method: method,
+	last_sign_in_ip: ip,
+	last_active_at: active === null ? null : ago(active)
+});
+const member = (id, username, display_name, created_at) => ({
+	id,
+	username,
+	email: `${username}@example.com`,
+	email_verified: true,
+	display_name,
+	role: 'user',
+	created_at
+});
+// The users list: newest account first, like auth.
+function people() {
+	const list = [
+		{
+			...member('usr_new', 'newcomer', 'Newcomer', '2026-11-15T18:00:00Z'),
+			...activity(null, null, null, null)
+		},
+		{
+			...member('usr_maya', 'maya', 'Maya Lin', '2026-06-12T09:00:00Z'),
+			...activity(2 * 1440, 'oidc:corp', '198.51.100.7', 3 * 60)
+		},
+		{
+			...member('usr_ravi', 'ravi', 'Ravi', '2026-03-01T09:00:00Z'),
+			disabled_at: '2026-10-10T09:00:00Z',
+			...activity(40 * 1440, 'saml:okta', '', 38 * 1440)
+		},
+		{ ...user, ...activity(190, 'password', '203.0.113.24', 3) }
+	];
+	if (mode === 'old')
+		for (const u of list)
+			for (const k of ['last_sign_in_at', 'last_sign_in_method', 'last_sign_in_ip', 'last_active_at'])
+				delete u[k];
+	return list;
+}
 const access = new Set();
 const refresh = new Set();
 let n = 0;
@@ -334,12 +375,23 @@ createServer(async (req, res) => {
 			if (req.method === 'GET') return send(res, 200, { role: r });
 		}
 	}
-	// The admin user reads the Users pages need (uploads e2e).
+	// The user reads the Users pages need (uploads and users e2e). Newer auth
+	// reports last sign-in / activity and sorts by it; mode "old" doesn't.
 	if (req.method === 'GET' && p.startsWith('/v1/admin/')) {
 		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
-		if (p === '/v1/admin/users') return send(res, 200, { users: [user], total: 1 });
-		if (p === `/v1/admin/users/${user.id}`) return send(res, 200, { user });
-		if (p === `/v1/admin/users/${user.id}/sessions`) return send(res, 200, { sessions: [] });
+		if (p === '/v1/admin/users') {
+			const sort = new URL(req.url, 'http://x').searchParams.get('sort');
+			const list = people();
+			const key = { last_active: 'last_active_at', last_sign_in: 'last_sign_in_at' }[
+				mode === 'old' ? '' : sort
+			];
+			if (key) list.sort((a, b) => (b[key] ?? '').localeCompare(a[key] ?? ''));
+			return send(res, 200, { users: list, total: list.length });
+		}
+		const m = p.match(/^\/v1\/admin\/users\/([^/]+)(\/sessions)?$/);
+		const found = m && people().find((u) => u.id === decodeURIComponent(m[1]));
+		if (found && m[2]) return send(res, 200, { sessions: [] });
+		if (found) return send(res, 200, { user: found, identities: [], has_password: true });
 		if (p === '/v1/admin/audit') return send(res, 200, { entries: [] });
 	}
 	if (req.method === 'GET' && p === '/v1/config')

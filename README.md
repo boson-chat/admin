@@ -91,13 +91,17 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   interval, the "Include the boson main directory" switch, and its peers
   (add, enable/disable, sync, remove), all without editing `.env`. See
   "Directory" below.
-- **Users:** search by username or email, paginate, create a user (with a
+- **Users:** search by username or email, paginate, sort by last active
+  (the "Last active" column: "3h ago", full time on hover), create a user (with a
   password or an emailed set-password link), open a user to change their
   role, disable or enable them (disabling signs them out everywhere), send a
   password reset or a new verification email, see their linked SSO sign-ins,
   their boson profile (avatar, display name, handle) and the networks they
-  list in the directory (from the stack's own directory when it runs one), list and revoke their sessions, and see their recent
-  activity.
+  list in the directory (from the stack's own directory when it runs one), when they last
+  signed in (method and IP) and were last active, list and revoke their sessions, and see their recent
+  activity. Last signed in / last active need an auth release that reports
+  them; with an older one the column and fields are hidden.
+  Browser checks: `./scripts/e2e-users.sh`.
 - **Roles:** network-wide, IRC-native roles (auth ≥ 1.5.0). Each role is
   an Ergo oper class with a WHOIS line and an optional vhost, so IRC users see
   it in `/whois` and in hostmasks. Built-ins Owner, Admin, Moderator and
@@ -726,7 +730,7 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/session` | `{user, csrf_token, expires_at, features: {version, grafana_url, metrics, …, irc_host}, permissions, roles, roles_supported}` or 401 |
 | `POST /api/login` | `{login, password}` → session (sets the cookie) |
 | `POST /api/logout` | 204, clears the cookie |
-| `GET /api/users?q=&limit=&offset=` | `{users, total, limit, offset}` |
+| `GET /api/users?q=&sort=&limit=&offset=` | `{users, total, limit, offset, sort, activity_supported}`. `sort`: `created` (default) \| `last_active` \| `last_sign_in`, newest first. `activity_supported` is false on an auth that doesn't report `last_sign_in_at` / `last_sign_in_method` / `last_sign_in_ip` / `last_active_at` (and ignores the sort); `sort` echoes what was applied. Each user has `activity_tracked` the same way |
 | `GET /api/users/{id}`, `PATCH /api/users/{id}` `{role}` | |
 | `POST /api/users/{id}/disable`, `/enable` | |
 | `GET /api/users/{id}/sessions` | marks the panel's own session `current` |

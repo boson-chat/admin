@@ -23,6 +23,26 @@ export function relative(iso: string | null | undefined, now = Date.now()): stri
 	return '';
 }
 
+/** Compact "time since" for tables: "just now", "12m ago", "3h ago",
+ * "5d ago", then the date. */
+export function ago(iso: string | null | undefined, now = Date.now()): string {
+	if (!iso) return '';
+	const s = Math.max(0, (now - new Date(iso).getTime()) / 1000);
+	if (s < 60) return 'just now';
+	if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+	if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+	if (s < 30 * 86400) return `${Math.floor(s / 86400)}d ago`;
+	return date(iso);
+}
+
+/** "password" → "Password", "oidc:corp" → "corp (OIDC)". */
+export function signInMethod(m: string | null | undefined): string {
+	if (!m) return '';
+	if (m === 'password') return 'Password';
+	const [kind, slug] = m.split(':', 2);
+	return slug ? `${slug} (${kind.toUpperCase()})` : m;
+}
+
 export function datetime(iso: string | null | undefined): string {
 	return iso ? dtf.format(new Date(iso)) : '';
 }

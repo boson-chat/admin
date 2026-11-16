@@ -25,6 +25,33 @@ type User struct {
 	// auth release has no roles.
 	Roles       *[]RoleRef `json:"roles,omitempty"`
 	Permissions *[]string  `json:"permissions,omitempty"`
+
+	// Sign-in / activity history (newer auth releases). Nil = never
+	// signed in, or the auth release doesn't report it: ActivityTracked
+	// tells the two apart.
+	LastSignInAt     *time.Time `json:"last_sign_in_at"`
+	LastSignInMethod *string    `json:"last_sign_in_method"`
+	LastSignInIP     *string    `json:"last_sign_in_ip"`
+	LastActiveAt     *time.Time `json:"last_active_at"`
+	// ActivityTracked: the auth response had last_active_at (even null).
+	ActivityTracked bool `json:"activity_tracked"`
+}
+
+// UnmarshalJSON decodes a user and notes whether auth reported activity.
+func (u *User) UnmarshalJSON(b []byte) error {
+	type plain User
+	var probe struct {
+		LastActiveAt    json.RawMessage `json:"last_active_at"`
+		ActivityTracked bool            `json:"activity_tracked"`
+	}
+	if err := json.Unmarshal(b, (*plain)(u)); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return err
+	}
+	u.ActivityTracked = probe.LastActiveAt != nil || probe.ActivityTracked
+	return nil
 }
 
 // Tokens is the login / refresh response.
@@ -103,6 +130,25 @@ type PublicConfig struct {
 type UserList struct {
 	Users []User `json:"users"`
 	Total int64  `json:"total"`
+	// ActivitySupported: auth reported last sign-in / activity, so it also
+	// honours the sort (older releases ignore it). Set by the client.
+	ActivitySupported bool `json:"activity_supported"`
+}
+
+// User list sorts (newest first; auth releases without activity ignore them).
+const (
+	SortCreated    = "created"
+	SortLastActive = "last_active"
+	SortLastSignIn = "last_sign_in"
+)
+
+// ValidSort reports whether s is a user list sort ("" = created).
+func ValidSort(s string) bool {
+	switch s {
+	case "", SortCreated, SortLastActive, SortLastSignIn:
+		return true
+	}
+	return false
 }
 
 // ClientMeta is forwarded so the auth service records the admin's real

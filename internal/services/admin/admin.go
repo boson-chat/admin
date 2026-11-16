@@ -78,7 +78,7 @@ type AdminServiceImpl interface {
 	Forget(s *session.Session)
 	AuthConfig(ctx context.Context) (*authapi.PublicConfig, error)
 
-	ListUsers(ctx context.Context, s *session.Session, query string, limit, offset int) (*authapi.UserList, error)
+	ListUsers(ctx context.Context, s *session.Session, query, sort string, limit, offset int) (*authapi.UserList, error)
 	GetUser(ctx context.Context, s *session.Session, id string) (*authapi.User, error)
 	SetRole(ctx context.Context, s *session.Session, id, role string) (*authapi.User, error)
 	SetDisabled(ctx context.Context, s *session.Session, id string, disabled bool) (*authapi.User, error)
@@ -289,10 +289,13 @@ func (s *AdminService) AuthConfig(ctx context.Context) (*authapi.PublicConfig, e
 	return s.Client.PublicConfig(ctx)
 }
 
-func (s *AdminService) ListUsers(ctx context.Context, sess *session.Session, query string, limit, offset int) (*authapi.UserList, error) {
+func (s *AdminService) ListUsers(ctx context.Context, sess *session.Session, query, sort string, limit, offset int) (*authapi.UserList, error) {
+	if !authapi.ValidSort(sort) {
+		return nil, apperr.Invalid("sort must be created, last_active or last_sign_in")
+	}
 	var out *authapi.UserList
 	err := s.call(ctx, sess, func(at string) (err error) {
-		out, err = s.Client.ListUsers(ctx, at, strings.TrimSpace(query), limit, offset)
+		out, err = s.Client.ListUsers(ctx, at, strings.TrimSpace(query), sort, limit, offset)
 		return
 	})
 	return out, err
