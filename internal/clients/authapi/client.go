@@ -26,7 +26,9 @@ type AuthClientImpl interface {
 	Me(ctx context.Context, accessToken string) (*User, error)
 	PublicConfig(ctx context.Context) (*PublicConfig, error)
 
-	ListUsers(ctx context.Context, accessToken, query string, limit, offset int) (*UserList, error)
+	// ListUsers searches users; sort is a Sort* value ("" = created), which
+	// auth releases without activity ignore.
+	ListUsers(ctx context.Context, accessToken, query, sort string, limit, offset int) (*UserList, error)
 	GetUser(ctx context.Context, accessToken, id string) (*User, error)
 	SetRole(ctx context.Context, accessToken, id, role string) (*User, error)
 	SetDisabled(ctx context.Context, accessToken, id string, disabled bool) (*User, error)
@@ -231,10 +233,13 @@ func (c *AuthClient) PublicConfig(ctx context.Context) (*PublicConfig, error) {
 	return &out, nil
 }
 
-func (c *AuthClient) ListUsers(ctx context.Context, at, query string, limit, offset int) (*UserList, error) {
+func (c *AuthClient) ListUsers(ctx context.Context, at, query, sort string, limit, offset int) (*UserList, error) {
 	q := url.Values{}
 	if query != "" {
 		q.Set("q", query)
+	}
+	if sort != "" && sort != SortCreated {
+		q.Set("sort", sort)
 	}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
@@ -248,6 +253,9 @@ func (c *AuthClient) ListUsers(ctx context.Context, at, query string, limit, off
 	}
 	if out.Users == nil {
 		out.Users = []User{}
+	}
+	for _, u := range out.Users {
+		out.ActivitySupported = out.ActivitySupported || u.ActivityTracked
 	}
 	return &out, nil
 }

@@ -15,7 +15,19 @@ export interface User {
 	roles?: RoleRef[];
 	/** Effective permissions; absent on auth < 1.5.0. */
 	permissions?: string[];
+	/** Last sign-in (a new session) and activity (sign-ins and token
+	 * refreshes, to within ~5 min). null = never; only meaningful when
+	 * activity_tracked (older auth releases don't report them). */
+	last_sign_in_at?: string | null;
+	/** password | oidc:<slug> | saml:<slug> */
+	last_sign_in_method?: string | null;
+	last_sign_in_ip?: string | null;
+	last_active_at?: string | null;
+	activity_tracked?: boolean;
 }
+
+/** GET /api/users sort orders (newest first). */
+export type UserSort = 'created' | 'last_active' | 'last_sign_in';
 
 export type PermissionGroup = 'admin' | 'network' | 'irc';
 

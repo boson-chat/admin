@@ -64,7 +64,7 @@ func TestClientWireFormat(t *testing.T) {
 	if gotXFF != "203.0.113.7" || gotUA != "Firefox" || gotCT != "application/json" || gotAuth != "" {
 		t.Fatalf("headers xff=%q ua=%q ct=%q auth=%q", gotXFF, gotUA, gotCT, gotAuth)
 	}
-	list, err := c.ListUsers(ctx, "tok", "bo b", 5, 0)
+	list, err := c.ListUsers(ctx, "tok", "bo b", "", 5, 0)
 	if err != nil || list.Total != 1 || list.Users[0].DisabledAt == nil || *list.Users[0].Email != "b@x" {
 		t.Fatalf("list: %v %+v", err, list)
 	}
@@ -110,5 +110,80 @@ func TestClientUnreachable(t *testing.T) {
 	}
 	if IsUnauthorized(err) {
 		t.Fatal("transport error treated as 401")
+	}
+}
+
+// Activity fields: present, null (never signed in) and absent (older auth)
+// are told apart; the list sort is sent only when it isn't the default.
+func TestClientUserActivity(t *testing.T) {
+	var gotSort []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/admin/users":
+			gotSort = append(gotSort, r.URL.Query().Get("sort"))
+			if r.URL.Query().Get("q") == "old" {
+				_, _ = w.Write([]byte(`{"users":[{"id":"usr_1","username":"a","role":"user","created_at":"2026-01-01T00:00:00Z"}],"total":1}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"users":[
+				{"id":"usr_1","username":"a","role":"user","created_at":"2026-01-01T00:00:00Z","last_sign_in_at":"2026-11-15T10:00:00Z","last_sign_in_method":"password","last_sign_in_ip":"192.0.2.1","last_active_at":"2026-11-16T08:30:00Z"},
+				{"id":"usr_2","username":"b","role":"user","created_at":"2026-01-01T00:00:00Z","last_sign_in_at":null,"last_sign_in_method":null,"last_sign_in_ip":null,"last_active_at":null}],"total":2}`))
+		case "/v1/admin/users/usr_1":
+			_, _ = w.Write([]byte(`{"user":{"id":"usr_1","username":"a","role":"user","created_at":"2026-01-01T00:00:00Z","last_sign_in_at":"2026-11-15T10:00:00Z","last_sign_in_method":"saml:corp","last_sign_in_ip":"","last_active_at":"2026-11-16T08:30:00Z"},"identities":[],"has_password":true}`))
+		case "/v1/admin/users/usr_old":
+			_, _ = w.Write([]byte(`{"user":{"id":"usr_old","username":"o","role":"user","created_at":"2026-01-01T00:00:00Z"}}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewAuthClient(srv.URL, time.Second, nil)
+	ctx := context.Background()
+
+	list, err := c.ListUsers(ctx, "tok", "", SortLastActive, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := list.Users[0], list.Users[1]
+	if !list.ActivitySupported || !a.ActivityTracked || !b.ActivityTracked {
+		t.Fatalf("tracked: list %v a %v b %v", list.ActivitySupported, a.ActivityTracked, b.ActivityTracked)
+	}
+	if a.LastActiveAt == nil || !a.LastActiveAt.Equal(time.Date(2026, 11, 16, 8, 30, 0, 0, time.UTC)) ||
+		*a.LastSignInMethod != "password" || *a.LastSignInIP != "192.0.2.1" || a.LastSignInAt == nil {
+		t.Fatalf("a: %+v", a)
+	}
+	if b.LastActiveAt != nil || b.LastSignInAt != nil || b.LastSignInMethod != nil {
+		t.Fatalf("b (never): %+v", b)
+	}
+
+	old, err := c.ListUsers(ctx, "tok", "old", SortCreated, 10, 0)
+	if err != nil || old.ActivitySupported || old.Users[0].ActivityTracked {
+		t.Fatalf("old auth list: %v %+v", err, old)
+	}
+	if len(gotSort) != 2 || gotSort[0] != "last_active" || gotSort[1] != "" {
+		t.Fatalf("sort params %q", gotSort)
+	}
+
+	u, err := c.GetUser(ctx, "tok", "usr_1")
+	if err != nil || !u.ActivityTracked || *u.LastSignInMethod != "saml:corp" || u.LastActiveAt == nil {
+		t.Fatalf("detail: %v %+v", err, u)
+	}
+	u, err = c.GetUser(ctx, "tok", "usr_old")
+	if err != nil || u.ActivityTracked || u.LastActiveAt != nil {
+		t.Fatalf("old detail: %v %+v", err, u)
+	}
+
+	// Re-encoding (admin -> browser) and decoding keeps the flag.
+	raw, _ := json.Marshal(b)
+	var back User
+	if err := json.Unmarshal(raw, &back); err != nil || !back.ActivityTracked {
+		t.Fatalf("round trip: %v %s", err, raw)
+	}
+}
+
+func TestValidSort(t *testing.T) {
+	for s, want := range map[string]bool{"": true, "created": true, "last_active": true, "last_sign_in": true, "bogus": false, "LAST_ACTIVE": false} {
+		if ValidSort(s) != want {
+			t.Errorf("ValidSort(%q) = %v", s, !want)
+		}
 	}
 }

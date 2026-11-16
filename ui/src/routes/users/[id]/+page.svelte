@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
-	import { browser, datetime, eventName, eventTone } from '$lib/format';
+	import { ago, browser, datetime, eventName, eventTone, signInMethod } from '$lib/format';
 	import type {
 		AuditEntry,
 		DirectoryServer,
@@ -378,6 +378,38 @@
 			<dt>Joined</dt>
 			<dd>{datetime(user.created_at)}</dd>
 		</div>
+		{#if user.activity_tracked}
+			<div>
+				<dt>Last signed in</dt>
+				{#if user.last_sign_in_at}
+					<dd>
+						<time datetime={user.last_sign_in_at}>{datetime(user.last_sign_in_at)}</time>
+						<span class="muted">{ago(user.last_sign_in_at)}</span>
+					</dd>
+					{#if user.last_sign_in_method || user.last_sign_in_ip}
+						<dd class="via">
+							{#if user.last_sign_in_method}<span title={user.last_sign_in_method}
+									>{signInMethod(user.last_sign_in_method)}</span
+								>{/if}
+							{#if user.last_sign_in_ip}<span class="muted">from {user.last_sign_in_ip}</span>{/if}
+						</dd>
+					{/if}
+				{:else}
+					<dd class="muted">Never</dd>
+				{/if}
+			</div>
+			<div>
+				<dt>Last active</dt>
+				{#if user.last_active_at}
+					<dd>
+						<time datetime={user.last_active_at}>{datetime(user.last_active_at)}</time>
+						<span class="muted">{ago(user.last_active_at)}</span>
+					</dd>
+				{:else}
+					<dd class="muted">Never</dd>
+				{/if}
+			</div>
+		{/if}
 		{#if user.disabled_at}
 			<div>
 				<dt>Disabled</dt>
@@ -907,6 +939,10 @@
 		overflow-wrap: anywhere;
 		font-family: var(--font-mono);
 		font-size: var(--text-sm);
+	}
+	dd.via {
+		font-size: var(--text-xs);
+		color: var(--fg-2);
 	}
 	.small {
 		font-size: var(--text-xs);

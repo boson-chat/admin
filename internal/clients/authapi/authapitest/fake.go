@@ -39,6 +39,9 @@ type Fake struct {
 	// Emails records password-reset / verification sends as "kind:userID".
 	Emails []string
 
+	// LastListSort is the sort the last ListUsers asked for.
+	LastListSort string
+
 	// NoRoles makes the fake an auth v1.4: everything but roles.
 	NoRoles bool
 	Roles   []authapi.Role
@@ -220,17 +223,19 @@ func (f *Fake) PublicConfig(context.Context) (*authapi.PublicConfig, error) {
 	return &authapi.PublicConfig{Registration: "invite", SSOProviders: []authapi.SSOProvider{}}, nil
 }
 
-func (f *Fake) ListUsers(_ context.Context, at, _ string, _, _ int) (*authapi.UserList, error) {
+func (f *Fake) ListUsers(_ context.Context, at, _, sort string, _, _ int) (*authapi.UserList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, err := f.authLocked(at, true); err != nil {
 		return nil, err
 	}
+	f.LastListSort = sort
 	out := &authapi.UserList{Users: []authapi.User{}}
 	for _, u := range f.Users {
 		c := *u
 		f.decorateLocked(&c)
 		out.Users = append(out.Users, c)
+		out.ActivitySupported = out.ActivitySupported || c.ActivityTracked
 	}
 	out.Total = int64(len(out.Users))
 	return out, nil

@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/boson-chat/admin/internal/apperr"
+	"github.com/boson-chat/admin/internal/clients/authapi"
 	"github.com/boson-chat/admin/internal/services/admin"
 	"github.com/boson-chat/admin/internal/session"
 )
@@ -24,12 +25,17 @@ func intQuery(r *http.Request, name string, def, lo, hi int) int {
 func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request, s *session.Session) {
 	limit := intQuery(r, "limit", 50, 1, 200)
 	offset := intQuery(r, "offset", 0, 0, 1<<30)
-	list, err := h.Admin.ListUsers(r.Context(), s, r.URL.Query().Get("q"), limit, offset)
+	sort := r.URL.Query().Get("sort")
+	list, err := h.Admin.ListUsers(r.Context(), s, r.URL.Query().Get("q"), sort, limit, offset)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": list.Users, "total": list.Total, "limit": limit, "offset": offset})
+	if sort == "" || !list.ActivitySupported {
+		sort = authapi.SortCreated // what auth actually did
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": list.Users, "total": list.Total, "limit": limit, "offset": offset,
+		"sort": sort, "activity_supported": list.ActivitySupported})
 }
 
 func (h *Handlers) getUser(w http.ResponseWriter, r *http.Request, s *session.Session) {

@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { errorText } from '$lib/toasts.svelte';
-	import type { User } from '$lib/types';
+	import type { User, UserSort } from '$lib/types';
 	import type { DropdownOption } from '$lib/dropdown';
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
@@ -24,14 +24,21 @@
 		return sizes.some((s) => s.value === v) ? (v as string) : DEFAULT_SIZE;
 	}
 
+	function sortParam(v: string | null): UserSort {
+		return v === 'last_active' || v === 'last_sign_in' ? v : 'created';
+	}
+
 	let users = $state<User[]>([]);
 	let total = $state(0);
+	// auth reports last sign-in / activity (and honours the sort).
+	let activity = $state(false);
 	let loading = $state(true);
 	let error = $state('');
 
 	let q = $derived(page.url.searchParams.get('q') ?? '');
 	let offset = $derived(Math.max(0, Number(page.url.searchParams.get('offset')) || 0));
 	let pageSize = $derived(Number(sizeParam(page.url.searchParams.get('limit'))));
+	let sort = $derived(sortParam(page.url.searchParams.get('sort')));
 	let input = $state(page.url.searchParams.get('q') ?? '');
 	let size = $state(sizeParam(page.url.searchParams.get('limit')));
 
@@ -41,10 +48,12 @@
 		loading = true;
 		const params = new URLSearchParams({ limit: String(pageSize), offset: String(off) });
 		if (query) params.set('q', query);
-		api<{ users: User[]; total: number }>('GET', '/users?' + params)
+		if (sort !== 'created') params.set('sort', sort);
+		api<{ users: User[]; total: number; activity_supported?: boolean }>('GET', '/users?' + params)
 			.then((r) => {
 				users = r.users;
 				total = r.total;
+				activity = !!r.activity_supported;
 				error = '';
 			})
 			.catch((e) => (error = errorText(e)))
@@ -56,15 +65,28 @@
 		clearTimeout(timer);
 		timer = setTimeout(() => setParams(input.trim(), 0), 250);
 	}
-	function setParams(query: string, off: number) {
+	function setParams(query: string, off: number, by: UserSort = sort) {
 		const p = new URLSearchParams();
 		if (query) p.set('q', query);
+		if (by !== 'created') p.set('sort', by);
 		if (off) p.set('offset', String(off));
 		if (size !== DEFAULT_SIZE) p.set('limit', size);
 		const s = p.toString();
 		goto('/users' + (s ? '?' + s : ''), { keepFocus: true, noScroll: true, replaceState: true });
 	}
 </script>
+
+{#snippet sortBy(by: UserSort, label: string, hint: string)}
+	<button
+		type="button"
+		class="sort"
+		class:on={sort === by}
+		title={hint}
+		onclick={() => sort !== by && setParams(q, 0, by)}
+	>
+		{label}<span class="arrow" aria-hidden="true">↓</span>
+	</button>
+{/snippet}
 
 <svelte:head><title>Users · boson admin</title></svelte:head>
 
@@ -117,8 +139,17 @@
 					<th>User</th>
 					<th class="hide-s">Email</th>
 					<th>{session.info?.roles_supported ? 'Roles' : 'Role'}</th>
-					<th>Status</th>
-					<th class="hide-s">Joined</th>
+					<th class:hide-s={activity}>Status</th>
+					{#if activity}
+						<th aria-sort={sort === 'last_active' ? 'descending' : 'none'}>
+							{@render sortBy('last_active', 'Last active', 'Most recently active first')}
+						</th>
+						<th class="hide-s" aria-sort={sort === 'created' ? 'descending' : 'none'}>
+							{@render sortBy('created', 'Joined', 'Newest accounts first')}
+						</th>
+					{:else}
+						<th class="hide-s">Joined</th>
+					{/if}
 				</tr>
 			</thead>
 			<tbody>
@@ -129,6 +160,7 @@
 							{#if u.display_name && u.display_name !== u.username}
 								<div class="muted small">{u.display_name}</div>
 							{/if}
+							{#if activity && u.disabled_at}<span class="tag tag-bad show-s">Disabled</span>{/if}
 						</td>
 						<td class="hide-s">
 							{#if u.email}
@@ -151,17 +183,24 @@
 									>User</span
 								>{/if}
 						</td>
-						<td
+						<td class:hide-s={activity}
 							>{#if u.disabled_at}<span class="tag tag-bad">Disabled</span>{:else}<span class="ok"
 									>Active</span
 								>{/if}</td
 						>
+						{#if activity}
+							<td class="seen">
+								{#if u.activity_tracked}<Time at={u.last_active_at} empty="Never" compact />{:else}<span
+										class="muted">—</span
+									>{/if}
+							</td>
+						{/if}
 						<td class="hide-s"><Time at={u.created_at} /></td>
 					</tr>
 				{:else}
 					{#if !loading}
 						<tr>
-							<td colspan="5" class="empty">
+							<td colspan={activity ? 6 : 5} class="empty">
 								{#if q}No one matches “{q}”. Try part of a username or an email domain.
 								{:else}No accounts yet. Create an invite so people can register.{/if}
 							</td>
@@ -246,6 +285,46 @@
 		border-radius: 999px;
 		background: var(--success);
 	}
+	.sort {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		margin: 0;
+		padding: 0;
+		border: 0;
+		background: none;
+		font: inherit;
+		letter-spacing: inherit;
+		text-transform: inherit;
+		color: inherit;
+		cursor: pointer;
+	}
+	.sort:hover,
+	.sort.on {
+		color: var(--fg);
+	}
+	.sort:focus-visible {
+		outline: none;
+		box-shadow: var(--focus-ring);
+		border-radius: var(--radius-sm);
+	}
+	.sort .arrow {
+		visibility: hidden;
+		color: var(--accent-text);
+	}
+	.sort.on .arrow {
+		visibility: visible;
+	}
+	.sort:not(.on):hover .arrow {
+		visibility: visible;
+		color: var(--fg-quiet);
+	}
+	.seen {
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+	}
 	.empty {
 		color: var(--fg-quiet);
 		padding: var(--space-8) var(--space-4);
@@ -257,9 +336,17 @@
 		justify-content: flex-end;
 		margin-top: var(--space-4);
 	}
+	.show-s {
+		display: none;
+	}
 	@media (max-width: 640px) {
 		.hide-s {
 			display: none;
+		}
+		/* Status folds into the user cell to make room for Last active. */
+		.show-s {
+			display: inline-block;
+			margin-top: var(--space-1);
 		}
 	}
 </style>
