@@ -128,7 +128,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		Docker:   discover,
 		Project:  cfg.DockerConfig.Project,
 		Known: overview.Builtins(overview.Hosts{Auth: up.AuthHost, Voice: up.VoiceHost, IRC: up.IRCHostname(),
-			API: up.APIHost, Directory: up.DirectoryHost, Files: up.FilesHost}),
+			API: up.APIHost, Directory: up.DirectoryHost, Files: up.FilesHost, Video: up.VideoHost}),
 	})
 	connect := overviewSvc.PublicOrigins()
 

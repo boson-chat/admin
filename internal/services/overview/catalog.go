@@ -31,7 +31,7 @@ type Known struct {
 
 // Hosts are the stack's public hostnames (the stack .env's *_HOST).
 type Hosts struct {
-	Auth, Voice, IRC, API, Directory, Files string
+	Auth, Voice, IRC, API, Directory, Files, Video string
 }
 
 // Builtins is the stack's probe map. A public probe is only listed when its
@@ -48,6 +48,8 @@ func Builtins(h Hosts) []Known {
 			Version: "http://auth:8081/metrics", Public: pub("https", h.Auth, "/healthz")},
 		{Name: "quicvoiced", Service: "quicvoiced", Health: []string{"http://quicvoiced:8080/healthz"},
 			Version: "http://quicvoiced:8080/version", Public: pub("https", h.Voice, "/healthz")},
+		{Name: "quicvideod", Service: "quicvideod", Health: []string{"http://quicvideod:8080/healthz"},
+			Version: "http://quicvideod:8080/version", Public: pub("https", h.Video, "/healthz")},
 		{Name: IRCServiceName, Service: "ergo", Public: pub("wss", h.IRC, "/webirc")},
 		// The api has no version endpoint on the compose network: the image tag.
 		{Name: "api", Service: "api", Health: []string{"http://api:3000/health"}, Public: pub("https", h.API, "/health")},

@@ -52,7 +52,7 @@ func (f versionHealth) Version(_ context.Context, url string) (string, error) {
 }
 
 var testHosts = Hosts{Auth: "auth.example.com", Voice: "voice.example.com", IRC: "irc.example.com",
-	API: "api.example.com", Directory: "directory.example.com", Files: "files.example.com"}
+	API: "api.example.com", Directory: "directory.example.com", Files: "files.example.com", Video: "video.example.com"}
 
 func names(svcs []Service) string {
 	var n []string
@@ -75,6 +75,7 @@ func TestDiscoveryShowsWhatRuns(t *testing.T) {
 		ctr("auth", "running", "harbor.example/boson/auth:1.15.0"),
 		ctr("ergo", "running", "harbor.example/boson/stack-ergo:2.19.1", dockerapi.LabelVersion, "v2.19.1"),
 		ctr("api", "running", "harbor.example/boson/backend:0.55.1"),
+		ctr("quicvideod", "running", "harbor.example/boson/quicvideo:1.8.1"),
 		ctr("directory", "running", "harbor.example/boson/directory:1.8.0"),
 		ctr("files", "running", "harbor.example/boson/files:1.0.1"),
 		ctr("minio", "exited", "bitnamilegacy/minio:2025.7.23-debian-12-r5", dockerapi.LabelVersion, "2025.7.23"),
@@ -98,7 +99,7 @@ func TestDiscoveryShowsWhatRuns(t *testing.T) {
 		t.Fatalf("discovery: %+v", o.Discovery)
 	}
 	// quicvoiced has no container: hidden even though PUBLIC_PROBE_TARGETS names it.
-	if got := names(o.Services); got != "auth,irc,api,directory,files,victoriametrics,minio,grafana" {
+	if got := names(o.Services); got != "auth,quicvideod,irc,api,directory,files,victoriametrics,minio,grafana" {
 		t.Fatalf("services: %s", got)
 	}
 	by := map[string]Service{}
@@ -108,7 +109,7 @@ func TestDiscoveryShowsWhatRuns(t *testing.T) {
 	if a := by["auth"]; len(a.Checks) != 1 || a.Version != "1.15.0" {
 		t.Fatalf("auth (env replaces the map's checks): %+v", a)
 	}
-	for name, want := range map[string]string{"directory": "1.8.0", "files": "1.0.1", "api": "0.55.1",
+	for name, want := range map[string]string{"directory": "1.8.0", "files": "1.0.1", "api": "0.55.1", "quicvideod": "1.8.1",
 		"victoriametrics": "1.131.0", "minio": "2025.7.23", "irc": "ergo-2.19.1"} {
 		if v := by[name].Version; v != want || by[name].VersionError != "" {
 			t.Errorf("%s version %q (%q), want %q", name, v, by[name].VersionError, want)
@@ -117,7 +118,7 @@ func TestDiscoveryShowsWhatRuns(t *testing.T) {
 	if by["minio"].Status != StatusDown || by["directory"].Status != StatusUp || by["irc"].Status != StatusUp {
 		t.Fatalf("statuses: %+v", o.Services)
 	}
-	if got := probeNames(o.PublicProbes); got != "admin,auth,irc,directory,files,api" {
+	if got := probeNames(o.PublicProbes); got != "admin,auth,quicvideod,irc,directory,files,api" {
 		t.Fatalf("public probes: %s", got)
 	}
 	for _, p := range o.PublicProbes {
