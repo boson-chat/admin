@@ -21,6 +21,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/files"
+	"github.com/boson-chat/admin/internal/services/hostmetrics"
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
@@ -83,8 +84,11 @@ type Handlers struct {
 	// NickClaims: the Nick registration page (never nil after Register).
 	NickClaims nickclaim.ServiceImpl
 	// Files: the Uploads and Uploaded files pages (never nil after Register).
-	Files    files.ServiceImpl
-	Sessions *session.Codec
+	Files files.ServiceImpl
+	// HostMetrics: the Metrics page (never nil after Register; unconfigured
+	// without METRICS_URL).
+	HostMetrics hostmetrics.ServiceImpl
+	Sessions    *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features
@@ -116,6 +120,9 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	}
 	if h.Files == nil {
 		h.Files = files.New(files.Options{})
+	}
+	if h.HostMetrics == nil {
+		h.HostMetrics = hostmetrics.New(hostmetrics.Options{})
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

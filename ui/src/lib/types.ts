@@ -609,3 +609,82 @@ export interface ChannelOverview {
 		roles: { id: string; name: string; color: string | null; autojoin: boolean }[];
 	}[];
 }
+
+// ---- the Metrics page (GET /api/metrics/host) ----
+
+export type MetricsRange = '1h' | '6h' | '24h' | '7d';
+export type ChartUnit = 'percent' | 'bytes_per_sec' | 'load';
+
+export interface HostStats {
+	uptime_seconds: number | null;
+	cores: number | null;
+	cpu_percent: number | null;
+	mem_total_bytes: number | null;
+	mem_available_bytes: number | null;
+	swap_total_bytes: number | null;
+	swap_free_bytes: number | null;
+	load1: number | null;
+	load5: number | null;
+	load15: number | null;
+	disk_busy_percent: number | null;
+	/** Pressure stall (PSI): share of time some tasks waited, %. */
+	pressure_cpu: number | null;
+	pressure_memory: number | null;
+	pressure_io: number | null;
+}
+
+export interface Filesystem {
+	mountpoint: string;
+	device?: string;
+	fstype?: string;
+	size_bytes: number;
+	avail_bytes: number;
+}
+
+export interface ChartSeries {
+	name: string;
+	/** [unix seconds, value] */
+	points: [number, number][];
+}
+
+export interface HostChart {
+	key: string;
+	title: string;
+	unit: ChartUnit;
+	stacked?: boolean;
+	max?: number;
+	reference?: { label: string; value: number };
+	series: ChartSeries[];
+	error?: string;
+}
+
+export interface ScrapeTarget {
+	job: string;
+	instance: string;
+	status: 'up' | 'down' | 'stale';
+	last_scrape?: string;
+	last_up?: string;
+	availability?: number;
+}
+
+export interface HostMetrics {
+	configured: boolean;
+	error?: string;
+	checked_at: string;
+	range: MetricsRange;
+	step: number;
+	start: string;
+	end: string;
+	node_exporter: boolean;
+	instances: string[];
+	instance?: string;
+	host?: {
+		hostname?: string;
+		kernel?: string;
+		stats: HostStats;
+		filesystems: Filesystem[];
+		charts: HostChart[];
+	};
+	targets: ScrapeTarget[];
+	targets_error?: string;
+}

@@ -58,7 +58,7 @@ var serveCmd = &cobra.Command{
 			log.Warn().Msg("COOKIE_SECURE=false: the session cookie is sent over plain http (dev only)")
 		}
 		if cfg.UpstreamConfig.MetricsURL == "" {
-			log.Info().Msg("METRICS_URL is empty: the overview shows no live metrics")
+			log.Info().Msg("METRICS_URL is empty: the overview and the Metrics page show no live metrics")
 		}
 		app, err := adminhttp.Build(ctx, cfg, opts)
 		if err != nil {

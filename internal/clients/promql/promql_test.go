@@ -26,7 +26,8 @@ func TestQueryAndRange(t *testing.T) {
 				t.Errorf("step = %q", r.URL.Query().Get("step"))
 			}
 			_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
-				{"metric":{},"values":[[1700000000,"1"],[1700000060,"NaN"],[1700000120,"3"]]}]}}`))
+				{"metric":{"device":"eth0"},"values":[[1700000000,"1"],[1700000060,"NaN"],[1700000120,"3"]]},
+				{"metric":{"device":"eth1"},"values":[[1700000000,"4"]]}]}}`))
 		default:
 			w.WriteHeader(404)
 			_, _ = w.Write([]byte("not found"))
@@ -52,5 +53,9 @@ func TestQueryAndRange(t *testing.T) {
 	pts, err := c.QueryRange(ctx, "sum(x)", time.Unix(1700000000, 0), time.Unix(1700000120, 0), time.Minute)
 	if err != nil || len(pts) != 3 || pts[2].V != 3 || pts[1].T.Unix() != 1700000060 {
 		t.Fatalf("range: %v %+v", err, pts)
+	}
+	series, err := c.(*PromClient).QueryRangeSeries(ctx, "x", time.Unix(1700000000, 0), time.Unix(1700000120, 0), time.Minute)
+	if err != nil || len(series) != 2 || series[1].Labels["device"] != "eth1" || series[1].Points[0].V != 4 || len(series[0].Points) != 3 {
+		t.Fatalf("series: %v %+v", err, series)
 	}
 }

@@ -26,11 +26,24 @@ type Point struct {
 	V float64
 }
 
+// Series is one labelled series of a range query.
+type Series struct {
+	Labels map[string]string
+	Points []Point
+}
+
 type PromClientImpl interface {
 	// Query runs an instant query and returns the vector (or scalar as one sample).
 	Query(ctx context.Context, q string) ([]Sample, error)
 	// QueryRange runs a range query and returns the first series (sum your query).
 	QueryRange(ctx context.Context, q string, start, end time.Time, step time.Duration) ([]Point, error)
+}
+
+// RangeClient is a PromClient that also returns every series of a range
+// query (the Metrics page draws one line per mountpoint or interface).
+type RangeClient interface {
+	Query(ctx context.Context, q string) ([]Sample, error)
+	QueryRangeSeries(ctx context.Context, q string, start, end time.Time, step time.Duration) ([]Series, error)
 }
 
 type PromClient struct {
@@ -41,6 +54,11 @@ type PromClient struct {
 func NewPromClient(baseURL string, timeout time.Duration) PromClientImpl {
 	return &PromClient{BaseURL: baseURL, HTTP: &http.Client{Timeout: timeout}}
 }
+
+var (
+	_ PromClientImpl = (*PromClient)(nil)
+	_ RangeClient    = (*PromClient)(nil)
+)
 
 type apiResponse struct {
 	Status    string `json:"status"`
@@ -116,6 +134,18 @@ func (c *PromClient) Query(ctx context.Context, q string) ([]Sample, error) {
 }
 
 func (c *PromClient) QueryRange(ctx context.Context, q string, start, end time.Time, step time.Duration) ([]Point, error) {
+	series, err := c.QueryRangeSeries(ctx, q, start, end, step)
+	if err != nil {
+		return nil, err
+	}
+	if len(series) == 0 {
+		return []Point{}, nil
+	}
+	return series[0].Points, nil
+}
+
+// QueryRangeSeries runs a range query and returns every series with its labels.
+func (c *PromClient) QueryRangeSeries(ctx context.Context, q string, start, end time.Time, step time.Duration) ([]Series, error) {
 	ar, err := c.get(ctx, "/api/v1/query_range", url.Values{
 		"query": {q},
 		"start": {strconv.FormatInt(start.Unix(), 10)},
@@ -129,26 +159,28 @@ func (c *PromClient) QueryRange(ctx context.Context, q string, start, end time.T
 		return nil, fmt.Errorf("unexpected result type %q", ar.Data.ResultType)
 	}
 	var mat []struct {
-		Values [][2]any `json:"values"`
+		Metric map[string]string `json:"metric"`
+		Values [][2]any          `json:"values"`
 	}
 	if err := json.Unmarshal(ar.Data.Result, &mat); err != nil {
 		return nil, err
 	}
-	if len(mat) == 0 {
-		return []Point{}, nil
-	}
-	out := make([]Point, 0, len(mat[0].Values))
-	for _, v := range mat[0].Values {
-		ts, ok := v[0].(float64)
-		if !ok {
-			return nil, fmt.Errorf("bad timestamp")
+	out := make([]Series, 0, len(mat))
+	for _, m := range mat {
+		pts := make([]Point, 0, len(m.Values))
+		for _, v := range m.Values {
+			ts, ok := v[0].(float64)
+			if !ok {
+				return nil, fmt.Errorf("bad timestamp")
+			}
+			f, err := parseValue(v[1])
+			if err != nil {
+				return nil, err
+			}
+			sec, frac := math.Modf(ts)
+			pts = append(pts, Point{T: time.Unix(int64(sec), int64(frac*1e9)), V: f})
 		}
-		f, err := parseValue(v[1])
-		if err != nil {
-			return nil, err
-		}
-		sec, frac := math.Modf(ts)
-		out = append(out, Point{T: time.Unix(int64(sec), int64(frac*1e9)), V: f})
+		out = append(out, Series{Labels: m.Metric, Points: pts})
 	}
 	return out, nil
 }

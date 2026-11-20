@@ -30,6 +30,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
 	"github.com/boson-chat/admin/internal/services/files"
+	"github.com/boson-chat/admin/internal/services/hostmetrics"
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
@@ -109,8 +110,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		})
 	}
 	var prom promql.PromClientImpl
+	var promRange promql.RangeClient
 	if up.MetricsURL != "" {
-		prom = promql.NewPromClient(up.MetricsURL, up.Timeout)
+		c := &promql.PromClient{BaseURL: up.MetricsURL, HTTP: &nethttp.Client{Timeout: up.Timeout}}
+		prom, promRange = c, c
 	}
 	overviewSvc := overview.NewOverviewService(overview.Options{
 		Health:   health.NewHealthChecker(min(up.Timeout, 3*time.Second)),
@@ -158,7 +161,8 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 
 	h := &handlers.Handlers{
 		Admin: adminSvc, Overview: overviewSvc, Sessions: codec, Origin: origin, Config: stack,
-		Features: handlers.Features{Version: cfg.AppConfig.Version, GrafanaURL: up.GrafanaURL, Metrics: prom != nil},
+		HostMetrics: hostmetrics.New(hostmetrics.Options{Prom: promRange}),
+		Features:    handlers.Features{Version: cfg.AppConfig.Version, GrafanaURL: up.GrafanaURL, Metrics: prom != nil},
 	}
 	upstream := func(name string) func(op string, status int, err error, d time.Duration) {
 		return func(op string, status int, err error, d time.Duration) {
