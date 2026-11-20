@@ -77,12 +77,30 @@
 	function setRoom(i: number, field: 'id' | 'name', v: string) {
 		value = rooms.map((r, j) => (j === i ? { ...r, [field]: v } : r));
 	}
+	/** A room's voice bitrate cap: '' = the server-wide voice.max_kbps. */
+	function setRoomCap(i: number, v: string) {
+		value = rooms.map((r, j) => {
+			if (j !== i) return r;
+			const rest: VoiceRoom = { id: r.id, name: r.name };
+			return v ? { ...rest, max_kbps: Number(v) } : rest;
+		});
+	}
+	function capOptions(cur?: number): DropdownOption[] {
+		const opts = [
+			{ value: '', label: 'No room cap' },
+			...roomCaps.map((n) => ({ value: String(n), label: `${n} kbps` }))
+		];
+		if (cur && !roomCaps.includes(cur)) opts.push({ value: String(cur), label: `${cur} kbps` });
+		return opts;
+	}
 	function addRoom() {
 		value = [...rooms, { id: '', name: '' }];
 	}
 	function removeRoom(i: number) {
 		value = rooms.filter((_, j) => j !== i);
 	}
+
+	const roomCaps = [24, 32, 48, 64, 96, 128];
 
 	let enumOptions = $derived<DropdownOption[]>((k.enum ?? []).map((v) => ({ value: v, label: v })));
 	const durations: DropdownOption[] = ['5m', '10m', '30m', '1h', '6h', '24h'].map((v) => ({
@@ -94,7 +112,9 @@
 		if (v === undefined || v === null) return '';
 		if (Array.isArray(v)) {
 			if (!v.length) return 'none';
-			return v.map((x) => (typeof x === 'string' ? x : `${x.id}`)).join(', ');
+			return v
+				.map((x) => (typeof x === 'string' ? x : x.max_kbps ? `${x.id} (${x.max_kbps} kbps)` : `${x.id}`))
+				.join(', ');
 		}
 		return String(v);
 	}
@@ -209,6 +229,14 @@
 								{disabled}
 							/>
 						</label>
+						<Dropdown
+							options={capOptions(r.max_kbps)}
+							value={r.max_kbps ? String(r.max_kbps) : ''}
+							onchange={(v) => setRoomCap(i, v)}
+							label="Room {i + 1} voice quality cap"
+							title="The most a person sends in this room"
+							{disabled}
+						/>
 						<button
 							class="btn btn-small btn-ghost"
 							type="button"
@@ -321,7 +349,7 @@
 	}
 	.rooms li {
 		display: grid;
-		grid-template-columns: 9rem minmax(0, 1fr) auto;
+		grid-template-columns: 9rem minmax(0, 1fr) 9.5rem auto;
 		gap: var(--space-2);
 		align-items: center;
 	}
@@ -350,10 +378,11 @@
 		}
 		.rooms li {
 			grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+			padding-bottom: var(--space-2);
+			border-bottom: 1px dashed var(--border-soft);
 		}
-		.rooms li button {
-			grid-column: 1 / -1;
-			justify-self: start;
+		.rooms li > button {
+			justify-self: end;
 		}
 	}
 </style>

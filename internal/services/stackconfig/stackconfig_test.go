@@ -313,3 +313,40 @@ func TestRoleChannelKeys(t *testing.T) {
 		t.Error("auth and ergo read roles:")
 	}
 }
+
+func TestVoiceBitrateCaps(t *testing.T) {
+	s, path := newSvc(t, "version: 1\nvoice:\n  rooms: [general, {id: music, name: Music, max_kbps: 128}]\n")
+	v, _ := s.FileValue("voice.rooms")
+	if rs, _ := v.([]Room); len(rs) != 2 || rs[0].MaxKbps != 0 || rs[1].MaxKbps != 128 {
+		t.Fatalf("rooms %v", v)
+	}
+	_, err := s.Update(context.Background(), "alice", "", Change{Set: map[string]any{
+		"voice.max_kbps": float64(64),
+		"voice.rooms": []any{
+			map[string]any{"id": "general", "name": "General"},
+			map[string]any{"id": "music", "name": "Music", "max_kbps": float64(96)},
+		},
+	}}, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "max_kbps: 64") || !strings.Contains(string(b), "max_kbps: 96") || strings.Count(string(b), "max_kbps") != 2 {
+		t.Fatalf("file:\n%s", b)
+	}
+	k, _ := KeyByName("voice.max_kbps")
+	r, _ := KeyByName("voice.rooms")
+	for _, good := range []float64{0, 6, 64, 510} {
+		if _, err := k.Clean(good); err != nil {
+			t.Errorf("max_kbps %v: %v", good, err)
+		}
+	}
+	for _, bad := range []any{float64(3), float64(511), 64.5, "64"} {
+		if _, err := k.Clean(bad); err == nil {
+			t.Errorf("max_kbps %v accepted", bad)
+		}
+		if _, err := r.Clean([]any{map[string]any{"id": "a", "name": "A", "max_kbps": bad}}); err == nil {
+			t.Errorf("room max_kbps %v accepted", bad)
+		}
+	}
+}

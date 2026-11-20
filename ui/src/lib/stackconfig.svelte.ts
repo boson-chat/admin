@@ -90,7 +90,10 @@ export const keyLabels: Record<string, { label: string; detail?: string }> = {
 			'One host:port per line, checked every 5 minutes on the Stack page. Add @dial-host:port to connect somewhere else, like irc.example.org:443@traefik:443.'
 	},
 	'network.name': { label: 'Network name', detail: 'In emails, the IRC welcome and the directory.' },
-	'voice.rooms': { label: 'Static rooms', detail: 'Always there, in this order.' },
+	'voice.rooms': {
+		label: 'Static rooms',
+		detail: 'Always there, in this order. A room’s cap overrides the voice quality cap below.'
+	},
 	'voice.rooms_strict': {
 		label: 'Only these rooms',
 		detail: 'On: people can’t open rooms beyond these and the ones channel founders add.'
@@ -106,6 +109,11 @@ export const keyLabels: Record<string, { label: string; detail?: string }> = {
 	'voice.max_participants': {
 		label: 'People per room',
 		detail: 'The most people in one room. 0 = no limit.'
+	},
+	'voice.max_kbps': {
+		label: 'Voice quality cap',
+		detail:
+			'The most a person sends in kbit/s, in every room without its own cap. People pick Standard (32), High (64) or Music (128) in the app and get whichever is lower. 0 = no cap.'
 	},
 	'irc.plaintext': {
 		label: 'Plaintext IRC',
