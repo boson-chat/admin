@@ -90,7 +90,7 @@ func configErr(err error) error {
 // ---- Network settings (auth) through the file ----
 
 // settingsKeys are NetworkSettings' JSON names that live under auth.
-var settingsKeys = []string{"registration", "require_email_verification", "guest_access", "channel_creation",
+var settingsKeys = []string{"registration", "require_email_verification", "guest_access", "guest_voice", "channel_creation",
 	"voice_channel_creation", "channel_auto_register", "channel_expiry_days"}
 
 // fileSettings is the Network settings response when the file manages

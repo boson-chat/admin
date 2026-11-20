@@ -34,6 +34,7 @@
 		registration: 'Registration',
 		require_email_verification: 'Verified email',
 		guest_access: 'Guest access',
+		guest_voice: 'Guest voice & video',
 		channel_creation: 'Text channel creation',
 		voice_channel_creation: 'Voice room creation',
 		channel_auto_register: 'Automatic channel registration',
@@ -69,10 +70,16 @@
 	// disabled and never sent.
 	let guestAccess = $state(true);
 	let guestSupported = $derived(typeof saved?.guest_access === 'boolean');
+	// Guest voice & video (auth ≥ 1.18, default off). Only means something
+	// while guest access is on; older auth doesn't send it and it's never sent.
+	let guestVoice = $state(false);
+	let guestVoiceSupported = $derived(typeof saved?.guest_voice === 'boolean');
+	let guestsAllowed = $derived(!guestSupported || guestAccess);
 
 	function reset(s: NetworkSettings) {
 		draft = { ...s };
 		guestAccess = s.guest_access ?? true;
+		guestVoice = s.guest_voice ?? false;
 		autoRegister = s.channel_auto_register ?? true;
 		const days = s.channel_expiry_days ?? 0;
 		expiry = expiryChoice(days);
@@ -155,6 +162,7 @@
 		if (autoSupported && autoRegister !== saved.channel_auto_register)
 			out.channel_auto_register = autoRegister;
 		if (guestSupported && guestAccess !== saved.guest_access) out.guest_access = guestAccess;
+		if (guestVoiceSupported && guestVoice !== saved.guest_voice) out.guest_voice = guestVoice;
 		const days = expiryDays(expiry, customDays);
 		if (expirySupported && days !== null && days !== saved.channel_expiry_days)
 			out.channel_expiry_days = days;
@@ -259,7 +267,7 @@
 				<div class="toggle-row">
 					<Toggle
 						label="Guest access: let people join without an account"
-						detail="Anyone can connect to IRC with just a nickname. Guests can chat in channels, but can’t register channels or use voice rooms and roles. Turn this off to require everyone to sign in."
+						detail="Anyone can connect to IRC with just a nickname. Guests can chat in channels, but can’t register channels or have roles, and join voice rooms only if allowed below. Turn this off to require everyone to sign in."
 						disabled={!guestSupported}
 						bind:checked={guestAccess}
 					/>
@@ -278,6 +286,26 @@
 							IRC refuses connections that don’t sign in.
 						{/if}
 						People with an account sign in as usual from the app, web and IRC clients.
+					</p>
+				{/if}
+			</div>
+			<div class="guest">
+				<div class="toggle-row">
+					<Toggle
+						label="Guests can join voice & video"
+						detail="Guests can talk and share video in voice rooms open to everyone, under their nickname with a guest badge. Nicknames that belong to an account are refused, and rooms limited to channel members or roles stay closed to them. Voice uses server bandwidth."
+						disabled={!guestVoiceSupported || !guestsAllowed}
+						bind:checked={guestVoice}
+					/>
+				</div>
+				{#if !guestVoiceSupported}
+					<Notice tone="info">
+						Requires auth 1.18 or newer. Until then guests can’t use voice or video.
+					</Notice>
+				{:else if !guestsAllowed}
+					<p class="hint" aria-live="polite">
+						Turn on guest access first: with it off nobody joins as a guest.
+						{#if guestVoice}This stays on for when guests are allowed again.{/if}
 					</p>
 				{/if}
 			</div>

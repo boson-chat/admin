@@ -50,7 +50,10 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   days (never, presets or 1–3,650). On older auth that group is disabled with
   a note and its fields are never sent. With auth ≥ 1.8.0 also guest access:
   whether people can use IRC without an account (off = IRC requires a login);
-  disabled with a note on older auth.
+  disabled with a note on older auth. With auth ≥ 1.18.0 also guest voice &
+  video (off by default): whether guests can join voice rooms, and so video,
+  under their nickname with a guest badge; disabled while guest access is
+  off, and disabled with a note on older auth.
 - **Nick registration:** the api's nick claims (registering users' nicks
   with NickServ on other IRC networks through `reg+<user id>-<token>@domain`
   addresses and a POP3 mailbox; off by default). The switch, email domain,
@@ -560,6 +563,7 @@ running auth service and Dex, not only against fakes; rerun with
 | `GET/PATCH /v1/admin/settings` → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` | 1.3.0 | Network settings. `updated_*` are null until the first PATCH |
 | `GET/PATCH /v1/admin/settings` add `channel_auto_register` (bool) and `channel_expiry_days` (0–3650, 0 = never) | 1.7.0 | Channel registration group. Absent on older auth: the panel leaves them out of its own JSON and never PATCHes them |
 | `GET/PATCH /v1/admin/settings` add `guest_access` (bool; `false` = IRC requires a login) | 1.8.0 | Guest access toggle. Absent on older auth: same handling, the toggle is disabled with a note |
+| `GET/PATCH /v1/admin/settings` add `guest_voice` (bool, default `false`; guests may join voice and video, only while `guest_access` is on) | 1.18.0 | Guest voice & video toggle (`auth.guest_voice` in the stack config file). Absent on older auth: same handling, the toggle is disabled with a note |
 | `POST /v1/admin/users` `{username, email, role, password \| send_invite_email}` → 201 `{user, invite_email_sent}` | 1.3.0 | Create user |
 | `POST /v1/admin/users/{id}/password-reset`, `…/verification` → 202 | 1.3.0 | Emails. `400 no_email`, `409 already_verified`, `409 account_disabled` (and `409 username_taken` / `email_taken` / `slug_taken`) get panel wording |
 | `GET /v1/admin/audit?event=&actor=&target=&since=&until=&cursor=&limit=` → `{entries[{…, actor_user_id, actor_username, target_user_id, target_username}], next_cursor}` | 1.3.0 | Audit paging. `event` is an exact name or a comma list; the panel expands its `admin_*`-style groups into names. `next_cursor` is always present (`null` at the end), which is how the panel tells it from 1.2 |

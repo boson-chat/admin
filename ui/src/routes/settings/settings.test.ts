@@ -148,3 +148,53 @@ describe('network settings: stack config file', () => {
 		expect(api).toHaveBeenCalledWith('PATCH', '/config', { unset: ['auth.registration'] });
 	});
 });
+
+describe('network settings: guest voice', () => {
+	beforeEach(() => api.mockReset());
+	const voiceSwitch = () => screen.getByRole('switch', { name: /Guests can join voice/ }) as HTMLInputElement;
+
+	it('turns guest voice on and sends only guest_voice', async () => {
+		serve({ ...base, guest_access: true, guest_voice: false });
+		const user = userEvent.setup();
+		render(Page);
+		const sw = (await screen.findByRole('switch', {
+			name: /Guests can join voice/
+		})) as HTMLInputElement;
+		expect(sw.checked).toBe(false);
+		expect(sw.hasAttribute('disabled')).toBe(false);
+		expect(screen.queryByText(/Requires auth 1.18/)).toBeNull();
+
+		await user.click(sw);
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_voice: true });
+		expect(voiceSwitch().checked).toBe(true);
+	});
+
+	it('is disabled while guest access is off, including after turning it off', async () => {
+		serve({ ...base, guest_access: true, guest_voice: true });
+		const user = userEvent.setup();
+		render(Page);
+		const sw = (await screen.findByRole('switch', {
+			name: /Guests can join voice/
+		})) as HTMLInputElement;
+		expect(sw.hasAttribute('disabled')).toBe(false);
+		await user.click(screen.getByRole('switch', { name: /Guest access/ }));
+		expect(voiceSwitch().hasAttribute('disabled')).toBe(true);
+		expect(screen.getByText(/Turn on guest access first/)).toBeTruthy();
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: false });
+	});
+
+	it('disables the toggle on auth older than 1.18 and never sends it', async () => {
+		serve({ ...base, guest_access: true });
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByText(/Requires auth 1.18 or newer/)).toBeTruthy();
+		expect(voiceSwitch().hasAttribute('disabled')).toBe(true);
+		expect(voiceSwitch().checked).toBe(false);
+
+		await user.click(screen.getByRole('switch', { name: /Guest access/ }));
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: false });
+	});
+});

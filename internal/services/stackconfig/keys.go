@@ -265,6 +265,7 @@ var Keys = append([]Key{
 	{Key: "auth.registration", Kind: KindEnum, Enum: []string{"open", "invite", "closed"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "REGISTRATION"},
 	{Key: "auth.require_email_verification", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "REQUIRE_EMAIL_VERIFICATION"},
 	{Key: "auth.guest_access", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
+	{Key: "auth.guest_voice", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
 	{Key: "auth.channel_creation", Kind: KindEnum, Enum: []string{"registered", "admins"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "IRC_CHANNEL_CREATION"},
 	{Key: "auth.voice_channel_creation", Kind: KindEnum, Enum: []string{"admins", "founders", "registered"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "VOICE_CHANNEL_CREATION"},
 	{Key: "auth.channel_auto_register", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},

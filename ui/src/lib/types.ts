@@ -192,6 +192,8 @@ export interface NetworkSettings {
 	channel_expiry_days?: number;
 	/** auth ≥ 1.8: IRC lets people connect without an account. Absent on older auth (guests allowed). */
 	guest_access?: boolean;
+	/** auth ≥ 1.18: guests may also join voice rooms (and so video). Absent on older auth. Only takes effect with guest_access. */
+	guest_voice?: boolean;
 	updated_at?: string;
 	updated_by?: string;
 	updated_by_username?: string;

@@ -90,6 +90,26 @@ func TestSettingsGuestAccess(t *testing.T) {
 	}
 }
 
+func TestSettingsGuestVoice(t *testing.T) {
+	h := newHarness(t)
+	c, csrf := h.login()
+	w := h.do("GET", "/api/settings", nil, withCookie(c))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"guest_voice":false`) {
+		t.Fatalf("get: %d %s", w.Code, w.Body)
+	}
+	w = h.do("PATCH", "/api/settings", map[string]any{"guest_voice": true}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"guest_voice":true`) {
+		t.Fatalf("patch guest_voice: %d %s", w.Code, w.Body)
+	}
+
+	// auth ≤ 1.17: no guest_voice, and the panel doesn't invent one.
+	h.fake.Settings.GuestVoice = nil
+	w = h.do("GET", "/api/settings", nil, withCookie(c))
+	if w.Code != 200 || strings.Contains(w.Body.String(), "guest_voice") {
+		t.Fatalf("older auth settings: %d %s", w.Code, w.Body)
+	}
+}
+
 func TestUserEndpoints(t *testing.T) {
 	h := newHarness(t)
 	c, csrf := h.login()
