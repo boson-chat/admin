@@ -56,6 +56,7 @@ type Key struct {
 	// Restart: only takes effect after the service restarts.
 	Restart bool                         `json:"restart,omitempty"`
 	item    func(string) (string, error) // list item / string check; returns the cleaned value
+	intOK   func(int) error              // extra int check (after Min/Max)
 }
 
 var (
@@ -302,6 +303,9 @@ var Keys = append([]Key{
 	{Key: "voice.max_rooms_per_user", Kind: KindInt, Min: 0, Max: 1000, Perm: admin.PermSettingsManage, Services: []string{voice}},
 	{Key: "voice.max_rooms", Kind: KindInt, Min: 0, Max: 100000, Perm: admin.PermSettingsManage, Services: []string{voice}},
 	{Key: "voice.max_participants", Kind: KindInt, Min: 0, Max: 100000, Perm: admin.PermSettingsManage, Services: []string{voice}},
+	// quicvoiced ≥ 1.13: the voice bitrate cap in rooms without their own
+	// (voice.rooms[].max_kbps); 0 = no cap.
+	{Key: "voice.max_kbps", Kind: KindInt, Min: 0, Max: MaxKbps, Perm: admin.PermSettingsManage, Services: []string{voice}, intOK: kbps},
 
 	{Key: "directory.name", Kind: KindString, Perm: admin.PermDirectoryManage, Services: []string{dir}, Env: "DIRECTORY_NAME", item: text(64)},
 	{Key: "directory.operator", Kind: KindString, Perm: admin.PermDirectoryManage, Services: []string{dir}, Env: "DIRECTORY_OPERATOR", item: optionalText(64)},
@@ -531,6 +535,22 @@ func KeyByName(name string) (Key, bool) {
 type Room struct {
 	ID   string `json:"id" yaml:"id"`
 	Name string `json:"name" yaml:"name"`
+	// MaxKbps caps the voice bitrate in this room (kbit/s); 0 = the
+	// section's voice.max_kbps.
+	MaxKbps int `json:"max_kbps,omitempty" yaml:"max_kbps,omitempty"`
+}
+
+// Voice bitrate caps (kbit/s): quicvoiced takes 0 (none) or MinKbps..MaxKbps.
+const (
+	MinKbps = 6
+	MaxKbps = 510
+)
+
+func kbps(n int) error {
+	if n != 0 && (n < MinKbps || n > MaxKbps) {
+		return fmt.Errorf("must be 0 (no cap) or %d–%d kbit/s", MinKbps, MaxKbps)
+	}
+	return nil
 }
 
 // Clean validates a value from the API (JSON-decoded: bool, float64,
@@ -561,6 +581,11 @@ func (k Key) Clean(v any) (any, error) {
 		}
 		if n < k.Min || n > k.Max {
 			return fail("must be from %d to %d", k.Min, k.Max)
+		}
+		if k.intOK != nil {
+			if err := k.intOK(n); err != nil {
+				return fail("%v", err)
+			}
 		}
 		return n, nil
 	case KindEnum:
@@ -660,7 +685,7 @@ func (k Key) Clean(v any) (any, error) {
 		if !ok {
 			if rs, ok2 := v.([]Room); ok2 {
 				for _, r := range rs {
-					items = append(items, map[string]any{"id": r.ID, "name": r.Name})
+					items = append(items, roomItem(r))
 				}
 				ok = true
 			}
@@ -689,7 +714,23 @@ func (k Key) Clean(v any) (any, error) {
 			if slices.ContainsFunc(out, func(r Room) bool { return r.ID == id }) {
 				return fail("the room id %s is used twice", id)
 			}
-			out = append(out, Room{ID: id, Name: name})
+			var kb int
+			switch x := m["max_kbps"].(type) {
+			case nil:
+			case float64:
+				kb = int(x)
+				if x != float64(kb) {
+					return fail("room %d: the bitrate cap must be a whole number of kbit/s", i+1)
+				}
+			case int:
+				kb = x
+			default:
+				return fail("room %d: the bitrate cap must be a number of kbit/s", i+1)
+			}
+			if err := kbps(kb); err != nil {
+				return fail("room %d: the bitrate cap %v", i+1, err)
+			}
+			out = append(out, Room{ID: id, Name: name, MaxKbps: kb})
 		}
 		return out, nil
 	}
@@ -762,7 +803,7 @@ func (k Key) FromNode(n *yaml.Node) (any, error) {
 		}
 		items := make([]any, len(rs))
 		for i, r := range rs {
-			items[i] = map[string]any{"id": r.ID, "name": r.Name}
+			items[i] = roomItem(r)
 		}
 		raw = items
 	}
@@ -771,6 +812,15 @@ func (k Key) FromNode(n *yaml.Node) (any, error) {
 		return nil, err
 	}
 	return jsonShape(v), nil
+}
+
+// roomItem is r as the API's JSON shape (max_kbps only when set).
+func roomItem(r Room) map[string]any {
+	m := map[string]any{"id": r.ID, "name": r.Name}
+	if r.MaxKbps != 0 {
+		m["max_kbps"] = float64(r.MaxKbps)
+	}
+	return m
 }
 
 // jsonShape: what the API returns for a cleaned value.

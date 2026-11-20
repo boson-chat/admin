@@ -164,6 +164,62 @@ describe('stack config page', () => {
 		expect(screen.getByText(/Changing it needs/)).toBeTruthy();
 	});
 
+	it('sets a voice room’s bitrate cap', async () => {
+		const v = view();
+		v.keys = [
+			...v.keys,
+			key({
+				key: 'voice.rooms',
+				kind: 'rooms',
+				perm: 'settings.manage',
+				services: ['quicvoiced'],
+				set: true,
+				line: 6,
+				value: [
+					{ id: 'general', name: 'General' },
+					{ id: 'music', name: 'Music', max_kbps: 128 }
+				]
+			}),
+			key({
+				key: 'voice.max_kbps',
+				kind: 'int',
+				min: 0,
+				max: 510,
+				perm: 'settings.manage',
+				services: ['quicvoiced']
+			})
+		];
+		serve(v);
+		const user = userEvent.setup();
+		render(Page);
+		const general = await screen.findByRole('combobox', { name: 'Room 1 voice quality cap' });
+		expect(general.textContent).toMatch(/No room cap/);
+		expect(screen.getByRole('combobox', { name: 'Room 2 voice quality cap' }).textContent).toMatch(
+			/128 kbps/
+		);
+		expect(screen.getByText('Voice quality cap')).toBeTruthy();
+
+		await user.click(general);
+		await user.click(await screen.findByRole('option', { name: '64 kbps' }));
+		await user.click(screen.getByRole('combobox', { name: 'Room 2 voice quality cap' }));
+		await user.click(await screen.findByRole('option', { name: 'No room cap' }));
+		const voice = screen.getByRole('heading', { name: 'Voice rooms' }).closest('section')!;
+		await user.click(within(voice as HTMLElement).getByRole('button', { name: 'Save changes' }));
+		expect(api).toHaveBeenCalledWith(
+			'PATCH',
+			'/config',
+			{
+				set: {
+					'voice.rooms': [
+						{ id: 'general', name: 'General', max_kbps: 64 },
+						{ id: 'music', name: 'Music' }
+					]
+				}
+			},
+			{ 'If-Match': '"v1"' }
+		);
+	});
+
 	it('explains the file isn’t set up', async () => {
 		serve({ ...view(), enabled: false });
 		render(Page);

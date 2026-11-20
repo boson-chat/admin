@@ -500,6 +500,8 @@ export type ConfigKind =
 export interface VoiceRoom {
 	id: string;
 	name: string;
+	/** quicvoiced ≥ 1.13: this room's voice bitrate cap in kbit/s; absent = voice.max_kbps. */
+	max_kbps?: number;
 }
 
 export type ConfigValue = boolean | number | string | string[] | VoiceRoom[];
