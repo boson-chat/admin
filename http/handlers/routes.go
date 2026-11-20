@@ -26,6 +26,8 @@ type route struct {
 func (h *Handlers) routes() []route {
 	return []route{
 		{"GET /api/overview", admin.PermServicesView, false, h.overview},
+		// Host metrics and scrape targets, read-only like the overview.
+		{"GET /api/metrics/host", admin.PermServicesView, false, h.hostMetrics},
 
 		{"GET /api/users", admin.PermUsersView, false, h.listUsers},
 		{"POST /api/users", admin.PermUsersManage, false, h.createUser},

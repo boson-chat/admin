@@ -3,6 +3,7 @@ import type { Role, RoleRef } from './types';
 /** What each page needs (on top of admin.panel). The BFF enforces the same table. */
 export const pagePerms: { prefix: string; perm: string; label: string }[] = [
 	{ prefix: '/services', perm: 'services.view', label: 'Services' },
+	{ prefix: '/metrics', perm: 'services.view', label: 'Metrics' },
 	{ prefix: '/settings', perm: 'settings.manage', label: 'Network settings' },
 	{ prefix: '/branding', perm: 'settings.manage', label: 'Branding' },
 	{ prefix: '/emails', perm: 'settings.manage', label: 'Emails' },

@@ -98,6 +98,15 @@
 
 	--focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 
+	/* Chart series (dataviz reference palette, dark steps; validated on
+	   --surface: blue, orange, aqua, yellow in this fixed order) */
+	--series-1: #3987e5;
+	--series-2: #d95926;
+	--series-3: #199e70;
+	--series-4: #c98500;
+	--chart-grid: #1c1c24;
+	--chart-axis: #34343f;
+
 	--rail: 220px;
 	color-scheme: dark;
 }
@@ -131,6 +140,12 @@
 		--info-text: #1d4ed8;
 		--shadow: 0 8px 32px rgba(27, 27, 33, 0.14);
 		--backdrop: color-mix(in oklab, #1b1b21, transparent 55%);
+		--series-1: #2a78d6;
+		--series-2: #eb6834;
+		--series-3: #1baf7a;
+		--series-4: #eda100;
+		--chart-grid: #e4e4dd;
+		--chart-axis: #bdbdb4;
 		color-scheme: light;
 	}
 }
@@ -161,6 +176,12 @@
 	--info-text: #1d4ed8;
 	--shadow: 0 8px 32px rgba(27, 27, 33, 0.14);
 	--backdrop: color-mix(in oklab, #1b1b21, transparent 55%);
+	--series-1: #2a78d6;
+	--series-2: #eb6834;
+	--series-3: #1baf7a;
+	--series-4: #eda100;
+	--chart-grid: #e4e4dd;
+	--chart-axis: #bdbdb4;
 	color-scheme: light;
 }
 

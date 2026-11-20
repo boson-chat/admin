@@ -21,6 +21,7 @@
 			items: [
 				{ href: '/', label: 'Stack' },
 				{ href: '/services', label: 'Services' },
+				{ href: '/metrics', label: 'Metrics' },
 				{ href: '/settings', label: 'Network settings' },
 				{ href: '/branding', label: 'Branding' },
 				{ href: '/emails', label: 'Emails' },

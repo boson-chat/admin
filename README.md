@@ -43,6 +43,21 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   edge); a log viewer per service (tail 100–5,000 lines, follow, filter,
   stderr only, download). Through a locked-down Docker socket proxy; see
   "Services control" below.
+- **Metrics:** the VPS's health from node-exporter (scrape job `node`) and
+  every scrape target's up/down, read from `METRICS_URL`. Tiles for uptime,
+  CPU, memory, swap, root disk and load against the core count, with the
+  thresholds the small box needs flagged in words and colour (memory ≥ 80 %
+  high / ≥ 90 % critical, any swap in use, disk ≥ 85 % / ≥ 95 %, CPU ≥ 80 %,
+  load above the cores) and PSI pressure when the kernel reports it. Charts
+  over 1 h, 6 h, 24 h or 7 d (crosshair tooltips, arrow keys, a table view):
+  CPU by mode (stacked), memory and swap used, load 1/5/15 with the cores,
+  disk used per mount, disk read/write and network in/out for the two
+  busiest interfaces. A filesystem table, and service health per scrape
+  target (state, last scrape, last time up, availability over the range).
+  Refreshes every 30 s while the tab is visible. Without node-exporter it
+  says how to turn it on (the stack's `metrics` profile) and still shows the
+  service health. The browser never sends PromQL: the BFF runs a fixed set
+  of queries (cached 10 s).
 - **Network settings:** registration (open, invite only, closed), required
   email verification, and who may create text channels and voice rooms. With
   auth ≥ 1.7.0 also channel registration: register new channels to their
@@ -684,7 +699,7 @@ the page and the buttons.
 | Permission | Pages and endpoints |
 |---|---|
 | `admin.panel` | sign in, `/api/session`, reading the config file (`GET /api/config`, `/raw`, `/status`), reading `/api/permissions`, `/api/roles`, `/api/roles/{id}` and its members |
-| `services.view` | Stack (`/api/overview`), Services list and logs (`GET /api/services…`) |
+| `services.view` | Stack (`/api/overview`), Metrics (`/api/metrics/host`), Services list and logs (`GET /api/services…`) |
 | `services.manage` | restart / stop / start (`POST /api/services/{name}/{action}`); config file keys `irc.*`, `admin.tls_check_hosts` |
 | `settings.manage` | Network settings (`GET/PATCH /api/settings`); config file keys `network.*`, `auth.*`, `voice.*`, `nick_claim.*`, `files.*`; Uploads status (`GET /api/files/status`), a user's uploads quota override (`PUT/DELETE /api/users/{id}/files-quota`) |
 | `directory.manage` | Directory (`/api/directory…`); config file keys `directory.*`, `admin.directory_*` |
@@ -743,6 +758,7 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/invites`, `POST /api/invites` `{max_uses, ttl, note}`, `DELETE /api/invites/{id}` | the code is only in the create response |
 | `GET /api/audit?event=&actor=&target=&since=&until=&cursor=&limit=` | `event` exact or prefix with `*`; `since`/`until` RFC 3339 or a duration back from now (`24h`); `user_id` still works for `actor`. `{entries, next_cursor, server_filtered, events}` |
 | `GET /api/overview` | services (incl. `irc`), certificates, metrics, `edge`, `irc`, `public_probes` |
+| `GET /api/metrics/host?range=1h\|6h\|24h\|7d&instance=` | `{configured, error?, range, step, start, end, node_exporter, instances, instance, host?: {hostname, kernel, stats, filesystems, charts: [{key, title, unit, stacked, max, reference, series: [{name, points: [[t, v]]}], error?}]}, targets: [{job, instance, status: up\|down\|stale, last_scrape, last_up, availability}], targets_error?}`. 400 on another range or an instance that isn't a `node` target; `configured: false` without `METRICS_URL` |
 | `GET /api/sso` | removed; see `/api/sso/providers` |
 | `GET/PATCH /api/settings` | `{settings}`; 501 `upstream_unsupported` on older auth. With `BOSON_CONFIG` the PATCH writes `auth:` in the config file and both answer `{settings, config: {managed, sources: {key: file\|default}}}` |
 | `GET /api/config` | `{enabled, path, etag, exists, modified_at, saved_by, saved_at, error?: {message, line, column}, issues, keys: [{key, kind, perm, services, env, restart, set, value, default, line, editable}]}`; `ETag` header |
