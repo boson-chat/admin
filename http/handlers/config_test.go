@@ -145,6 +145,31 @@ func TestNetworkSettingsWriteTheFile(t *testing.T) {
 	}
 }
 
+// guest_voice goes to auth.guest_voice in the file like the other settings.
+func TestNetworkSettingsGuestVoiceInFile(t *testing.T) {
+	h := newHarness(t)
+	path := h.withConfigFile("version: 1\n")
+	c, csrf := h.login()
+	w := h.do("PATCH", "/api/settings", map[string]any{"guest_voice": true}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 {
+		t.Fatalf("patch: %d %s", w.Code, w.Body)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "guest_voice: true") {
+		t.Fatalf("file:\n%s", b)
+	}
+	var out struct {
+		Settings map[string]any `json:"settings"`
+		Config   struct {
+			Sources map[string]string `json:"sources"`
+		} `json:"config"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if out.Settings["guest_voice"] != true || out.Config.Sources["guest_voice"] != "file" || out.Config.Sources["guest_access"] != "default" {
+		t.Fatalf("response: %s", w.Body)
+	}
+}
+
 func TestConfigOffWithoutFile(t *testing.T) {
 	h := newHarness(t)
 	c, csrf := h.login()

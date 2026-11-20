@@ -230,3 +230,40 @@ func TestSettingsGuestAccess(t *testing.T) {
 		t.Fatalf("patch: %v %s %+v", err, patched, s)
 	}
 }
+
+// auth 1.18 adds guest_voice; older releases don't send it, which must read
+// as "unknown", not false.
+func TestSettingsGuestVoice(t *testing.T) {
+	var get, patched string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(get))
+		case http.MethodPatch:
+			b, _ := io.ReadAll(r.Body)
+			patched = string(b)
+			_, _ = w.Write([]byte(`{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","guest_access":true,"guest_voice":true}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewAuthClient(srv.URL, time.Second, nil)
+	ctx := context.Background()
+
+	get = `{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","guest_access":true,"guest_voice":false}`
+	s, err := c.GetSettings(ctx, "t")
+	if err != nil || s.GuestVoice == nil || *s.GuestVoice {
+		t.Fatalf("auth 1.18 settings: %v %+v", err, s)
+	}
+	get = `{"registration":"invite","channel_creation":"registered","voice_channel_creation":"founders","guest_access":true}`
+	s, err = c.GetSettings(ctx, "t")
+	if err != nil || s.GuestVoice != nil {
+		t.Fatalf("auth 1.17 settings: %v %+v", err, s)
+	}
+	if b, _ := json.Marshal(s); strings.Contains(string(b), "guest_voice") {
+		t.Fatalf("unknown guest_voice re-encoded: %s", b)
+	}
+	s, err = c.UpdateSettings(ctx, "t", SettingsPatch{GuestVoice: new(true)})
+	if err != nil || patched != `{"guest_voice":true}` || s.GuestVoice == nil || !*s.GuestVoice {
+		t.Fatalf("patch: %v %s %+v", err, patched, s)
+	}
+}
