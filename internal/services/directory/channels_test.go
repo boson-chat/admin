@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,8 +82,8 @@ func TestChannelsSentWithTheListing(t *testing.T) {
 	if _, err := d.Update(ctx, "root", "irc.example.org", id, bosonapi.Submission{Name: "Again"}); err != nil || f.channelPatches != n {
 		t.Fatalf("unknown: %v %d", err, f.channelPatches-n)
 	}
-	if res, err := d.PushChannels(ctx, "root"); res != nil || err != nil {
-		t.Fatalf("unknown push: %v %v", res, err)
+	if res, err := d.PushChannels(ctx, "root"); err != nil || res == nil || !strings.Contains(res.Skipped, "BOSON_CONFIG") || f.channelPatches != n {
+		t.Fatalf("unknown push: %+v %v", res, err)
 	}
 }
 
@@ -104,19 +106,43 @@ func TestChannelsOlderDirectory(t *testing.T) {
 		Secret: []byte("other-secret-0123456789abcdef0123"), Hostname: "irc.other.org",
 		Channels: func() ([]string, []string, bool) { return nil, nil, true },
 	})
-	if res, err := d2.PushChannels(ctx, "root"); res != nil || err != nil {
-		t.Fatalf("no listing: %v %v", res, err)
+	if res, err := d2.PushChannels(ctx, "root"); err != nil || res == nil || !strings.Contains(res.Skipped, "no listing for irc.other.org") {
+		t.Fatalf("no listing: %+v %v", res, err)
+	}
+	// Registration off, no hostname: skipped, and why.
+	d3 := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Registration: false,
+		Secret: []byte("0123456789abcdef0123456789abcdef"), Hostname: "irc.example.org",
+		Channels: func() ([]string, []string, bool) { return nil, nil, true },
+	})
+	if res, _ := d3.PushChannels(ctx, "root"); res == nil || !strings.Contains(res.Skipped, "registration is off") {
+		t.Fatalf("registration off: %+v", res)
+	}
+	d4 := NewDirectoryService(Options{Client: bosonapi.NewDirectoryClient(srv.URL, time.Second, nil), Registration: true,
+		Secret:   []byte("0123456789abcdef0123456789abcdef"),
+		Channels: func() ([]string, []string, bool) { return nil, nil, true },
+	})
+	if res, _ := d4.PushChannels(ctx, "root"); res == nil || !strings.Contains(res.Skipped, "no listed hostname") {
+		t.Fatalf("no hostname: %+v", res)
 	}
 }
 
 type countingDir struct {
 	DirectoryServiceImpl
 	pushes chan []string
+	mu     sync.Mutex
 	res    *bosonapi.ChannelsSync
 }
 
+func (c *countingDir) setRes(r *bosonapi.ChannelsSync) {
+	c.mu.Lock()
+	c.res = r
+	c.mu.Unlock()
+}
+
 func (c *countingDir) PushChannels(context.Context, string) (*bosonapi.ChannelsSync, error) {
+	c.mu.Lock()
 	r := c.res // read before handing over, so the test may change it after
+	c.mu.Unlock()
 	c.pushes <- nil
 	return r, nil
 }
@@ -157,10 +183,45 @@ func TestWatchChannels(t *testing.T) {
 	kick()
 	wait(true)
 	// A failed push is retried at the next kick.
-	c.res = &bosonapi.ChannelsSync{Error: "down"}
+	c.setRes(&bosonapi.ChannelsSync{Error: "down"})
 	names <- []string{"#x"}
 	kick()
 	wait(true)
 	kick()
 	wait(true)
+}
+
+func TestWatchChannelsRetriesSkipped(t *testing.T) {
+	old := RetryChannelsEvery
+	RetryChannelsEvery = 50 * time.Millisecond
+	defer func() { RetryChannelsEvery = old }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &countingDir{pushes: make(chan []string, 100), res: &bosonapi.ChannelsSync{Skipped: "not registered yet"}}
+	get := func() ([]string, []string, bool) { return []string{"#lobby"}, []string{"#lobby"}, true }
+	WatchChannels(ctx, c, get)
+	// skipped at start, tried again by the retry ticker without a kick
+	for i := 0; i < 2; i++ {
+		select {
+		case <-c.pushes:
+		case <-time.After(time.Second):
+			t.Fatalf("push %d not retried", i)
+		}
+	}
+	c.setRes(&bosonapi.ChannelsSync{OK: true})
+	select {
+	case <-c.pushes:
+	case <-time.After(time.Second):
+		t.Fatal("not retried after the skip")
+	}
+	// done: the ticker doesn't push the same names again
+	select {
+	case <-c.pushes:
+		select {
+		case <-c.pushes:
+			t.Fatal("kept pushing after success")
+		case <-time.After(200 * time.Millisecond):
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
 }

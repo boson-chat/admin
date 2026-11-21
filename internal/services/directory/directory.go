@@ -435,17 +435,24 @@ func channelsDiffer(l *bosonapi.Server, autojoin, all []string) bool {
 
 func (d *DirectoryService) PushChannels(ctx context.Context, actor string) (*bosonapi.ChannelsSync, error) {
 	aj, all, ok := d.channels()
-	if !ok || !d.registration() {
-		return nil, nil
+	if !ok {
+		return &bosonapi.ChannelsSync{Skipped: "no stack config file (BOSON_CONFIG), so no network channels"}, nil
+	}
+	if !d.registration() {
+		return &bosonapi.ChannelsSync{Skipped: "directory registration is off (admin.directory_registration / DIRECTORY_REGISTRATION)"}, nil
 	}
 	host := d.hostname()
 	if host == "" {
-		return nil, nil
+		return &bosonapi.ChannelsSync{Skipped: "no listed hostname (admin.directory_hostname / DIRECTORY_HOSTNAME / IRC_CHECK_SERVER_NAME)"}, nil
 	}
 	key := d.Key(host)
 	l, err := d.o.Client.Lookup(ctx, key, host)
-	if err != nil || l == nil || l.Network.ID == "" {
+	if err != nil {
 		return nil, err
+	}
+	if l == nil || l.Network.ID == "" {
+		return &bosonapi.ChannelsSync{Skipped: "the directory has no listing for " + host + " that this panel manages " +
+			"(not registered from this admin panel, or registered with another key: register or re-register it on the Directory page)"}, nil
 	}
 	if !channelsDiffer(&l.Network, aj, all) {
 		return &bosonapi.ChannelsSync{OK: true}, nil
@@ -458,6 +465,10 @@ func (d *DirectoryService) PushChannels(ctx context.Context, actor string) (*bos
 	d.log(ctx, actor, "channels", host, nil)
 	return channelsSync(l), nil
 }
+
+// RetryChannelsEvery: WatchChannels tries again this often while the
+// listing doesn't have the channels (directory down, not registered yet).
+var RetryChannelsEvery = 10 * time.Minute
 
 // WatchChannels keeps the listing's channels in step with the config file:
 // it pushes once at start and again after each kick (call kick on every
@@ -472,32 +483,46 @@ func WatchChannels(ctx context.Context, d DirectoryServiceImpl, names func() (au
 		}
 	}
 	go func() {
-		var last string
+		var last, lastSkip string
+		retry := time.NewTicker(RetryChannelsEvery)
+		defer retry.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-kicks:
+			case <-retry.C:
 			}
 			aj, all, ok := names()
-			if !ok {
-				continue
-			}
 			cur := strings.Join(aj, ",") + "|" + strings.Join(all, ",")
-			if cur == last {
+			if ok && cur == last {
 				continue
 			}
 			pctx, cancel := context.WithTimeout(ctx, time.Minute)
 			res, err := d.PushChannels(pctx, "config-file")
 			cancel()
+			log := logger.FromCtx(ctx)
 			switch {
 			case err != nil:
-				logger.FromCtx(ctx).Warn().Err(err).Msg("pushing network channels to the directory")
-			case res != nil && (res.OK || res.Unsupported):
+				log.Warn().Err(err).Msg("pushing network channels to the directory")
+			case res == nil:
+			case res.Skipped != "":
+				// once per reason, not at every retry
+				if res.Skipped != lastSkip {
+					log.Info().Str("reason", res.Skipped).Msg("not pushing network channels to the directory")
+					lastSkip = res.Skipped
+				}
+				continue
+			case res.OK || res.Unsupported:
+				if cur != last {
+					log.Info().Strs("autojoin_channels", aj).Strs("channels", all).Bool("unsupported", res.Unsupported).
+						Msg("network channels are on the directory listing")
+				}
 				last = cur
-			case res != nil:
-				logger.FromCtx(ctx).Warn().Str("error", res.Error).Msg("pushing network channels to the directory")
+			default:
+				log.Warn().Str("error", res.Error).Msg("pushing network channels to the directory")
 			}
+			lastSkip = ""
 		}
 	}()
 	kick()
