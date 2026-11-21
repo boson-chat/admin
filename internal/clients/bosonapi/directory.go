@@ -115,6 +115,9 @@ type ChannelsSync struct {
 	// Unsupported: the directory ignores the channel fields (an older one).
 	Unsupported bool   `json:"unsupported,omitempty"`
 	Error       string `json:"error,omitempty"`
+	// Skipped: nothing was sent, and why (directory registration off, no
+	// listed hostname, no listing this panel manages).
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // BrandingSync reports a theme push to the directory.
