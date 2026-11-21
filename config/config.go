@@ -167,6 +167,8 @@ type UpstreamConfig struct {
 	DirectoryHost string `env:"DIRECTORY_HOST"`
 	FilesHost     string `env:"FILES_HOST"`
 	VideoHost     string `env:"VIDEO_HOST"`
+	// The web client (web profile): web and webircgateway's public probes.
+	WebHost string `env:"WEB_HOST"`
 	// IRC server to probe: ircs://host:port (TLS) or irc://host:port. Empty = not checked.
 	IRCCheck string `env:"IRC_CHECK"`
 	// SNI for the IRC TLS handshake (the public IRC host when IRC_CHECK dials

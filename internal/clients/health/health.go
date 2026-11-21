@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -27,8 +28,10 @@ type Result struct {
 type HealthCheckerImpl interface {
 	// Check GETs url; 2xx and 3xx are healthy.
 	Check(ctx context.Context, url string) Result
-	// Version reads a version from url: plain text, JSON {"version"}, or a
-	// Prometheus exposition (target_info's service_version label).
+	// Version reads a version from url: plain text, JSON {"version"}, a
+	// Prometheus exposition (target_info's service_version label), or a
+	// JavaScript config object's version: "x" (the web client's
+	// /boson-config.js).
 	Version(ctx context.Context, url string) (string, error)
 }
 
@@ -90,6 +93,9 @@ func (h *HealthChecker) Version(ctx context.Context, url string) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if strings.HasSuffix(req.URL.Path, ".js") || strings.Contains(ct, "javascript") {
+		return versionFromScript(body)
+	}
 	s := strings.TrimSpace(string(body))
 	if strings.HasPrefix(s, "{") {
 		var v struct {
@@ -104,6 +110,24 @@ func (h *HealthChecker) Version(ctx context.Context, url string) (string, error)
 		return "", fmt.Errorf("empty response")
 	}
 	return clean(s), nil
+}
+
+// scriptVersion is a config object's version: "x" (or 'x').
+var scriptVersion = regexp.MustCompile(`\bversion\s*:\s*["']([^"'\r\n]+)["']`)
+
+// versionFromScript reads version: "x" from a script like
+// window.bosonWebConfig = {…, version: "0.88.0"}. "dev" (a build without a
+// version) is no version, so the image tag stands in.
+func versionFromScript(body []byte) (string, error) {
+	m := scriptVersion.FindSubmatch(body)
+	if m == nil {
+		return "", fmt.Errorf("no version in the script")
+	}
+	v := clean(string(m[1]))
+	if v == "" || v == "dev" {
+		return "", fmt.Errorf("unversioned build")
+	}
+	return v, nil
 }
 
 // versionFromExposition finds target_info{...service_version="x"...}.

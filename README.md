@@ -210,6 +210,8 @@ show up as down. The panel knows how to probe the stack's services:
 | `api` | `api:3000/health` | image tag | `https://$API_HOST/health` |
 | `directory` | `directory:8081/healthz` | `directory:8081/metrics` | `https://$DIRECTORY_HOST/healthz` |
 | `files` | `files:3001/healthz` | `files:3001/metrics` | `https://$FILES_HOST/healthz` |
+| `web` (the web client) | `web:8080/healthz` | `web:8080/boson-config.js` (`version: "…"`) | `https://$WEB_HOST/healthz` |
+| `webircgateway` (its IRC gateway) | `webircgateway:8080/webirc/info` | image tag | `https://$WEB_HOST/webirc/info` |
 | `victoriametrics` | `victoriametrics:8428/health` | image | – |
 | `minio` | `minio:9000/minio/health/live` | image | – |
 
@@ -292,7 +294,7 @@ stack's `.env` and recreate the service.
 | `TLS_CHECK_HOSTS` | from `CERT_HOSTS` | *default*: `admin.tls_check_hosts` in the config file wins. `host:port[@dial-host:dial-port],…`. The name is sent as SNI and verified; the optional dial address lets you check a public name over the internal network. Results are cached 5 minutes |
 | `CERT_HOSTS` | – | the stack's certificate hostnames (`a.example.com,b.example.com`). With `TLS_CHECK_HOSTS` empty each is checked as `host:443@TLS_EDGE_ADDR`, and the IRC host (`IRC_HOST`, else `IRC_CHECK_SERVER_NAME`) as `host:6697` (`IRC_CHECK`'s port), dialled directly |
 | `TLS_EDGE_ADDR` | – | where `CERT_HOSTS`' 443 checks are dialled, e.g. `traefik:443`. Empty = each hostname itself |
-| `AUTH_HOST`, `VOICE_HOST`, `IRC_HOST`, `API_HOST`, `DIRECTORY_HOST`, `FILES_HOST` | – | the stack's public hostnames: the built-in "from you" probes (with `DOCKER_PROXY_URL`; see "Which services") |
+| `AUTH_HOST`, `VOICE_HOST`, `IRC_HOST`, `API_HOST`, `DIRECTORY_HOST`, `FILES_HOST`, `VIDEO_HOST`, `WEB_HOST` | – | the stack's public hostnames: the built-in "from you" probes (with `DOCKER_PROXY_URL`; see "Which services") |
 | `IRC_CHECK` | – | IRC server to probe: `ircs://host[:6697]` (TLS) or `irc://host[:6667]`, e.g. `ircs://ergo:6697`. Empty = IRC "not configured" |
 | `IRC_CHECK_SERVER_NAME` | `IRC_CHECK`'s host | TLS SNI for the probe, e.g. the public `IRC_HOST` when dialling the container |
 | `PUBLIC_PROBE_TARGETS` | – | `name=url,…` public endpoints your browser times (`https://`, `http://`, `wss://`, `ws://`). Names match services (`auth`, `api`, `quicvoiced`, `irc`); `admin` overrides the panel's own `/healthz`. Origins are added to the CSP `connect-src` |
