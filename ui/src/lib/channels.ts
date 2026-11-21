@@ -1,4 +1,4 @@
-import type { RoleChannel } from './types';
+import type { NetworkChannel, RoleChannel } from './types';
 
 /** Config keys of the auto-join switches. */
 export const AUTOJOIN_KEY = 'roles.channels.autojoin';
@@ -65,4 +65,64 @@ export function channelsChanged(a: RoleChannel[], b: RoleChannel[]): boolean {
 			.sort()
 			.join(',');
 	return key(a) !== key(b);
+}
+
+// ---- network channels (irc.channels in the stack config file) ----
+
+/** Config keys of the network channels. */
+export const NETWORK_CHANNELS_KEY = 'irc.channels';
+export const CHANNEL_FOUNDER_KEY = 'irc.channel_founder';
+export const AUTOJOIN_GUESTS_KEY = 'irc.autojoin_guests';
+export const MAX_NETWORK_CHANNELS = 100;
+export const MAX_TOPIC = 300;
+
+/** A channel name as Ergo matches network channels: ASCII casefolding. */
+export function foldAscii(s: string): string {
+	return s.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
+ * Why `s` isn't a network channel name, or '' (mirrors the BFF): #, then
+ * 1–63 printable ASCII characters without spaces or commas.
+ */
+export function networkChannelProblem(s: string, taken: string[] = []): string {
+	const c = s.trim();
+	if (!c) return 'Type a channel name, like #lobby.';
+	if (!c.startsWith('#')) return 'A channel name starts with #, like #lobby.';
+	if (c.length === 1) return 'Add a name after the #.';
+	if (c.length > MAX_CHANNEL) return 'At most 64 characters.';
+	if (/[ ,]/.test(c)) return 'No spaces or commas.';
+	if (!/^[\x21-\x7e]+$/.test(c)) return 'Only letters, digits and ASCII punctuation (no accents or emoji).';
+	if (taken.some((t) => foldAscii(t) === foldAscii(c))) return `${c} is already listed.`;
+	return '';
+}
+
+/** Why a topic can't be saved, or ''. */
+export function topicProblem(s: string): string {
+	if ([...s.trim()].length > MAX_TOPIC) return `At most ${MAX_TOPIC} characters.`;
+	if (/[\r\n]/.test(s)) return 'One line only.';
+	return '';
+}
+
+/** The list as the file gets it: trimmed topics, nothing else. */
+export function cleanNetworkChannels(l: NetworkChannel[]): NetworkChannel[] {
+	return l.map((c) => {
+		const topic = (c.topic ?? '').trim();
+		return topic
+			? { name: c.name.trim(), topic, autojoin: c.autojoin }
+			: { name: c.name.trim(), autojoin: c.autojoin };
+	});
+}
+
+/** Whether two network channel lists differ (order counts: it's the file's). */
+export function networkChannelsChanged(a: NetworkChannel[], b: NetworkChannel[]): boolean {
+	return JSON.stringify(cleanNetworkChannels(a)) !== JSON.stringify(cleanNetworkChannels(b));
+}
+
+/** Why `s` can't be irc.channel_founder, or '' ('' = the network owner). */
+export function founderProblem(s: string): string {
+	const f = s.trim();
+	if (!f) return '';
+	if (f.length > 64 || /[\s,*?!@:$%#&]/.test(f)) return 'An account name, like thelion.';
+	return '';
 }

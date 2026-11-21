@@ -113,7 +113,15 @@
 		if (Array.isArray(v)) {
 			if (!v.length) return 'none';
 			return v
-				.map((x) => (typeof x === 'string' ? x : x.max_kbps ? `${x.id} (${x.max_kbps} kbps)` : `${x.id}`))
+				.map((x) =>
+					typeof x === 'string'
+						? x
+						: !('id' in x)
+							? x.name
+							: x.max_kbps
+								? `${x.id} (${x.max_kbps} kbps)`
+								: `${x.id}`
+				)
 				.join(', ');
 		}
 		return String(v);

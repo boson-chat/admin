@@ -191,6 +191,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		Public: authapi.NewBrandingClient(up.AuthURL, up.Timeout, observe)})
 	h.Branding = brandingSvc
 	if bc.DirectoryURL != "" {
+		// The network channels (irc.channels) go on the listing.
+		channels := func() ([]string, []string, bool) {
+			chans, ok := stack.NetworkChannels()
+			aj, all := stackconfig.ChannelNames(chans)
+			return aj, all, ok
+		}
 		secret := []byte(bc.DirectoryKey)
 		if len(secret) == 0 {
 			secret = key
@@ -204,7 +210,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 				return a.DirectoryRegistration, a.DirectoryHostname
 			},
 			Branding: brandingSvc.DirectoryDocument,
+			Channels: channels,
 		})
+		if store != nil {
+			kick := directory.WatchChannels(ctx, h.Directory, channels)
+			store.OnChange(func(*configfile.Snapshot) { kick() })
+		}
 		h.Features.Directory = true // DirectoryRegistration: Handlers.features()
 		spa.ImgOrigins = append(spa.ImgOrigins, originOf(bc.CDNURL))
 	}

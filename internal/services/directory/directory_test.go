@@ -35,6 +35,35 @@ type fakeV1 struct {
 	themes    map[string]map[string]any
 	themePuts int
 	imported  map[string]bool // id -> not_local
+	// channel fields (network channels contract, section 5): channelsAPI =
+	// a directory that knows them; rejectChannels answers 400 when sent.
+	channelsAPI    bool
+	rejectChannels bool
+	channelPatches int
+}
+
+// takeChannels stores a submission's channel fields like the directory.
+func (f *fakeV1) takeChannels(w http.ResponseWriter, id string, s bosonapi.Submission) bool {
+	if s.Channels == nil && s.AutojoinChannels == nil {
+		return true
+	}
+	if f.rejectChannels {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid_channels","message":"channels: too many"}`))
+		return false
+	}
+	f.channelPatches++
+	if !f.channelsAPI {
+		return true // an older directory ignores them
+	}
+	if s.Channels != nil {
+		f.nets[id]["channels"] = *s.Channels
+	}
+	if s.AutojoinChannels != nil {
+		f.nets[id]["autojoin_channels"] = *s.AutojoinChannels
+	}
+	return true
 }
 
 func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
@@ -113,6 +142,13 @@ func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
 		id := "net_" + strings.ReplaceAll(s.Hostname, ".", "")
 		f.nets[id] = map[string]any{"id": id, "hostname": s.Hostname, "port": s.Port, "tls": *s.TLS, "name": s.Name,
 			"status": "pending", "origin": "local", "created_at": time.Now().UTC()}
+		if f.channelsAPI {
+			f.nets[id]["channels"], f.nets[id]["autojoin_channels"] = []string{}, []string{}
+		}
+		if !f.takeChannels(w, id, s) {
+			delete(f.nets, id)
+			return
+		}
 		f.keys[id], f.token[id] = key(r), "tok1"
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(listing(id))
@@ -124,6 +160,9 @@ func newFakeV1(t *testing.T) (*fakeV1, *httptest.Server) {
 		}
 		var s bosonapi.Submission
 		_ = json.NewDecoder(r.Body).Decode(&s)
+		if !f.takeChannels(w, id, s) {
+			return
+		}
 		if s.Name != "" {
 			f.nets[id]["name"] = s.Name
 		}

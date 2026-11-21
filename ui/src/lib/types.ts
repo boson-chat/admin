@@ -495,7 +495,17 @@ export interface PublicProbe {
 // ---- the stack config file (config/boson.yaml) ----
 
 export type ConfigKind =
-	'bool' | 'string' | 'int' | 'enum' | 'list' | 'rooms' | 'duration' | 'text' | 'theme' | 'images';
+	| 'bool'
+	| 'string'
+	| 'int'
+	| 'enum'
+	| 'list'
+	| 'rooms'
+	| 'channels'
+	| 'duration'
+	| 'text'
+	| 'theme'
+	| 'images';
 
 export interface VoiceRoom {
 	id: string;
@@ -504,7 +514,14 @@ export interface VoiceRoom {
 	max_kbps?: number;
 }
 
-export type ConfigValue = boolean | number | string | string[] | VoiceRoom[];
+/** A network channel (irc.channels): kept created and registered by RoleServ. */
+export interface NetworkChannel {
+	name: string;
+	topic?: string;
+	autojoin: boolean;
+}
+
+export type ConfigValue = boolean | number | string | string[] | VoiceRoom[] | NetworkChannel[];
 
 export interface ConfigKey {
 	key: string;

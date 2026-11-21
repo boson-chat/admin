@@ -54,6 +54,12 @@ type Server struct {
 	AuthURL                   string     `json:"auth_url,omitempty"`
 	// local | peer:<id>: where the directory got the listing.
 	Origin string `json:"origin,omitempty"`
+	// The network's channels (network channels contract, section 5): the
+	// ones new users are joined to, and all of them.
+	AutojoinChannels []string `json:"autojoin_channels,omitempty"`
+	Channels         []string `json:"channels,omitempty"`
+	// HasChannels: the directory sent the channel fields (it knows them).
+	HasChannels bool `json:"-"`
 }
 
 func (s *Server) UnmarshalJSON(b []byte) error {
@@ -64,11 +70,15 @@ func (s *Server) UnmarshalJSON(b []byte) error {
 		LastCheckedAt     *time.Time `json:"last_checked_at"`
 		CreatedAt         *time.Time `json:"created_at"`
 		VerificationToken string     `json:"verification_token"`
+		Channels          *[]string  `json:"channels"`
 	}
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
 	*s = Server(w.plain)
+	if w.Channels != nil {
+		s.Channels, s.HasChannels = *w.Channels, true
+	}
 	if s.VerificationStatus == "" {
 		s.VerificationStatus = w.Status
 	}
@@ -95,6 +105,16 @@ type Listing struct {
 	// BrandingSync is set by the panel (not the directory): how pushing the
 	// stack's theme to the listing went after a submit or edit.
 	BrandingSync *BrandingSync `json:"branding_sync,omitempty"`
+	// ChannelsSync, also the panel's: how sending the network channels went.
+	ChannelsSync *ChannelsSync `json:"channels_sync,omitempty"`
+}
+
+// ChannelsSync reports sending the network channels to the directory.
+type ChannelsSync struct {
+	OK bool `json:"ok"`
+	// Unsupported: the directory ignores the channel fields (an older one).
+	Unsupported bool   `json:"unsupported,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // BrandingSync reports a theme push to the directory.
@@ -149,6 +169,10 @@ type Submission struct {
 	IsNSFW      *bool    `json:"is_nsfw,omitempty"`
 	WebsiteURL  *string  `json:"website_url,omitempty"`
 	AuthURL     *string  `json:"auth_url,omitempty"`
+	// The stack's network channels (set by the panel, not the form); nil
+	// leaves the listing's as they are.
+	AutojoinChannels *[]string `json:"autojoin_channels,omitempty"`
+	Channels         *[]string `json:"channels,omitempty"`
 }
 
 // ResolverResult is one public resolver's view of the TXT record.

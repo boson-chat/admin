@@ -29,6 +29,7 @@ const (
 	KindEnum     Kind = "enum"
 	KindList     Kind = "list"     // list of strings
 	KindRooms    Kind = "rooms"    // voice.rooms: [{id, name}]
+	KindChannels Kind = "channels" // irc.channels: [{name, topic, autojoin}]
 	KindDuration Kind = "duration" // 10m, 1h
 	KindText     Kind = "text"     // multi-line string (email bodies)
 	KindTheme    Kind = "theme"    // branding.theme: a boson-theme/1 document
@@ -292,6 +293,12 @@ var Keys = append([]Key{
 	{Key: "irc.log_level", Kind: KindEnum, Enum: []string{"debug", "info", "warn", "error"}, Perm: admin.PermServicesManage, Services: []string{ergo}},
 	{Key: "irc.roles_poll_seconds", Kind: KindInt, Min: 1, Max: 3600, Perm: admin.PermServicesManage, Services: []string{ergo}, Env: "ROLES_POLL_SECONDS"},
 	{Key: "irc.settings_poll_seconds", Kind: KindInt, Min: 1, Max: 3600, Perm: admin.PermServicesManage, Services: []string{ergo}, Env: "SETTINGS_POLL_SECONDS"},
+
+	// Network channels (the network channels contract): auth reads them
+	// and RoleServ gets them from auth's feed.
+	{Key: KeyNetworkChannels, Kind: KindChannels, MaxItems: MaxNetworkChannels, Perm: admin.PermSettingsManage, Services: []string{auth}},
+	{Key: KeyChannelFounder, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: accountName},
+	{Key: KeyAutojoinGuests, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
 
 	// Role channels (the contract's roles.channels): auth serves them in
 	// its feeds and RoleServ in the Ergo helper acts on them.
@@ -680,6 +687,12 @@ func (k Key) Clean(v any) (any, error) {
 			out = append(out, c)
 		}
 		return out, nil
+	case KindChannels:
+		out, err := k.cleanChannels(v)
+		if err != nil {
+			return fail("%v", err)
+		}
+		return out, nil
 	case KindRooms:
 		items, ok := v.([]any)
 		if !ok {
@@ -786,6 +799,12 @@ func (k Key) FromNode(n *yaml.Node) (any, error) {
 			items[i] = s
 		}
 		raw = items
+	case KindChannels:
+		items, err := channelsFromNode(n)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", k.Key, err)
+		}
+		raw = items
 	case KindRooms:
 		var rs []Room
 		if n.Kind != yaml.SequenceNode {
@@ -829,6 +848,10 @@ func jsonShape(v any) any {
 	case []Room:
 		if x == nil {
 			return []Room{}
+		}
+	case []NetworkChannel:
+		if x == nil {
+			return []NetworkChannel{}
 		}
 	case []string:
 		if x == nil {

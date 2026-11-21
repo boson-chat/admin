@@ -42,7 +42,9 @@
 		(view?.keys ?? []).length
 			? configGroups.map((g) => ({
 					...g,
-					keys: (view?.keys ?? []).filter((k) => g.prefix.some((p) => k.key.startsWith(p)))
+					keys: (view?.keys ?? []).filter(
+						(k) => g.prefix.some((p) => k.key.startsWith(p)) && !g.except?.includes(k.key)
+					)
 				}))
 			: []
 	);

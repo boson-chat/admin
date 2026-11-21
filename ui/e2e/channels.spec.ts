@@ -101,7 +101,7 @@ test('channel access: auto-join switches and private channels', async ({ page })
 	).toBeVisible();
 
 	await page
-		.getByRole('switch', { name: /Auto-join members to their roles’ channels/ })
+		.getByRole('switch', { name: /Auto-join members to the channels assigned to their roles/ })
 		.check({ force: true });
 	await page.getByText('Leave them out', { exact: true }).click();
 	await page.getByRole('button', { name: 'Save auto-join' }).click();

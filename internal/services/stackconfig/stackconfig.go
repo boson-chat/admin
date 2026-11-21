@@ -414,7 +414,7 @@ func (s *Service) Update(ctx context.Context, actor, ifMatch string, c Change, c
 		sort.Strings(names)
 		for _, name := range names {
 			old := describe(root, name)
-			if err := configfile.Set(root, configfile.Split(name), set[name]); err != nil {
+			if err := setValue(root, name, set[name]); err != nil {
 				return nil, apperr.Invalid(err.Error())
 			}
 			if now := describe(root, name); now != old {

@@ -29,8 +29,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
@@ -55,6 +57,10 @@ type Options struct {
 	// /v1/branding, absolute image URLs): pushed to the listing after
 	// every submit and edit, and by PushBranding. ok=false: no branding.
 	Branding func(ctx context.Context) (doc map[string]any, ok bool, err error)
+	// Channels, when set, is the stack's network channels (irc.channels):
+	// the auto-join ones and all of them, sent on every submit and edit and
+	// by PushChannels. ok=false: unknown (no config file), not sent.
+	Channels func() (autojoin, all []string, ok bool)
 }
 
 // Status is GET /api/directory.
@@ -84,6 +90,9 @@ type DirectoryServiceImpl interface {
 	// PushBranding pushes the stack's theme to this network's listing, if
 	// it has one (after a branding change). nil, nil: nothing to push to.
 	PushBranding(ctx context.Context, actor string) (*bosonapi.BrandingSync, error)
+	// PushChannels sends the network channels to this network's listing,
+	// if it has one and they differ. nil, nil: nothing to push to.
+	PushChannels(ctx context.Context, actor string) (*bosonapi.ChannelsSync, error)
 }
 
 type DirectoryService struct {
@@ -252,9 +261,11 @@ func (d *DirectoryService) Submit(ctx context.Context, actor string, s bosonapi.
 		t := true
 		s.TLS = &t
 	}
-	l, err := d.o.Client.Submit(ctx, d.Key(s.Hostname), s)
+	key := d.Key(s.Hostname)
+	l, cs, err := d.withChannels(&s, func(s bosonapi.Submission) (*bosonapi.Listing, error) { return d.o.Client.Submit(ctx, key, s) })
 	d.log(ctx, actor, "submit", s.Hostname, err)
 	if err == nil && l != nil {
+		l.ChannelsSync = cs
 		l.BrandingSync = d.syncBranding(ctx, actor, s.Hostname, l.Network.ID)
 	}
 	return l, err
@@ -267,9 +278,11 @@ func (d *DirectoryService) Update(ctx context.Context, actor, hostname, id strin
 	if err := clean(&s, false); err != nil {
 		return nil, err
 	}
-	l, err := d.o.Client.Update(ctx, d.Key(hostname), id, s)
+	key := d.Key(hostname)
+	l, cs, err := d.withChannels(&s, func(s bosonapi.Submission) (*bosonapi.Listing, error) { return d.o.Client.Update(ctx, key, id, s) })
 	d.log(ctx, actor, "update", hostname, err)
 	if err == nil && l != nil {
+		l.ChannelsSync = cs
 		l.BrandingSync = d.syncBranding(ctx, actor, hostname, id)
 	}
 	return l, err
@@ -360,4 +373,133 @@ func (d *DirectoryService) syncBranding(ctx context.Context, actor, hostname, id
 	d.mu.Unlock()
 	d.log(ctx, actor, "branding", hostname, nil)
 	return res
+}
+
+// ---- network channels ----
+
+// MaxListedChannels: the directory keeps at most this many of each list.
+const MaxListedChannels = 50
+
+// channels is the stack's network channels for the listing (each list cut
+// to what the directory keeps). ok=false: not known, don't send.
+func (d *DirectoryService) channels() (autojoin, all []string, ok bool) {
+	if d.o.Channels == nil {
+		return nil, nil, false
+	}
+	autojoin, all, ok = d.o.Channels()
+	if !ok {
+		return nil, nil, false
+	}
+	if autojoin == nil {
+		autojoin = []string{}
+	}
+	if all == nil {
+		all = []string{}
+	}
+	return autojoin[:min(len(autojoin), MaxListedChannels)], all[:min(len(all), MaxListedChannels)], true
+}
+
+// withChannels sends s with the network channels. A directory that
+// refuses them (400) gets s again without them, so a channel problem never
+// blocks the listing edit; one that ignores them (older) is unsupported.
+func (d *DirectoryService) withChannels(s *bosonapi.Submission, send func(bosonapi.Submission) (*bosonapi.Listing, error)) (*bosonapi.Listing, *bosonapi.ChannelsSync, error) {
+	aj, all, ok := d.channels()
+	if !ok {
+		l, err := send(*s)
+		return l, nil, err
+	}
+	s.AutojoinChannels, s.Channels = &aj, &all
+	l, err := send(*s)
+	if e, isErr := apperr.As(err); isErr && e.Status == http.StatusBadRequest {
+		s.AutojoinChannels, s.Channels = nil, nil
+		l, err2 := send(*s)
+		return l, &bosonapi.ChannelsSync{Error: e.Message}, err2
+	}
+	if err != nil || l == nil {
+		return l, nil, err
+	}
+	return l, channelsSync(l), nil
+}
+
+func channelsSync(l *bosonapi.Listing) *bosonapi.ChannelsSync {
+	if !l.Network.HasChannels {
+		return &bosonapi.ChannelsSync{Unsupported: true}
+	}
+	return &bosonapi.ChannelsSync{OK: true}
+}
+
+// channelsDiffer: the listing doesn't have these channels (or the fields).
+func channelsDiffer(l *bosonapi.Server, autojoin, all []string) bool {
+	return !l.HasChannels || !slices.Equal(l.AutojoinChannels, autojoin) || !slices.Equal(l.Channels, all)
+}
+
+func (d *DirectoryService) PushChannels(ctx context.Context, actor string) (*bosonapi.ChannelsSync, error) {
+	aj, all, ok := d.channels()
+	if !ok || !d.registration() {
+		return nil, nil
+	}
+	host := d.hostname()
+	if host == "" {
+		return nil, nil
+	}
+	key := d.Key(host)
+	l, err := d.o.Client.Lookup(ctx, key, host)
+	if err != nil || l == nil || l.Network.ID == "" {
+		return nil, err
+	}
+	if !channelsDiffer(&l.Network, aj, all) {
+		return &bosonapi.ChannelsSync{OK: true}, nil
+	}
+	l, err = d.o.Client.Update(ctx, key, l.Network.ID, bosonapi.Submission{AutojoinChannels: &aj, Channels: &all})
+	if err != nil {
+		logger.FromCtx(ctx).Warn().Err(err).Str("actor", actor).Str("action", "directory.channels").Str("hostname", host).Msg("directory action")
+		return &bosonapi.ChannelsSync{Unsupported: apperr.IsUnsupported(err), Error: errMsg(err)}, nil
+	}
+	d.log(ctx, actor, "channels", host, nil)
+	return channelsSync(l), nil
+}
+
+// WatchChannels keeps the listing's channels in step with the config file:
+// it pushes once at start and again after each kick (call kick on every
+// config change, a panel save or a hand edit) when the names changed since
+// the last push the directory took. Pushes run one at a time until ctx ends.
+func WatchChannels(ctx context.Context, d DirectoryServiceImpl, names func() (autojoin, all []string, ok bool)) (kick func()) {
+	kicks := make(chan struct{}, 1)
+	kick = func() {
+		select {
+		case kicks <- struct{}{}:
+		default:
+		}
+	}
+	go func() {
+		var last string
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-kicks:
+			}
+			aj, all, ok := names()
+			if !ok {
+				continue
+			}
+			cur := strings.Join(aj, ",") + "|" + strings.Join(all, ",")
+			if cur == last {
+				continue
+			}
+			pctx, cancel := context.WithTimeout(ctx, time.Minute)
+			res, err := d.PushChannels(pctx, "config-file")
+			cancel()
+			switch {
+			case err != nil:
+				logger.FromCtx(ctx).Warn().Err(err).Msg("pushing network channels to the directory")
+			case res != nil && (res.OK || res.Unsupported):
+				last = cur
+			case res != nil:
+				logger.FromCtx(ctx).Warn().Str("error", res.Error).Msg("pushing network channels to the directory")
+			}
+		}
+	}()
+	kick()
+	return kick
 }

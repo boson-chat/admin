@@ -57,10 +57,10 @@ const overview = {
 };
 
 let calls: { method: string; path: string; body?: unknown }[] = [];
-function serve(autojoin: boolean, rejoin = 'login') {
+function serve(autojoin: boolean, rejoin = 'login', ov: typeof overview = overview) {
 	api.mockImplementation(async (method: string, path: string, body?: unknown) => {
 		calls.push({ method, path, body });
-		if (path === '/channels') return overview;
+		if (path === '/channels') return ov;
 		if (path === '/config')
 			return {
 				enabled: true,
@@ -131,7 +131,9 @@ describe('channel access page', () => {
 	it('saves the auto-join switches to the config file', async () => {
 		serve(false);
 		render(Page);
-		const sw = await screen.findByRole('switch', { name: /Auto-join members to their roles’ channels/ });
+		const sw = await screen.findByRole('switch', {
+			name: /Auto-join members to the channels assigned to their roles/
+		});
 		expect(
 			await screen.findByText('Auto-join is off, so this is what would happen with it on.')
 		).toBeTruthy();
@@ -157,5 +159,25 @@ describe('channel access page', () => {
 		expect((screen.getByRole('switch', { name: '#staff is private' }) as HTMLInputElement).disabled).toBe(
 			true
 		);
+	});
+
+	it('links to Roles → Channels, and says when no role has channels', async () => {
+		serve(true);
+		const { unmount } = render(Page);
+		await screen.findByText('Members of Mods will be joined to #mods and #staff.');
+		expect(screen.queryByTestId('no-role-channels')).toBeNull();
+		expect(screen.getByRole('link', { name: 'Roles → Channels' }).getAttribute('href')).toBe('/roles');
+		unmount();
+
+		const empty = {
+			roles: overview.roles.map((r) => ({ ...r, channels: [] })),
+			channels: []
+		};
+		serve(true, 'login', empty);
+		render(Page);
+		const note = await screen.findByTestId('no-role-channels');
+		expect(note.textContent).toContain('No role has channels yet — assign some in Roles → Channels');
+		expect(screen.getByText(/Until then this joins nobody/)).toBeTruthy();
+		expect(screen.getByRole('link', { name: 'Network settings' }).getAttribute('href')).toBe('/settings');
 	});
 });
