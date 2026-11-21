@@ -32,6 +32,9 @@ type Known struct {
 // Hosts are the stack's public hostnames (the stack .env's *_HOST).
 type Hosts struct {
 	Auth, Voice, IRC, API, Directory, Files, Video string
+	// Web is the web client's host (WEB_HOST); its IRC gateway is under
+	// /webirc/websocket/ on the same host.
+	Web string
 }
 
 // Builtins is the stack's probe map. A public probe is only listed when its
@@ -57,6 +60,15 @@ func Builtins(h Hosts) []Known {
 			Version: "http://directory:8081/metrics", Public: pub("https", h.Directory, "/healthz")},
 		{Name: "files", Service: "files", Health: []string{"http://files:3001/healthz"},
 			Version: "http://files:3001/metrics", Public: pub("https", h.Files, "/healthz")},
+		// The web client (web profile): nginx; its version is the one
+		// /boson-config.js carries (window.bosonWebConfig.version).
+		{Name: "web", Service: "web", Health: []string{"http://web:8080/healthz"},
+			Version: "http://web:8080/boson-config.js", Public: pub("https", h.Web, "/healthz")},
+		// The web client's IRC gateway: /webirc/info is its health (the
+		// version there is upstream's, so the image tag, 1.1.0-boson.1, is
+		// shown). The stack's Traefik routes WEB_HOST/webirc/info to it too.
+		{Name: "webircgateway", Service: "webircgateway", Health: []string{"http://webircgateway:8080/webirc/info"},
+			Public: pub("https", h.Web, "/webirc/info")},
 		{Name: "victoriametrics", Service: "victoriametrics", Health: []string{"http://victoriametrics:8428/health"}},
 		{Name: "minio", Service: "minio", Health: []string{"http://minio:9000/minio/health/live"}},
 	}

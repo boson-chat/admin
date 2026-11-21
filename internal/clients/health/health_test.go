@@ -55,6 +55,13 @@ func TestVersion(t *testing.T) {
 			_, _ = w.Write([]byte("# HELP target_info Target metadata\n# TYPE target_info gauge\n" +
 				`target_info{deployment_environment="production",service_name="auth",service_version="1.4.2"} 1` + "\n" +
 				"go_goroutines 12\n"))
+		case "/boson-config.js":
+			w.Header().Set("Content-Type", "text/javascript")
+			_, _ = w.Write([]byte("window.bosonWebConfig = {\n  authUrl: \"https://auth.example\",\n  gatewayUrl: null,\n  version: \"0.88.0\"\n};\n"))
+		case "/dev/boson-config.js":
+			_, _ = w.Write([]byte(`window.bosonWebConfig = { version: "dev" };`))
+		case "/none/boson-config.js":
+			_, _ = w.Write([]byte(`window.bosonWebConfig = { authUrl: "https://auth.example" };`))
 		case "/nometa":
 			_, _ = w.Write([]byte("go_goroutines 12\n"))
 		}
@@ -62,7 +69,8 @@ func TestVersion(t *testing.T) {
 	defer srv.Close()
 	h := NewHealthChecker(time.Second)
 	ctx := context.Background()
-	for path, want := range map[string]string{"/version": "1.1.0", "/json": "2.3.4", "/metrics": "1.4.2"} {
+	for path, want := range map[string]string{"/version": "1.1.0", "/json": "2.3.4", "/metrics": "1.4.2",
+		"/boson-config.js": "0.88.0"} {
 		got, err := h.Version(ctx, srv.URL+path)
 		if err != nil || got != want {
 			t.Fatalf("%s: got %q %v, want %q", path, got, err, want)
@@ -70,5 +78,12 @@ func TestVersion(t *testing.T) {
 	}
 	if _, err := h.Version(ctx, srv.URL+"/nometa/metrics"); err == nil {
 		t.Fatal("want an error without target_info")
+	}
+	// A web build without a version, or a script without one: no version
+	// (the image tag stands in).
+	for _, path := range []string{"/dev/boson-config.js", "/none/boson-config.js"} {
+		if v, err := h.Version(ctx, srv.URL+path); err == nil {
+			t.Fatalf("%s: got %q, want an error", path, v)
+		}
 	}
 }

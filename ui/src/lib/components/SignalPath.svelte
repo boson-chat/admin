@@ -75,6 +75,11 @@
 	// profile is off), so there's nothing to configure.
 	let hasIRC = $derived(discovered || ircConfigured || services.some((s) => /irc|ergo|anope/i.test(s.name)));
 	const names: Record<string, string> = { irc: 'IRC' };
+	// What a less obvious service is, beside its name.
+	const roles: Record<string, string> = {
+		web: 'Boson in the browser',
+		webircgateway: 'IRC gateway'
+	};
 
 	function latency(s: ServiceHealth): string {
 		const ok = s.checks.filter((c) => c.ok);
@@ -109,6 +114,7 @@
 				<span class="node" aria-hidden="true"></span>
 				<div class="name">
 					<h3>{names[s.name] ?? s.name}</h3>
+					{#if roles[s.name]}<span class="role">{roles[s.name]}</span>{/if}
 					{#if s.version}<span class="version mono">{s.version}</span>{/if}
 				</div>
 				<span class="status">{statusWord[s.status]}</span>
@@ -308,6 +314,10 @@
 		gap: var(--space-3);
 		min-width: 0;
 		flex-wrap: wrap;
+	}
+	.role {
+		color: var(--fg-quiet);
+		font-size: var(--text-xs);
 	}
 	.version {
 		color: var(--fg-2);
