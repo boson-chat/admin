@@ -42,7 +42,14 @@ class ConfigState {
 export const stackConfig = new ConfigState();
 
 /** Groups of keys on the Stack config page, in order. */
-export const configGroups: { id: string; title: string; detail: string; prefix: string[] }[] = [
+export const configGroups: {
+	id: string;
+	title: string;
+	detail: string;
+	prefix: string[];
+	/** Keys under prefix edited on another page. */
+	except?: string[];
+}[] = [
 	{
 		id: 'admin',
 		title: 'Admin panel',
@@ -60,8 +67,9 @@ export const configGroups: { id: string; title: string; detail: string; prefix: 
 		id: 'irc',
 		title: 'IRC options',
 		detail:
-			'Read by the Ergo helper, which re-renders ircd.yaml and rehashes Ergo. The plaintext port stays in the file and compose, since the host publishes it.',
-		prefix: ['irc.']
+			'Read by the Ergo helper, which re-renders ircd.yaml and rehashes Ergo. The plaintext port stays in the file and compose, since the host publishes it. Network channels are edited on the Network settings page.',
+		prefix: ['irc.'],
+		except: ['irc.channels', 'irc.channel_founder', 'irc.autojoin_guests']
 	},
 	{
 		id: 'auth',
@@ -139,6 +147,9 @@ export const keyLabels: Record<string, { label: string; detail?: string }> = {
 	},
 	'irc.history_expire': { label: 'History kept for', detail: 'Like 7d, 30d or 1w. 0 = forever.' },
 	'irc.log_level': { label: 'Ergo log level' },
+	'irc.channels': { label: 'Network channels' },
+	'irc.channel_founder': { label: 'Network channels’ founder' },
+	'irc.autojoin_guests': { label: 'Auto-join guests' },
 	'irc.roles_poll_seconds': { label: 'Role sync interval', detail: 'Seconds between role checks with auth.' },
 	'irc.settings_poll_seconds': {
 		label: 'Settings sync interval',

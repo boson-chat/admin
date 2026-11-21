@@ -143,6 +143,17 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   config keys that need `settings.manage`. auth audits the writes
   (`role_channels_updated`, `channel_access_updated`) and the panel logs them.
   Browser checks: `./scripts/e2e-channels.sh`.
+- **Network channels** (Network settings, `settings.manage`, needs the stack
+  config file): channels RoleServ keeps created and registered to the network,
+  each with an optional topic and an auto-join box (new accounts join on their
+  first login, guests on connect; leaving sticks). Written to the file as
+  `irc.channels: [{name: "#lobby", topic: …, autojoin: true}]` (max 100; entries
+  keep their comments and unknown keys), plus `irc.channel_founder` (empty = the
+  network owner) and `irc.autojoin_guests` (default on). "Who can create
+  channels" is `auth.channel_creation` (Anyone signed in / Only admins). The
+  directory listing gets `autojoin_channels` and `channels` (names, ≤ 50 each)
+  on every submit and edit and whenever the file's channels change (a save or
+  a hand edit); an older directory ignores them.
 - **Invites:** create (uses, expiry, note), with the code shown once; list with
   status (active, used up, expired, revoked); revoke. Warns when registration
   is open or closed rather than invite-only.

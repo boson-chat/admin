@@ -149,6 +149,9 @@
 		}
 	}
 
+	/** Some role (or everyone) lists a channel. */
+	let anyRoleChannels = $derived((ov?.roles ?? []).some((r) => r.channels.length > 0));
+
 	// ---- preview ----
 	let previews = $derived(
 		(ov?.roles ?? [])
@@ -209,10 +212,21 @@
 				<fieldset disabled={!settingsEditable || savingSettings}>
 					<div class="toggle-row">
 						<Toggle
-							label="Auto-join members to their roles’ channels"
+							label="Auto-join members to the channels assigned to their roles"
 							detail="When someone signs in to IRC, from any client, the server joins them to every channel their roles list with auto-join ticked. Getting a role joins them straight away."
 							bind:checked={autojoin}
 						/>
+						<p class="assign">
+							{#if ov && !anyRoleChannels}
+								<span class="warn" data-testid="no-role-channels"
+									>No role has channels yet — assign some in <a href="/roles">Roles → Channels</a>.</span
+								>
+								{#if autojoin}Until then this joins nobody. For channels everyone should land in, add network
+									channels on <a href="/settings">Network settings</a>.{/if}
+							{:else}
+								Assign channels to a role in <a href="/roles">Roles → Channels</a>.
+							{/if}
+						</p>
 					</div>
 					<div class:dim={!autojoin}>
 						<ChoiceGroup
@@ -414,6 +428,13 @@
 	}
 	.dim {
 		opacity: 0.6;
+	}
+	.assign {
+		margin-top: var(--space-3);
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--border-soft);
+		font-size: var(--text-sm);
+		color: var(--fg-quiet);
 	}
 	.row-end {
 		display: flex;

@@ -343,6 +343,7 @@ createServer(async (req, res) => {
 		p.startsWith('/v1/admin/') &&
 		(p.startsWith('/v1/admin/roles') ||
 			p.startsWith('/v1/admin/permissions') ||
+			p === '/v1/admin/settings' ||
 			p.startsWith('/v1/admin/channel-access'))
 	) {
 		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
@@ -351,6 +352,17 @@ createServer(async (req, res) => {
 				permissions: PANEL_PERMS.map((id) => ({ id, group: 'admin', label: id, description: '' }))
 			});
 		if (req.method === 'GET' && p === '/v1/admin/roles') return send(res, 200, { roles });
+		if (req.method === 'GET' && p === '/v1/admin/settings')
+			return send(res, 200, {
+				registration: 'open',
+				require_email_verification: true,
+				channel_creation: 'registered',
+				voice_channel_creation: 'founders',
+				channel_auto_register: true,
+				channel_expiry_days: 0,
+				guest_access: true,
+				guest_voice: false
+			});
 		if (p === '/v1/admin/channel-access') {
 			if (req.method === 'PUT') {
 				channelAccess = sortCh((await json(req)).channels ?? []);
@@ -404,8 +416,10 @@ createServer(async (req, res) => {
 	if (p === '/healthz' || p === '/readyz') return send(res, 200, { status: 'ok' });
 	if (req.method === 'GET' && p === '/__audit') return send(res, 200, { audit });
 	if (req.method === 'POST' && p === '/__reset') {
-		roleChannels = structuredClone(initialRoleChannels);
-		channelAccess = structuredClone(initialAccess);
+		// {"role_channels": false}: no role lists a channel.
+		const b = await json(req).catch(() => ({}));
+		roleChannels = b?.role_channels === false ? {} : structuredClone(initialRoleChannels);
+		channelAccess = b?.role_channels === false ? [] : structuredClone(initialAccess);
 		audit.length = 0;
 		return send(res, 200, {});
 	}

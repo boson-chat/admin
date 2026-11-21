@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import type { NetworkSettings } from '$lib/types';
 
@@ -77,7 +77,7 @@ describe('network settings: channel registration', () => {
 		expect(screen.getByRole('switch', { name: /Register new channels/ }).hasAttribute('disabled')).toBe(true);
 		expect(expiryBox().hasAttribute('disabled')).toBe(true);
 
-		await user.click(screen.getByRole('radio', { name: /Admins only.*create channels/ }));
+		await user.click(screen.getByRole('radio', { name: /Only admins.*Members can only join/ }));
 		await user.click(saveButton());
 		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { channel_creation: 'admins' });
 	});
@@ -196,5 +196,115 @@ describe('network settings: guest voice', () => {
 		await user.click(screen.getByRole('switch', { name: /Guest access/ }));
 		await user.click(saveButton());
 		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: false });
+	});
+});
+
+describe('network settings: network channels', () => {
+	beforeEach(() => api.mockReset());
+
+	type Body = { set?: Record<string, unknown>; unset?: string[] };
+	function serveFile(keys: Record<string, unknown>, editable = true) {
+		const calls: { method: string; path: string; body?: Body }[] = [];
+		let etag = 'e1';
+		let file = { ...keys };
+		api.mockImplementation(
+			async (method: string, path: string, body?: Body, hdr?: Record<string, string>) => {
+				calls.push({ method, path, body });
+				if (path === '/config') {
+					if (method === 'PATCH') {
+						expect(hdr?.['If-Match']).toBe(etag);
+						file = { ...file, ...body?.set };
+						for (const k of body?.unset ?? []) delete file[k];
+						etag = 'e2';
+					}
+					return {
+						enabled: true,
+						etag,
+						issues: [],
+						keys: ['irc.channels', 'irc.channel_founder', 'irc.autojoin_guests'].map((key) => ({
+							key,
+							kind: key === 'irc.channels' ? 'channels' : key === 'irc.channel_founder' ? 'string' : 'bool',
+							set: key in file,
+							value: file[key],
+							editable
+						}))
+					};
+				}
+				return {
+					settings: method === 'PATCH' ? { ...base, ...(body as object) } : { ...base, guest_access: true },
+					config: { managed: true, sources: {} }
+				};
+			}
+		);
+		return calls;
+	}
+
+	it('edits the list with the rest of the page and saves it to the file', async () => {
+		const calls = serveFile({});
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByTestId('network-channels-empty')).toBeTruthy();
+		await user.type(screen.getByRole('textbox', { name: 'Add a channel' }), '#lobby{Enter}');
+		await user.type(screen.getByRole('textbox', { name: 'Add a channel' }), '#help{Enter}');
+		await user.type(screen.getByRole('textbox', { name: 'Topic of #lobby' }), 'Welcome to Boson');
+		await user.click(screen.getByRole('radio', { name: /Only admins/ }));
+		expect(screen.getByTestId('admins-only-note')).toBeTruthy();
+		expect(screen.getByText('2 unsaved changes')).toBeTruthy();
+		// Enter in the add box added channels; nothing was saved yet.
+		expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(0);
+
+		await user.click(saveButton());
+		const patches = calls.filter((c) => c.method === 'PATCH');
+		expect(patches[0]).toEqual({
+			method: 'PATCH',
+			path: '/config',
+			body: {
+				set: {
+					'irc.channels': [
+						{ name: '#lobby', topic: 'Welcome to Boson', autojoin: true },
+						{ name: '#help', autojoin: false }
+					]
+				},
+				unset: []
+			}
+		});
+		expect(patches[1]).toEqual({ method: 'PATCH', path: '/settings', body: { channel_creation: 'admins' } });
+		await waitFor(() => expect(screen.queryByText(/unsaved change/)).toBeNull());
+	});
+
+	it('shows the file’s channels, founder and guests switch, and resets the founder', async () => {
+		const calls = serveFile({
+			'irc.channels': [{ name: '#lobby', autojoin: true }],
+			'irc.channel_founder': 'thelion',
+			'irc.autojoin_guests': false
+		});
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByRole('checkbox', { name: 'Auto-join #lobby' })).toHaveProperty('checked', true);
+		expect((screen.getByRole('switch', { name: /Also auto-join guests/ }) as HTMLInputElement).checked).toBe(
+			false
+		);
+		const f = screen.getByRole('textbox', { name: 'Founder account' });
+		expect((f as HTMLInputElement).value).toBe('thelion');
+		await user.clear(f);
+		await user.click(screen.getByRole('switch', { name: /Also auto-join guests/ }));
+		await user.click(saveButton());
+		expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({
+			set: { 'irc.autojoin_guests': true },
+			unset: ['irc.channel_founder']
+		});
+		// Discard brings back the saved values.
+		await user.click(screen.getByRole('button', { name: 'Remove #lobby' }));
+		await user.click(screen.getByRole('button', { name: 'Discard' }));
+		expect(screen.getByRole('checkbox', { name: 'Auto-join #lobby' })).toBeTruthy();
+	});
+
+	it('is read-only without settings.manage', async () => {
+		serveFile({}, false);
+		render(Page);
+		expect(await screen.findByText(/saving needs/)).toBeTruthy();
+		expect(
+			(screen.getByRole('textbox', { name: 'Add a channel' }) as HTMLInputElement).matches(':disabled')
+		).toBe(true);
 	});
 });

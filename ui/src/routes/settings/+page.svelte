@@ -3,7 +3,25 @@
 	import { api, isUnsupported } from '$lib/api';
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { datetime } from '$lib/format';
-	import type { NetworkSettings, Registration, TextCreators, VoiceCreators } from '$lib/types';
+	import type {
+		NetworkChannel,
+		NetworkSettings,
+		Registration,
+		TextCreators,
+		VoiceCreators
+	} from '$lib/types';
+	import { session } from '$lib/session.svelte';
+	import { stackConfig } from '$lib/stackconfig.svelte';
+	import {
+		AUTOJOIN_GUESTS_KEY,
+		CHANNEL_FOUNDER_KEY,
+		NETWORK_CHANNELS_KEY,
+		cleanNetworkChannels,
+		founderProblem,
+		networkChannelsChanged,
+		topicProblem
+	} from '$lib/channels';
+	import NetworkChannels from '$lib/components/NetworkChannels.svelte';
 	import ChoiceGroup, { type Choice } from '$lib/components/ChoiceGroup.svelte';
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
@@ -35,7 +53,7 @@
 		require_email_verification: 'Verified email',
 		guest_access: 'Guest access',
 		guest_voice: 'Guest voice & video',
-		channel_creation: 'Text channel creation',
+		channel_creation: 'Who can create channels',
 		voice_channel_creation: 'Voice room creation',
 		channel_auto_register: 'Automatic channel registration',
 		channel_expiry_days: 'Channel expiry'
@@ -107,15 +125,61 @@
 	const text: Choice<TextCreators>[] = [
 		{
 			value: 'registered',
-			label: 'Any registered user',
-			detail: 'Signed-in people can start a channel and become its founder.'
+			label: 'Anyone signed in',
+			detail: 'Signed-in people start a channel by joining it, and become its founder.'
 		},
 		{
 			value: 'admins',
-			label: 'Admins only',
-			detail: 'Only network admins create channels; everyone else joins existing ones.'
+			label: 'Only admins',
+			detail:
+				'Members can only join network channels, role channels and channels that already exist. Admins are roles with the irc.chanreg permission (Owner and Admin by default).'
 		}
 	];
+
+	// Network channels (irc.* in the stack config file, saved with the rest).
+	let cfg = $derived(stackConfig.view);
+	let netKey = $derived(cfg?.keys?.find((k) => k.key === NETWORK_CHANNELS_KEY));
+	let founderKey = $derived(cfg?.keys?.find((k) => k.key === CHANNEL_FOUNDER_KEY));
+	let guestsKey = $derived(cfg?.keys?.find((k) => k.key === AUTOJOIN_GUESTS_KEY));
+	let netOff = $derived(session.info?.features.config_file === false || cfg?.enabled === false);
+	let netEditable = $derived(!!netKey?.editable && !!founderKey?.editable && !!guestsKey?.editable);
+	let savedNet = $derived(cleanNetworkChannels((netKey?.value as NetworkChannel[] | undefined) ?? []));
+	let savedFounder = $derived(typeof founderKey?.value === 'string' ? founderKey.value : '');
+	let savedGuests = $derived(guestsKey?.value !== false);
+	let netChannels = $state<NetworkChannel[]>([]);
+	let founder = $state('');
+	let autojoinGuests = $state(true);
+	let netFilledFrom = '';
+	function resetNet() {
+		netChannels = savedNet.map((c) => ({ ...c }));
+		founder = savedFounder;
+		autojoinGuests = savedGuests;
+	}
+	$effect(() => {
+		const tag = `${cfg?.etag ?? ''}|${JSON.stringify(savedNet)}|${savedFounder}|${savedGuests}`;
+		if (cfg && tag !== netFilledFrom) {
+			netFilledFrom = tag;
+			resetNet();
+		}
+	});
+	let netIssue = $derived(
+		founderProblem(founder) || netChannels.map((c) => topicProblem(c.topic ?? '')).find(Boolean) || ''
+	);
+	let netChanges = $derived.by(() => {
+		const set: Record<string, NetworkChannel[] | string | boolean> = {};
+		const unset: string[] = [];
+		if (!cfg || !netEditable) return { set, unset };
+		if (networkChannelsChanged(netChannels, savedNet))
+			set[NETWORK_CHANNELS_KEY] = cleanNetworkChannels(netChannels);
+		const f = founder.trim();
+		if (f !== savedFounder) {
+			if (f) set[CHANNEL_FOUNDER_KEY] = f;
+			else if (founderKey?.set) unset.push(CHANNEL_FOUNDER_KEY);
+		}
+		if (autojoinGuests !== savedGuests) set[AUTOJOIN_GUESTS_KEY] = autojoinGuests;
+		return { set, unset };
+	});
+	let netChangeCount = $derived(Object.keys(netChanges.set).length + netChanges.unset.length);
 	const voice: Choice<VoiceCreators>[] = [
 		{
 			value: 'admins',
@@ -147,7 +211,10 @@
 			else error = errorText(e);
 		}
 	}
-	onMount(load);
+	onMount(() => {
+		load();
+		stackConfig.load();
+	});
 
 	const keys = [
 		'registration',
@@ -168,28 +235,38 @@
 			out.channel_expiry_days = days;
 		return out;
 	});
-	let changeCount = $derived(Object.keys(changes).length);
+	let changeCount = $derived(Object.keys(changes).length + netChangeCount);
 	// An invalid custom expiry is an unsaved edit too (Discard undoes it).
-	let dirty = $derived(changeCount > 0 || !!customError);
+	let dirty = $derived(changeCount > 0 || !!customError || !!netIssue);
+	let blocker = $derived(
+		customError ? 'Fix the expiry to save' : netIssue ? 'Fix the network channels to save' : ''
+	);
 
 	async function save(e: Event) {
 		e.preventDefault();
-		if (!dirty || customError) return;
+		if (!dirty || blocker) return;
 		saving = true;
 		try {
-			const r = await api<{ settings: NetworkSettings; config?: FileInfo }>('PATCH', '/settings', changes);
-			saved = r.settings;
-			file = r.config ?? null;
-			reset(saved);
+			// The network channels first: the If-Match is the file on screen.
+			if (netChangeCount) await stackConfig.save(netChanges);
+			if (Object.keys(changes).length) {
+				const r = await api<{ settings: NetworkSettings; config?: FileInfo }>('PATCH', '/settings', changes);
+				saved = r.settings;
+				file = r.config ?? null;
+				reset(saved);
+				if (netChangeCount) await stackConfig.load();
+			}
 			toasts.push('Network settings saved.');
 		} catch (err) {
 			toasts.push(errorText(err), 'bad');
+			if (err instanceof Error && /changed since you loaded/.test(err.message)) await stackConfig.load();
 		} finally {
 			saving = false;
 		}
 	}
 	function discard() {
 		if (saved) reset(saved);
+		resetNet();
 	}
 </script>
 
@@ -198,7 +275,10 @@
 <div class="page-head">
 	<div>
 		<h1>Network settings</h1>
-		<p>Who can join this network and who can create channels. Changes apply to new requests straight away.</p>
+		<p>
+			Who can join this network, who can create channels and which channels it always has. Changes apply to
+			new requests straight away.
+		</p>
 	</div>
 </div>
 
@@ -314,12 +394,38 @@
 		<section aria-labelledby="ch-h">
 			<h2 id="ch-h" class="sr-only">Channels</h2>
 			<ChoiceGroup
-				legend="Who can create text channels"
-				hint="The creator becomes the channel’s founder and can manage it."
+				legend="Who can create channels"
+				hint="Creating a text channel on IRC: whoever creates it becomes its founder and can manage it."
 				name="channel_creation"
 				choices={text}
 				bind:value={draft.channel_creation}
 			/>
+			{#if netOff}
+				<div class="net-off">
+					<h3>Network channels</h3>
+					<Notice tone="info">
+						Network channels live in the stack config file, which this panel isn’t set up to edit (<code
+							>BOSON_CONFIG</code
+						>). Set <code>irc.channels</code> in <code>config/boson.yaml</code> by hand.
+					</Notice>
+				</div>
+			{:else if !cfg}
+				<State kind="loading" title="Loading network channels…" />
+			{:else}
+				<div class="net">
+					<NetworkChannels
+						bind:channels={netChannels}
+						bind:founder
+						bind:autojoinGuests
+						disabled={!netEditable || saving}
+						adminsOnly={draft.channel_creation === 'admins'}
+						{guestsAllowed}
+					/>
+					{#if !netEditable}
+						<p class="hint">You can look but not change these: saving needs <code>settings.manage</code>.</p>
+					{/if}
+				</div>
+			{/if}
 			<ChoiceGroup
 				legend="Who can create voice rooms"
 				hint="A voice room belongs to a text channel. Admins can always create them."
@@ -403,8 +509,8 @@
 
 		<div class="bar" class:dirty>
 			<p class="meta" aria-live="polite">
-				{#if customError}
-					Fix the expiry to save
+				{#if blocker}
+					{blocker}
 				{:else if dirty}
 					{changeCount === 1 ? 'One unsaved change' : `${changeCount} unsaved changes`}
 				{:else if saved?.updated_at}
@@ -423,7 +529,7 @@
 				<button class="btn btn-ghost" type="button" disabled={!dirty || saving} onclick={discard}
 					>Discard</button
 				>
-				<button class="btn btn-primary" disabled={!dirty || !!customError || saving}
+				<button class="btn btn-primary" disabled={!dirty || !!blocker || saving}
 					>{saving ? 'Saving…' : 'Save changes'}</button
 				>
 			</div>
@@ -456,6 +562,13 @@
 	section {
 		display: grid;
 		gap: var(--space-8);
+	}
+	.net-off {
+		display: grid;
+		gap: var(--space-3);
+	}
+	.net-off h3 {
+		font-size: var(--text-base);
 	}
 	.guest {
 		display: grid;
