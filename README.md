@@ -146,12 +146,16 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
 - **Network channels** (Network settings, `settings.manage`, needs the stack
   config file): channels RoleServ keeps created and registered to the network,
   each with an optional topic and an auto-join box (new accounts join on their
-  first login, guests on connect; leaving sticks). Written to the file as
-  `irc.channels: [{name: "#lobby", topic: …, autojoin: true}]` (max 100; entries
+  first login, guests on connect; leaving sticks) and a "Who can join" picker
+  (Everyone, or some roles: `roles: [Owner, Admin]`; Member = any account, no
+  guests; RoleServ refuses and removes everyone else, auth docs/roles.md).
+  Written to the file as
+  `irc.channels: [{name: "#lobby", topic: …, autojoin: true, roles?: […]}]` (max 100; entries
   keep their comments and unknown keys), plus `irc.channel_founder` (empty = the
   network owner) and `irc.autojoin_guests` (default on). "Who can create
   channels" is `auth.channel_creation` (Anyone signed in / Only admins). The
-  directory listing gets `autojoin_channels` and `channels` (names, ≤ 50 each)
+  directory listing gets `autojoin_channels` and `channels` (names, ≤ 50 each;
+  channels kept to roles are left out)
   on every submit and edit and whenever the file's channels change (a save or
   a hand edit); an older directory ignores them.
 - **Invites:** create (uses, expiry, note), with the code shown once; list with

@@ -108,10 +108,57 @@ export function topicProblem(s: string): string {
 export function cleanNetworkChannels(l: NetworkChannel[]): NetworkChannel[] {
 	return l.map((c) => {
 		const topic = (c.topic ?? '').trim();
-		return topic
+		const out: NetworkChannel = topic
 			? { name: c.name.trim(), topic, autojoin: c.autojoin }
 			: { name: c.name.trim(), autojoin: c.autojoin };
+		const roles = cleanChannelRoles(c.roles);
+		if (roles.length) out.roles = roles;
+		return out;
 	});
+}
+
+/** A channel's roles trimmed, without blanks and case-insensitive repeats. */
+export function cleanChannelRoles(roles: readonly string[] | undefined): string[] {
+	const out: string[] = [];
+	for (const r of roles ?? []) {
+		const t = r.trim();
+		if (t && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+	}
+	return out;
+}
+
+/** A role as a network channel's roles can name it (auth matches the name or the slug). */
+export interface ChannelRole {
+	name: string;
+	slug?: string;
+	builtin?: string | null;
+}
+
+/** The role a channel's roles entry names, if any (case-insensitive, name or slug). */
+export function matchChannelRole<R extends ChannelRole>(entry: string, roles: readonly R[]): R | undefined {
+	const e = entry.trim().toLowerCase();
+	const slug = e.replace(/ /g, '-');
+	return roles.find(
+		(r) => r.name.toLowerCase() === e || (r.slug ?? '').toLowerCase() === e || (r.slug ?? '') === slug
+	);
+}
+
+/**
+ * Who may join, in words: "Everyone" (guests too), "All accounts" (Member
+ * listed: no guests), "Admin" / "Admin or Owner" / "3 roles".
+ */
+export function channelAccessLabel(
+	entries: readonly string[] | undefined,
+	roles: readonly ChannelRole[]
+): string {
+	const list = cleanChannelRoles(entries);
+	if (!list.length) return 'Everyone';
+	const matched = list.map((e) => matchChannelRole(e, roles));
+	if (matched.some((r) => r?.builtin === 'member')) return 'All accounts';
+	const names = list.map((e, i) => matched[i]?.name ?? e);
+	if (names.length === 1) return names[0];
+	if (names.length === 2) return `${names[0]} or ${names[1]}`;
+	return `${names.length} roles`;
 }
 
 /** Whether two network channel lists differ (order counts: it's the file's). */

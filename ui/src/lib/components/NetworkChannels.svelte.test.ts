@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
-import type { NetworkChannel } from '$lib/types';
+import type { NetworkChannel, Role } from '$lib/types';
 import NetworkChannels from './NetworkChannels.svelte';
 import {
+	channelAccessLabel,
+	cleanChannelRoles,
 	cleanNetworkChannels,
+	matchChannelRole,
 	founderProblem,
 	networkChannelProblem,
 	networkChannelsChanged,
@@ -133,10 +136,88 @@ describe('NetworkChannels', () => {
 		expect(state.autojoinGuests).toBe(false);
 	});
 
+	const role = (name: string, builtin: Role['builtin'] = null): Role =>
+		({
+			id: 'rol_' + name,
+			name,
+			slug: name.toLowerCase().replace(/ /g, '-'),
+			color: null,
+			position: 0,
+			builtin,
+			permissions: [],
+			irc: { whois_line: null, vhost: null, oper: false },
+			hoist: false,
+			mentionable: false,
+			member_count: 0
+		}) as Role;
+	const roles = [
+		role('Owner', 'owner'),
+		role('Admin', 'admin'),
+		role('Chat Helper'),
+		role('Member', 'member')
+	];
+
+	it('keeps a channel to roles (who can join) and says so in the summary', async () => {
+		const { state } = setup({ roles });
+		const user = userEvent.setup();
+		const add = screen.getByRole('textbox', { name: 'Add a channel' });
+		await user.type(add, '#lobby{Enter}');
+		await user.type(add, '#opers{Enter}');
+		const who = screen.getByRole('combobox', { name: 'Who can join #opers' });
+		expect(who.textContent).toContain('Everyone');
+		expect(screen.queryByTestId('restricted-summary')).toBeNull();
+
+		await user.click(who);
+		await user.click(screen.getByRole('option', { name: /^Admin/ }));
+		await user.click(screen.getByRole('option', { name: /^Owner/ }));
+		await user.keyboard('{Escape}');
+		// most senior first, whatever order they were picked in
+		expect(state.channels[1]).toEqual({ name: '#opers', autojoin: false, roles: ['Owner', 'Admin'] });
+		expect(state.channels[0].roles).toBeUndefined();
+		expect(who.textContent).toContain('Owner or Admin');
+		expect(screen.getByTestId('restricted-summary').textContent).toBe('#opers restricted to Owner or Admin');
+
+		// clearing them opens the channel again
+		await user.click(who);
+		await user.click(screen.getByRole('option', { name: /^Admin/ }));
+		await user.click(screen.getByRole('option', { name: /^Owner/ }));
+		await user.keyboard('{Escape}');
+		expect(state.channels[1].roles).toBeUndefined();
+		expect(screen.queryByTestId('restricted-summary')).toBeNull();
+	});
+
 	it('is read-only when disabled', () => {
 		setup({ disabled: true });
 		expect(
 			(screen.getByRole('textbox', { name: 'Add a channel' }) as HTMLInputElement).matches(':disabled')
 		).toBe(true);
+	});
+});
+
+describe('channel roles helpers', () => {
+	const roles = [
+		{ name: 'Owner', slug: 'owner', builtin: 'owner' },
+		{ name: 'Chat Helper', slug: 'chat-helper', builtin: null },
+		{ name: 'Member', slug: 'member', builtin: 'member' }
+	];
+	it('cleans, matches and labels', () => {
+		expect(cleanChannelRoles([' Admin ', '', 'admin', 'Owner'])).toEqual(['Admin', 'Owner']);
+		expect(matchChannelRole('chat helper', roles)?.name).toBe('Chat Helper');
+		expect(matchChannelRole('CHAT-HELPER', roles)?.name).toBe('Chat Helper');
+		expect(matchChannelRole('nobody', roles)).toBeUndefined();
+		expect(channelAccessLabel(undefined, roles)).toBe('Everyone');
+		expect(channelAccessLabel(['owner'], roles)).toBe('Owner');
+		expect(channelAccessLabel(['owner', 'gone'], roles)).toBe('Owner or gone');
+		expect(channelAccessLabel(['owner', 'chat-helper', 'x'], roles)).toBe('3 roles');
+		expect(channelAccessLabel(['owner', 'member'], roles)).toBe('All accounts');
+		expect(
+			cleanNetworkChannels([
+				{ name: '#o', autojoin: false, roles: [' Owner', 'owner'] },
+				{ name: '#a', autojoin: true, roles: [] }
+			])
+		).toEqual([
+			{ name: '#o', autojoin: false, roles: ['Owner'] },
+			{ name: '#a', autojoin: true }
+		]);
 	});
 });

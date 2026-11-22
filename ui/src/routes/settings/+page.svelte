@@ -12,6 +12,7 @@
 	} from '$lib/types';
 	import { session } from '$lib/session.svelte';
 	import { stackConfig } from '$lib/stackconfig.svelte';
+	import { rolesState } from '$lib/roles.svelte';
 	import {
 		AUTOJOIN_GUESTS_KEY,
 		CHANNEL_FOUNDER_KEY,
@@ -214,6 +215,8 @@
 	onMount(() => {
 		load();
 		stackConfig.load();
+		// the roles a network channel can be kept to (Who can join)
+		if (!rolesState.loaded) rolesState.load();
 	});
 
 	const keys = [
@@ -420,6 +423,7 @@
 						disabled={!netEditable || saving}
 						adminsOnly={draft.channel_creation === 'admins'}
 						{guestsAllowed}
+						roles={rolesState.roles}
 					/>
 					{#if !netEditable}
 						<p class="hint">You can look but not change these: saving needs <code>settings.manage</code>.</p>

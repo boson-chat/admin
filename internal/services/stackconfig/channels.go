@@ -17,6 +17,8 @@ import (
 //	    - name: "#lobby"
 //	      topic: Welcome to Boson
 //	      autojoin: true
+//	    - name: "#opers"
+//	      roles: [Admin, Owner]   # only these roles may join (empty: everyone)
 //	  channel_founder: thelion
 //	  autojoin_guests: true
 //
@@ -28,6 +30,8 @@ const (
 
 	MaxNetworkChannels = 100
 	MaxTopic           = 300
+	// MaxChannelRoles bounds a channel's roles (auth's limit).
+	MaxChannelRoles = 32
 )
 
 // NetworkChannel is one entry of irc.channels.
@@ -37,6 +41,67 @@ type NetworkChannel struct {
 	Name     string `json:"name" yaml:"name"`
 	Topic    string `json:"topic,omitempty" yaml:"topic,omitempty"`
 	Autojoin bool   `json:"autojoin" yaml:"autojoin"`
+	// Roles, when not empty, are the only roles whose members may join
+	// (role names; "Member" = any account, no guests). Empty: everyone.
+	Roles []string `json:"roles,omitempty" yaml:"roles,omitempty"`
+}
+
+// Restricted: only some roles may join.
+func (c NetworkChannel) Restricted() bool { return len(c.Roles) > 0 }
+
+// roleName checks one entry of a channel's roles: a role name as auth
+// takes it (1–32 letters, digits, spaces, - and _).
+func roleName(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 32 {
+		return "", fmt.Errorf("role %q must be 1–32 characters", s)
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == ' ' || c == '-' || c == '_') {
+			return "", fmt.Errorf("role %q may only use letters, digits, spaces, - and _", s)
+		}
+	}
+	return s, nil
+}
+
+// cleanRoles validates a channel's roles (any JSON or YAML list of
+// strings), trimmed and de-duplicated case-insensitively.
+func cleanRoles(name string, v any) ([]string, error) {
+	var items []any
+	switch x := v.(type) {
+	case nil:
+		return nil, nil
+	case []any:
+		items = x
+	case []string:
+		for _, r := range x {
+			items = append(items, r)
+		}
+	default:
+		return nil, fmt.Errorf("%s: roles must be a list of role names", name)
+	}
+	if len(items) > MaxChannelRoles {
+		return nil, fmt.Errorf("%s: at most %d roles", name, MaxChannelRoles)
+	}
+	var out []string
+	for _, it := range items {
+		raw, ok := it.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: roles must be a list of role names", name)
+		}
+		r, err := roleName(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", name, err)
+		}
+		dup := false
+		for _, x := range out {
+			dup = dup || strings.EqualFold(x, r)
+		}
+		if !dup {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // FoldChannel is a channel name as Ergo matches it (ASCII casefolding).
@@ -82,7 +147,7 @@ func (k Key) cleanChannels(v any) ([]NetworkChannel, error) {
 		items = x
 	case []NetworkChannel:
 		for _, c := range x {
-			items = append(items, map[string]any{"name": c.Name, "topic": c.Topic, "autojoin": c.Autojoin})
+			items = append(items, map[string]any{"name": c.Name, "topic": c.Topic, "autojoin": c.Autojoin, "roles": c.Roles})
 		}
 	default:
 		return nil, fmt.Errorf("must be a list of channels")
@@ -126,7 +191,11 @@ func (k Key) cleanChannels(v any) ([]NetworkChannel, error) {
 		default:
 			return nil, fmt.Errorf("%s: autojoin must be true or false", name)
 		}
-		out = append(out, NetworkChannel{Name: name, Topic: topic, Autojoin: aj})
+		roles, err := cleanRoles(name, m["roles"])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, NetworkChannel{Name: name, Topic: topic, Autojoin: aj, Roles: roles})
 	}
 	return out, nil
 }
@@ -135,7 +204,7 @@ func (k Key) cleanChannels(v any) ([]NetworkChannel, error) {
 // A bare string entry is a channel with no topic, not auto-joined.
 func channelsFromNode(n *yaml.Node) ([]any, error) {
 	if n.Kind != yaml.SequenceNode {
-		return nil, fmt.Errorf("must be a list of {name, topic, autojoin}")
+		return nil, fmt.Errorf("must be a list of {name, topic, autojoin, roles}")
 	}
 	items := make([]any, 0, len(n.Content))
 	for _, c := range n.Content {
@@ -145,7 +214,7 @@ func channelsFromNode(n *yaml.Node) ([]any, error) {
 		}
 		var m map[string]any
 		if c.Kind != yaml.MappingNode || c.Decode(&m) != nil {
-			return nil, fmt.Errorf("must be a list of {name, topic, autojoin}")
+			return nil, fmt.Errorf("must be a list of {name, topic, autojoin, roles}")
 		}
 		items = append(items, m)
 	}
@@ -182,6 +251,15 @@ func channelsNode(old *yaml.Node, chans []NetworkChannel) *yaml.Node {
 			configfile.Unset(item, []string{"topic"})
 		}
 		_ = configfile.Set(item, []string{"autojoin"}, ch.Autojoin)
+		if ch.Restricted() {
+			roles := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+			for _, r := range ch.Roles {
+				roles.Content = append(roles.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: r})
+			}
+			_ = configfile.SetNode(item, []string{"roles"}, roles)
+		} else {
+			configfile.Unset(item, []string{"roles"})
+		}
 		seq.Content = append(seq.Content, item)
 	}
 	return seq
@@ -210,10 +288,14 @@ func (s *Service) NetworkChannels() (chans []NetworkChannel, ok bool) {
 }
 
 // ChannelNames splits network channels into the auto-join ones and all
-// of them, as written, for the directory listing.
+// of them, as written, for the directory listing. Channels only some roles
+// may join aren't listed: the directory is for everyone.
 func ChannelNames(chans []NetworkChannel) (autojoin, all []string) {
 	autojoin, all = []string{}, []string{}
 	for _, c := range chans {
+		if c.Restricted() {
+			continue
+		}
 		all = append(all, c.Name)
 		if c.Autojoin {
 			autojoin = append(autojoin, c.Name)
