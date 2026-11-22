@@ -1,18 +1,24 @@
 <!--
 	The network channels editor (irc.channels, irc.channel_founder and
 	irc.autojoin_guests in the stack config file): RoleServ keeps each
-	channel created and registered to the network, and joins people to the
-	auto-join ones. A controlled editor: the page holds the values and saves.
+	channel created and registered to the network, joins people to the
+	auto-join ones and keeps restricted ones (irc.channels[].roles) to their
+	roles. A controlled editor: the page holds the values and saves.
 -->
 <script lang="ts">
-	import type { NetworkChannel } from '$lib/types';
+	import type { NetworkChannel, Role } from '$lib/types';
+	import type { DropdownOption } from '$lib/dropdown';
 	import {
 		MAX_NETWORK_CHANNELS,
 		MAX_TOPIC,
+		channelAccessLabel,
+		cleanChannelRoles,
 		founderProblem,
+		matchChannelRole,
 		networkChannelProblem,
 		topicProblem
 	} from '$lib/channels';
+	import Dropdown from './Dropdown.svelte';
 	import Toggle from './Toggle.svelte';
 
 	let {
@@ -21,7 +27,8 @@
 		autojoinGuests = $bindable(true),
 		disabled = false,
 		adminsOnly = false,
-		guestsAllowed = true
+		guestsAllowed = true,
+		roles = []
 	}: {
 		channels?: NetworkChannel[];
 		founder?: string;
@@ -31,6 +38,8 @@
 		adminsOnly?: boolean;
 		/** Guest access is on. */
 		guestsAllowed?: boolean;
+		/** The network's roles, most senior first (for "Who can join"). */
+		roles?: Role[];
 	} = $props();
 
 	const uid = $props.id();
@@ -46,6 +55,48 @@
 	});
 	let founderIssue = $derived(founderProblem(founder));
 	let autojoined = $derived(channels.filter((c) => c.autojoin).length);
+	let restricted = $derived(channels.filter((c) => cleanChannelRoles(c.roles).length > 0));
+
+	// "Who can join": the roles, most senior first; Member is every account.
+	let roleOptions = $derived<DropdownOption[]>(
+		roles.map((r) => ({
+			value: r.name,
+			label: r.name,
+			description:
+				r.builtin === 'member' ? 'Any signed-in account, no guests' : r.irc?.oper ? 'IRC oper' : undefined
+		}))
+	);
+	/** A row's options: the roles, plus entries in the file that name no role. */
+	function optionsFor(c: NetworkChannel): DropdownOption[] {
+		const unknown = cleanChannelRoles(c.roles).filter((e) => !matchChannelRole(e, roles));
+		return [
+			...roleOptions,
+			...unknown.map((e) => ({ value: e, label: e, description: 'No such role: lets nobody in' }))
+		];
+	}
+	/** A row's chosen roles, as the options name them. */
+	function chosenFor(c: NetworkChannel): string[] {
+		return cleanChannelRoles(c.roles).map((e) => matchChannelRole(e, roles)?.name ?? e);
+	}
+	function setRoles(i: number, c: NetworkChannel, picked: string[]) {
+		// in the list's order (most senior first), unknown entries last
+		const order = optionsFor(c).map((o) => o.value);
+		const next = [...picked].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+		update(i, { roles: next.length ? next : undefined });
+	}
+	let restrictedText = $derived(
+		restricted.length === 0
+			? ''
+			: restricted.length > 3
+				? `${restricted.length} restricted to some roles`
+				: `${list(restricted.map((c) => c.name))} restricted to ${
+						restricted.length === 1 ? channelAccessLabel(restricted[0].roles, roles) : 'some roles'
+					}`
+	);
+	function list(names: string[]) {
+		if (names.length <= 1) return names.join('');
+		return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+	}
 
 	function add() {
 		addTried = true;
@@ -75,7 +126,8 @@
 		Network channels always exist and belong to the network (founder: {#if founder.trim()}<strong
 				>{founder.trim()}</strong
 			>{:else}the network owner{/if}). Auto-join: new accounts join on their first login, guests when they
-		connect; leaving sticks.
+		connect; leaving sticks. “Who can join” keeps a channel to some roles: anyone else is refused (and
+		removed), guests never get in, and the founder and IRC operators always can.
 	</p>
 	{#if adminsOnly}
 		<p class="hint policy" data-testid="admins-only-note">
@@ -134,6 +186,25 @@
 							/>
 							{#if tp}<small class="bad">{tp}</small>{/if}
 						</label>
+						<div class="who">
+							<span class="sr-only" id="{uid}-who-{i}">Who can join {c.name}</span>
+							<Dropdown
+								multiple
+								align="end"
+								options={optionsFor(c)}
+								values={chosenFor(c)}
+								onchangemany={(v) => setRoles(i, c, v)}
+								labelledby="{uid}-who-{i}"
+								placeholder="Everyone"
+								title="Who can join {c.name}: {channelAccessLabel(c.roles, roles)}"
+								summary={(o) =>
+									channelAccessLabel(
+										o.map((x) => x.value),
+										roles
+									)}
+								class={cleanChannelRoles(c.roles).length ? 'restricted' : ''}
+							/>
+						</div>
 						<label class="aj">
 							<input
 								type="checkbox"
@@ -159,8 +230,9 @@
 						? channels.length === 1
 							? 'auto-joined'
 							: 'all auto-joined'
-						: `${autojoined} auto-joined`}. A topic is set when RoleServ creates the channel and when you
-				change it here.
+						: `${autojoined} auto-joined`}{#if restrictedText}, <span data-testid="restricted-summary"
+						>{restrictedText}</span
+					>{/if}. A topic is set when RoleServ creates the channel and when you change it here.
 			</p>
 		{/if}
 
@@ -301,7 +373,7 @@
 	}
 	.list li {
 		display: grid;
-		grid-template-columns: minmax(7rem, 0.7fr) minmax(0, 2fr) auto auto;
+		grid-template-columns: minmax(7rem, 0.7fr) minmax(0, 2fr) 11rem auto auto;
 		align-items: center;
 		gap: var(--space-3);
 		padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
@@ -323,6 +395,17 @@
 	.topic input {
 		width: 100%;
 		min-width: 0;
+	}
+	.who {
+		min-width: 0;
+	}
+	.who :global(.dd) {
+		width: 100%;
+	}
+	/* a restricted channel reads at a glance: accent hairline and tint */
+	.who :global(.restricted .trigger) {
+		border-color: color-mix(in oklab, var(--accent), transparent 45%);
+		background: color-mix(in oklab, var(--accent), var(--surface) 92%);
 	}
 	.aj {
 		display: inline-flex;
@@ -365,6 +448,7 @@
 		color: var(--fg-quiet);
 	}
 	@media (max-width: 640px) {
+		/* name, auto-join and remove; then the topic; then who can join */
 		.list li {
 			grid-template-columns: minmax(0, 1fr) auto auto;
 			gap: var(--space-2) var(--space-3);
@@ -373,6 +457,10 @@
 		.topic {
 			grid-column: 1 / -1;
 			grid-row: 2;
+		}
+		.who {
+			grid-column: 1 / -1;
+			grid-row: 3;
 		}
 		.founder {
 			grid-template-columns: minmax(0, 1fr);

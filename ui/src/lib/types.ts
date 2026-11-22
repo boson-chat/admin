@@ -519,6 +519,8 @@ export interface NetworkChannel {
 	name: string;
 	topic?: string;
 	autojoin: boolean;
+	/** Only these roles (names) may join; absent or empty = everyone, guests too. */
+	roles?: string[];
 }
 
 export type ConfigValue = boolean | number | string | string[] | VoiceRoom[] | NetworkChannel[];

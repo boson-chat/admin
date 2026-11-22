@@ -112,6 +112,54 @@ test('network channels: add, topic, auto-join, founder, save to the file', async
 	await expect(page.locator(group)).toContainText('founder: admin');
 });
 
+test('network channels: who can join, kept to roles in the file', async ({ page }) => {
+	await page.goto('/settings');
+	const add = page.getByRole('textbox', { name: 'Add a channel' });
+	await add.fill('#lobby');
+	await add.press('Enter');
+	await add.fill('#opers');
+	await add.press('Enter');
+
+	const who = page.getByRole('combobox', { name: 'Who can join #opers' });
+	await expect(who).toHaveText('Everyone');
+	await who.click();
+	await expect(page.getByRole('option', { name: /Member/ })).toContainText(
+		'Any signed-in account, no guests'
+	);
+	await page.getByRole('option', { name: 'Admin', exact: true }).click();
+	await page.getByRole('option', { name: /^Owner/ }).click();
+	await page.keyboard.press('Escape');
+	await expect(who).toHaveText('Owner or Admin');
+	await expect(page.getByTestId('restricted-summary')).toHaveText('#opers restricted to Owner or Admin');
+	await expect(page.getByRole('combobox', { name: 'Who can join #lobby' })).toHaveText('Everyone');
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page.getByText('Network settings saved.')).toBeVisible();
+
+	if (configFile) {
+		const yaml = readFileSync(configFile, 'utf8');
+		expect(yaml).toMatch(/- name: "#opers"\s+autojoin: false\s+roles: \[Owner, Admin\]/);
+		expect(yaml.match(/roles:/g)?.length).toBe(1);
+	}
+
+	// Reloaded from the file; a name no role has shows as such and can go.
+	await patchConfig(page, {
+		set: { 'irc.channels': [{ name: '#opers', autojoin: false, roles: ['admin', 'Old Staff'] }] }
+	});
+	await page.goto('/settings');
+	const again = page.getByRole('combobox', { name: 'Who can join #opers' });
+	await expect(again).toHaveText('Admin or Old Staff');
+	await again.click();
+	await expect(page.getByRole('option', { name: /Old Staff/ })).toContainText('No such role');
+	await page.getByRole('option', { name: /Old Staff/ }).click();
+	await page.getByRole('option', { name: 'Admin', exact: true }).click();
+	await page.keyboard.press('Escape');
+	await expect(again).toHaveText('Everyone');
+	await expect(page.getByTestId('restricted-summary')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page.getByText('Network settings saved.')).toBeVisible();
+	if (configFile) expect(readFileSync(configFile, 'utf8')).not.toMatch(/roles:/);
+});
+
 test('role channels auto-join: says when no role has channels', async ({ page }) => {
 	expect((await page.request.post(`${fake}/__reset`, { data: { role_channels: false } })).ok()).toBe(true);
 	await page.goto('/channels');
@@ -142,6 +190,24 @@ for (const mode of ['light', 'dark'] as const) {
 		await page.goto('/settings');
 		await expect(page.getByRole('checkbox', { name: 'Auto-join #lobby' })).toBeChecked();
 		await shoot(page, `settings-network-channels-${tag}`, group);
+
+		await patchConfig(page, {
+			set: {
+				'irc.channels': [
+					{ name: '#lobby', topic: 'Welcome to Example Chat — be nice', autojoin: true },
+					{ name: '#opers', topic: 'Staff room', autojoin: true, roles: ['Owner', 'Admin'] },
+					{ name: '#members', autojoin: false, roles: ['Member'] },
+					{ name: '#help', autojoin: false }
+				]
+			}
+		});
+		await page.goto('/settings');
+		await expect(page.getByTestId('restricted-summary')).toBeVisible();
+		await shoot(page, `settings-network-channels-roles-${tag}`, group);
+		await page.getByRole('combobox', { name: 'Who can join #opers' }).click();
+		await expect(page.getByRole('option', { name: /Member/ })).toBeVisible();
+		await shoot(page, `settings-network-channels-roles-open-${tag}`);
+		await page.keyboard.press('Escape');
 
 		await patchConfig(page, { set: { 'auth.channel_creation': 'admins' } });
 		await page.goto('/settings');

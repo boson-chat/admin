@@ -190,3 +190,74 @@ func TestNetworkChannelsInvalidInFile(t *testing.T) {
 		t.Fatal("no config file: ok")
 	}
 }
+
+func TestNetworkChannelRoles(t *testing.T) {
+	s, path := newSvc(t, `version: 1
+irc:
+  channels:
+    - name: "#opers"
+      roles: [Admin]   # staff only
+    - name: "#lobby"
+      autojoin: true
+`)
+	chans, _ := s.NetworkChannels()
+	if !reflect.DeepEqual(chans, []NetworkChannel{{Name: "#opers", Roles: []string{"Admin"}}, {Name: "#lobby", Autojoin: true}}) {
+		t.Fatalf("read %#v", chans)
+	}
+	_, err := s.Update(context.Background(), "alice", "", Change{Set: map[string]any{
+		KeyNetworkChannels: []any{
+			map[string]any{"name": "#opers", "autojoin": false, "roles": []any{" Owner ", "Admin", "owner"}},
+			map[string]any{"name": "#lobby", "autojoin": true, "roles": []any{}},
+			map[string]any{"name": "#staff", "roles": []any{"Chat Helper"}},
+		},
+	}}, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	file := string(b)
+	for _, want := range []string{"roles: [Owner, Admin] # staff only", "roles: [Chat Helper]"} {
+		if !strings.Contains(file, want) {
+			t.Errorf("missing %q in:\n%s", want, file)
+		}
+	}
+	if strings.Count(file, "roles:") != 2 {
+		t.Errorf("an open channel has roles:\n%s", file)
+	}
+	chans, _ = s.NetworkChannels()
+	if !chans[0].Restricted() || chans[1].Restricted() || !reflect.DeepEqual(chans[2].Roles, []string{"Chat Helper"}) {
+		t.Fatalf("after write %#v", chans)
+	}
+	// the directory lists only the channels everyone may join
+	aj, names := ChannelNames(chans)
+	if !reflect.DeepEqual(aj, []string{"#lobby"}) || !reflect.DeepEqual(names, []string{"#lobby"}) {
+		t.Fatalf("names %v %v", aj, names)
+	}
+	// opening the channel again removes the key
+	if _, err := s.Update(context.Background(), "alice", "", Change{Set: map[string]any{
+		KeyNetworkChannels: []NetworkChannel{{Name: "#opers"}},
+	}}, all); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ = os.ReadFile(path); strings.Contains(string(b), "roles") {
+		t.Fatalf("roles kept:\n%s", b)
+	}
+
+	k, _ := KeyByName(KeyNetworkChannels)
+	many := make([]any, MaxChannelRoles+1)
+	for i := range many {
+		many[i] = "r" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+	}
+	for name, bad := range map[string]any{
+		"not a list":  "Admin",
+		"not strings": []any{1.0},
+		"empty":       []any{" "},
+		"bad chars":   []any{"Admin!"},
+		"too long":    []any{strings.Repeat("x", 33)},
+		"too many":    many,
+	} {
+		if _, err := k.Clean([]any{map[string]any{"name": "#a", "roles": bad}}); err == nil {
+			t.Errorf("%s: accepted %v", name, bad)
+		}
+	}
+}
