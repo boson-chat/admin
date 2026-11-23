@@ -405,6 +405,8 @@ createServer(async (req, res) => {
 		if (found && m[2]) return send(res, 200, { sessions: [] });
 		if (found) return send(res, 200, { user: found, identities: [], has_password: true });
 		if (p === '/v1/admin/audit') return send(res, 200, { entries: [] });
+		// Sign-in providers: none yet (enough for the Add provider form).
+		if (p === '/v1/admin/sso/providers') return send(res, 200, { providers: [] });
 	}
 	if (req.method === 'GET' && p === '/v1/config')
 		return send(res, 200, { registration: 'invite', require_email_verification: true, sso_providers: [] });

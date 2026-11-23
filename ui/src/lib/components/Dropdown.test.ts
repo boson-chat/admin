@@ -195,3 +195,92 @@ describe('Dropdown (multiple)', () => {
 		expect(onchangemany).not.toHaveBeenCalled();
 	});
 });
+
+describe('Dropdown free text', () => {
+	const fmt: DropdownOption[] = [
+		{ value: 'persistent', label: 'persistent' },
+		{ value: 'email', label: 'email', description: 'The address' },
+		{ value: 'unspecified', label: 'unspecified' }
+	];
+	function free(value = '') {
+		const onchange = vi.fn();
+		const user = userEvent.setup();
+		const r = render(Dropdown, { options: fmt, value, label: 'NameID', onchange, free: true });
+		const combo = screen.getByRole('combobox', { name: 'NameID' }) as HTMLInputElement;
+		return { ...r, user, onchange, combo };
+	}
+
+	it('is an editable combobox with list autocomplete', () => {
+		const { combo } = free('email');
+		expect(combo.tagName).toBe('INPUT');
+		expect(combo.value).toBe('email');
+		expect(combo.getAttribute('aria-autocomplete')).toBe('list');
+		expect(combo.getAttribute('aria-expanded')).toBe('false');
+	});
+
+	it('takes any text and filters the suggestions as you type', async () => {
+		const { combo, user, onchange } = free();
+		await user.click(combo);
+		await user.keyboard('spec');
+		expect(combo.value).toBe('spec');
+		expect(onchange).toHaveBeenLastCalledWith('spec');
+		expect(combo.getAttribute('aria-expanded')).toBe('true');
+		expect(screen.getAllByRole('option').map((o) => o.textContent?.trim())).toEqual(['unspecified']);
+		expect(combo.getAttribute('aria-activedescendant')).toBeNull(); // nothing picked for you
+
+		await user.clear(combo);
+		await user.keyboard('urn:oasis:names:tc:SAML:2.0:nameid-format:transient');
+		expect(combo.getAttribute('aria-expanded')).toBe('false'); // no match: no empty list
+		expect(onchange).toHaveBeenLastCalledWith('urn:oasis:names:tc:SAML:2.0:nameid-format:transient');
+	});
+
+	it('picks a suggestion with the arrows and Enter, and Escape closes', async () => {
+		const { combo, user, onchange } = free();
+		combo.focus();
+		await user.keyboard('{ArrowDown}');
+		expect(combo.getAttribute('aria-expanded')).toBe('true');
+		expect(activeLabel(combo)).toBe('persistent');
+		await user.keyboard('{ArrowDown}{Enter}');
+		expect(combo.value).toBe('email');
+		expect(onchange).toHaveBeenLastCalledWith('email');
+		expect(combo.getAttribute('aria-expanded')).toBe('false');
+		expect(document.activeElement).toBe(combo);
+
+		// an exact value still offers the others
+		await user.keyboard('{ArrowDown}');
+		expect(screen.getAllByRole('option')).toHaveLength(3);
+		expect(screen.getByRole('option', { selected: true }).textContent).toContain('email');
+		await user.keyboard('{Escape}');
+		expect(combo.getAttribute('aria-expanded')).toBe('false');
+		expect(combo.value).toBe('email');
+	});
+
+	it('lets Enter submit the form when nothing is highlighted', async () => {
+		const submit = vi.fn((e: Event) => e.preventDefault());
+		const form = document.createElement('form');
+		form.addEventListener('submit', submit);
+		document.body.appendChild(form);
+		const user = userEvent.setup();
+		render(Dropdown, { target: form, props: { options: fmt, value: '', label: 'F', free: true } });
+		form.appendChild(Object.assign(document.createElement('button'), { type: 'submit' }));
+		const combo = screen.getByRole('combobox', { name: 'F' });
+		await user.click(combo);
+		await user.keyboard('x{Enter}');
+		expect(submit).toHaveBeenCalledTimes(1);
+		form.remove();
+	});
+
+	it('opens and closes from the chevron, and picks by click', async () => {
+		const { combo, user, onchange } = free('urn:custom');
+		expect(combo.getAttribute('aria-expanded')).toBe('false');
+		await user.click(screen.getByRole('button', { name: 'Show suggestions' }));
+		expect(combo.getAttribute('aria-expanded')).toBe('true');
+		expect(document.activeElement).toBe(combo);
+		await user.click(screen.getByRole('option', { name: /email/ }));
+		expect(combo.value).toBe('email');
+		expect(onchange).toHaveBeenLastCalledWith('email');
+		await user.click(screen.getByRole('button', { name: 'Show suggestions' }));
+		await user.click(screen.getByRole('button', { name: 'Show suggestions' }));
+		expect(combo.getAttribute('aria-expanded')).toBe('false');
+	});
+});

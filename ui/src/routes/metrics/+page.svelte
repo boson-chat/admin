@@ -24,6 +24,7 @@
 		type ThresholdKey
 	} from '$lib/hostmetrics';
 	import TimeChart from '$lib/components/TimeChart.svelte';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
@@ -229,12 +230,14 @@
 			<span class="muted checked">Updated {relative(data.checked_at, now)}</span>
 		{/if}
 		{#if data && data.instances.length > 1}
-			<label class="inst">
-				<span class="sr-only">Host</span>
-				<select value={data.instance} onchange={(e) => setInstance(e.currentTarget.value)}>
-					{#each data.instances as i (i)}<option value={i}>{i}</option>{/each}
-				</select>
-			</label>
+			<Dropdown
+				options={data.instances.map((i) => ({ value: i, label: i }))}
+				value={data.instance}
+				onchange={setInstance}
+				label="Host"
+				size="small"
+				align="end"
+			/>
 		{/if}
 		<div class="seg" role="radiogroup" aria-label="Time range">
 			{#each ranges as r (r.value)}
@@ -466,16 +469,6 @@
 	.seg button:focus-visible {
 		outline: none;
 		box-shadow: var(--focus-ring);
-	}
-	.inst select {
-		font: inherit;
-		font-family: var(--font-mono);
-		font-size: var(--text-sm);
-		padding: 5px var(--space-2);
-		background: var(--surface);
-		color: var(--fg);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
 	}
 	/* stat tiles: the Stack page's hairline grid */
 	.stats {

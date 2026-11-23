@@ -15,11 +15,11 @@ test.beforeEach(async ({ page }) => {
 
 test('keyboard: open, move, type-ahead, choose, escape', async ({ page }) => {
 	await page.goto('/audit');
-	const when = page.getByRole('combobox', { name: 'When' });
+	const when = page.getByRole('combobox', { name: 'From' });
 	await when.focus();
 	await page.keyboard.press('ArrowDown');
 	await expect(when).toHaveAttribute('aria-expanded', 'true');
-	const list = page.getByRole('listbox', { name: 'When' });
+	const list = page.getByRole('listbox', { name: 'From' });
 	await expect(list).toBeVisible();
 	await noHorizontalOverflow(page);
 
@@ -109,6 +109,31 @@ test('theme dropdown flips up at the bottom of the rail and switches theme', asy
 	await page.keyboard.press('Home');
 	await page.keyboard.press('Enter');
 	await expect(page.locator('html')).not.toHaveAttribute('data-theme', /.+/);
+});
+
+test('free text: NameID format takes any value and suggests the common ones', async ({ page }) => {
+	await page.goto('/sso/new');
+	await page.locator('input[type=radio][value=okta]').check({ force: true });
+	const nameid = page.getByRole('combobox', { name: 'NameID format' });
+	await expect(nameid).toHaveAttribute('aria-autocomplete', 'list');
+	await nameid.click();
+	await page.keyboard.type('spec');
+	const list = page.getByRole('listbox', { name: 'NameID format' });
+	await expect(list.getByRole('option')).toHaveText([/unspecified/]);
+	await noHorizontalOverflow(page);
+	await page.keyboard.press('ArrowDown');
+	await page.keyboard.press('Enter');
+	await expect(nameid).toHaveValue('unspecified');
+	await expect(list).toBeHidden();
+
+	await nameid.fill('urn:oasis:names:tc:SAML:2.0:nameid-format:transient');
+	await expect(nameid).toHaveAttribute('aria-expanded', 'false');
+	// the chevron offers every suggestion even when the text matches none
+	await page.getByRole('button', { name: 'Show suggestions' }).click();
+	await expect(list.getByRole('option')).toHaveCount(3);
+	await list.getByRole('option', { name: /email/ }).click();
+	await expect(nameid).toHaveValue('email');
+	await expect(list).toBeHidden();
 });
 
 test('stack overview names the edge and probes IRC', async ({ page }) => {
