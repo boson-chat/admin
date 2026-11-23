@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { edge, match, place, step, type DropdownOption } from './dropdown';
+import { edge, match, place, step, suggest, type DropdownOption } from './dropdown';
 
 const opts: DropdownOption[] = [
 	{ value: 'a', label: 'Apple', disabled: true },
@@ -65,5 +65,26 @@ describe('place', () => {
 	it('honours a preferred end alignment when it fits', () => {
 		const p = place({ top: 0, bottom: 30, left: 250, right: 374 }, { width: 200, height: 100 }, vp, 'end');
 		expect(p.end).toBe(true);
+	});
+});
+
+describe('suggest', () => {
+	const fmt: DropdownOption[] = [
+		{ value: 'persistent', label: 'persistent' },
+		{ value: 'email', label: 'email' },
+		{ value: 'unspecified', label: 'unspecified' }
+	];
+	it('offers everything for empty text or an exact choice', () => {
+		expect(suggest(fmt, '')).toBe(fmt);
+		expect(suggest(fmt, '  ')).toBe(fmt);
+		expect(suggest(fmt, 'Email')).toBe(fmt);
+	});
+	it('filters by label or value, prefix matches first', () => {
+		expect(suggest(fmt, 'e').map((o) => o.value)).toEqual(['email', 'persistent', 'unspecified']);
+		expect(suggest(fmt, 'spec').map((o) => o.value)).toEqual(['unspecified']);
+		expect(suggest([{ value: 'urn:x', label: 'Some X' }], 'urn')).toHaveLength(1);
+	});
+	it('offers nothing for text that matches none', () => {
+		expect(suggest(fmt, 'urn:oasis:names')).toEqual([]);
 	});
 });

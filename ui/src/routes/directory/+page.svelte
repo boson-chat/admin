@@ -16,6 +16,7 @@
 	} from '$lib/types';
 	import Confirm from '$lib/components/Confirm.svelte';
 	import CopyField from '$lib/components/CopyField.svelte';
+	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
@@ -787,14 +788,17 @@
 									spellcheck="false"
 								/>
 							</label>
-							<label class="field">
-								<span>Sync peers every</span>
-								<select bind:value={dSync}>
-									{#each syncChoices.includes(ds.settings.sync_every) ? syncChoices : [ds.settings.sync_every, ...syncChoices] as c (c)}
-										<option value={c}>{c.replace(/m$/, ' min').replace(/h$/, ' h')}</option>
-									{/each}
-								</select>
-							</label>
+							<div class="field">
+								<span id="dsync-l">Sync peers every</span>
+								<Dropdown
+									options={(syncChoices.includes(ds.settings.sync_every)
+										? syncChoices
+										: [ds.settings.sync_every, ...syncChoices]
+									).map((c) => ({ value: c, label: c.replace(/m$/, ' min').replace(/h$/, ' h') }))}
+									bind:value={dSync}
+									labelledby="dsync-l"
+								/>
+							</div>
 						</div>
 						{#if settingsError}<p class="verr" role="alert">{settingsError}</p>{/if}
 						<div class="submit">
@@ -1195,15 +1199,6 @@
 		gap: var(--space-3);
 		align-items: center;
 		justify-content: flex-end;
-	}
-	select {
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--border);
-		background: var(--surface);
-		color: var(--fg);
-		font-size: var(--text-base);
 	}
 	.addpeer {
 		display: grid;

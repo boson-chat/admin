@@ -111,6 +111,32 @@ test('theme dropdown flips up at the bottom of the rail and switches theme', asy
 	await expect(page.locator('html')).not.toHaveAttribute('data-theme', /.+/);
 });
 
+test('free text: NameID format takes any value and suggests the common ones', async ({ page }) => {
+	await page.goto('/sso/new');
+	await page.locator('input[type=radio][value=okta]').check({ force: true });
+	const nameid = page.getByRole('combobox', { name: 'NameID format' });
+	await expect(nameid).toHaveAttribute('aria-autocomplete', 'list');
+	await nameid.click();
+	await page.keyboard.type('spec');
+	const list = page.getByRole('listbox', { name: 'NameID format' });
+	await expect(list.getByRole('option')).toHaveText([/unspecified/]);
+	await noHorizontalOverflow(page);
+	await page.keyboard.press('ArrowDown');
+	await page.keyboard.press('Enter');
+	await expect(nameid).toHaveValue('unspecified');
+	await expect(list).toBeHidden();
+
+	await nameid.fill('urn:oasis:names:tc:SAML:2.0:nameid-format:transient');
+	await expect(nameid).toHaveAttribute('aria-expanded', 'false');
+	await page.getByRole('button', { name: 'Show suggestions' }).click();
+	await expect(nameid).toHaveAttribute('aria-expanded', 'false'); // nothing matches a custom URN
+	await nameid.fill('');
+	await page.getByRole('button', { name: 'Show suggestions' }).click();
+	await expect(list.getByRole('option')).toHaveCount(3);
+	await list.getByRole('option', { name: /email/ }).click();
+	await expect(nameid).toHaveValue('email');
+});
+
 test('stack overview names the edge and probes IRC', async ({ page }) => {
 	await expect(page.getByText(/, TLS for every hostname/)).toBeVisible();
 	await expect(

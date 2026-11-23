@@ -15,12 +15,20 @@
 	it (Escape, Tab, a click outside, the trigger) reports the new `values`
 	once through `onchangemany`.
 
+	With `free` it is an editable combobox with list autocomplete
+	(https://www.w3.org/WAI/ARIA/apg/patterns/combobox/examples/combobox-autocomplete-list/):
+	a text field where any value can be typed, and `options` are suggestions
+	filtered by what is typed. ↓ ↑ open and move through the suggestions;
+	Enter takes the highlighted one (with none highlighted it submits the form
+	as usual); Escape closes; Tab closes and moves on without changing the
+	text. The chevron opens and closes the list.
+
 	No inline style attributes: placement is classes plus two CSS custom
 	properties set through the CSSOM.
 -->
 <script lang="ts" generics="V extends string">
 	import { tick } from 'svelte';
-	import { edge, match, place, step, type DropdownOption } from '$lib/dropdown';
+	import { edge, match, place, step, suggest, type DropdownOption } from '$lib/dropdown';
 
 	let {
 		options,
@@ -40,7 +48,8 @@
 		multiple = false,
 		values = $bindable([]),
 		onchangemany,
-		summary
+		summary,
+		free = false
 	}: {
 		options: DropdownOption<V>[];
 		value?: V;
@@ -68,6 +77,8 @@
 		onchangemany?: (values: V[]) => void;
 		/** Multi-select: the trigger's text for the chosen options. */
 		summary?: (chosen: DropdownOption<V>[]) => string;
+		/** Free text: an editable field with `options` as suggestions; `value` is whatever is typed. */
+		free?: boolean;
 	} = $props();
 
 	const uid = $props.id();
@@ -81,16 +92,20 @@
 	let end = $state(false);
 
 	let root: HTMLDivElement;
-	let trigger: HTMLButtonElement;
+	// bound in either branch of the {#if free}, so $state for svelte's sake
+	let trigger = $state<HTMLButtonElement | HTMLInputElement>();
 	let list: HTMLDivElement;
 
+	// The options on show: all of them, or (free text) the suggestions matching what is typed.
+	let view = $derived(free ? suggest(options, value ?? '') : options);
+	// Free text with nothing matching keeps the list shut rather than showing it empty.
+	let expanded = $derived(open && view.length > 0);
+
 	let selectedIndex = $derived(
-		multiple
-			? options.findIndex((o) => values.includes(o.value))
-			: options.findIndex((o) => o.value === value)
+		multiple ? view.findIndex((o) => values.includes(o.value)) : view.findIndex((o) => o.value === value)
 	);
-	let selected = $derived(selectedIndex >= 0 ? options[selectedIndex] : undefined);
-	let chosen = $derived(multiple ? options.filter((o) => values.includes(o.value)) : []);
+	let selected = $derived(selectedIndex >= 0 ? view[selectedIndex] : undefined);
+	let chosen = $derived(multiple ? view.filter((o) => values.includes(o.value)) : []);
 	let triggerText = $derived(
 		multiple
 			? chosen.length
@@ -98,14 +113,14 @@
 				: ''
 			: (selected?.label ?? '')
 	);
-	const isSelected = (i: number) => (multiple ? values.includes(options[i].value) : i === selectedIndex);
+	const isSelected = (i: number) => (multiple ? values.includes(view[i].value) : i === selectedIndex);
 	// Multi-select: the values when the list opened, to report a change on close.
 	let openedWith: V[] = [];
 
 	// Consecutive options sharing a group render under one heading.
 	let sections = $derived.by(() => {
 		const out: { group?: string; items: { o: DropdownOption<V>; i: number }[] }[] = [];
-		options.forEach((o, i) => {
+		view.forEach((o, i) => {
 			const last = out[out.length - 1];
 			if (last && last.group === o.group) last.items.push({ o, i });
 			else out.push({ group: o.group, items: [{ o, i }] });
@@ -138,7 +153,7 @@
 	}
 
 	function choose(i: number) {
-		const o = options[i];
+		const o = view[i];
 		if (!o || o.disabled) return;
 		if (multiple) {
 			values = values.includes(o.value) ? values.filter((v) => v !== o.value) : [...values, o.value];
@@ -183,18 +198,67 @@
 		typed = now - typedAt > 600 ? ch : typed + ch;
 		typedAt = now;
 		const from = open ? active : selectedIndex;
-		const i = match(options, typed, from);
+		const i = match(view, typed, from);
 		if (i < 0) return;
 		if (open) move(i);
 		else show(i);
 	}
 
 	function startIndex() {
-		return selectedIndex >= 0 && !options[selectedIndex].disabled ? selectedIndex : edge(options, 1);
+		return selectedIndex >= 0 && !view[selectedIndex].disabled ? selectedIndex : edge(view, 1);
+	}
+
+	// Free text: typing edits the value and shows the matching suggestions.
+	function oninput(e: Event) {
+		const text = (e.currentTarget as HTMLInputElement).value as V;
+		value = text;
+		onchange?.(text);
+		if (open) active = -1;
+		else show(-1);
+	}
+
+	function freeKeydown(e: KeyboardEvent) {
+		const k = e.key;
+		switch (k) {
+			case 'ArrowDown':
+				e.preventDefault();
+				if (!open) show(e.altKey ? -1 : startIndex());
+				else move(active < 0 ? edge(view, 1) : step(view, active, 1));
+				break;
+			case 'ArrowUp':
+				e.preventDefault();
+				if (!open) show(edge(view, -1));
+				else if (e.altKey) hide();
+				else move(active < 0 ? edge(view, -1) : step(view, active, -1));
+				break;
+			case 'PageDown':
+			case 'PageUp':
+				if (!expanded) return;
+				e.preventDefault();
+				move(step(view, Math.max(active, 0), k === 'PageDown' ? 1 : -1, 10));
+				break;
+			case 'Enter':
+				// Only take over Enter when a suggestion is highlighted; otherwise the form submits.
+				if (expanded && active >= 0) {
+					e.preventDefault();
+					choose(active);
+				}
+				break;
+			case 'Escape':
+				if (!expanded) return;
+				e.preventDefault();
+				e.stopPropagation();
+				hide();
+				break;
+			case 'Tab':
+				hide(false);
+				break;
+		}
 	}
 
 	function onkeydown(e: KeyboardEvent) {
 		if (disabled) return;
+		if (free) return freeKeydown(e);
 		const k = e.key;
 		if (!open) {
 			if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Enter' || k === ' ') {
@@ -202,7 +266,7 @@
 				show(startIndex());
 			} else if (k === 'Home' || k === 'End') {
 				e.preventDefault();
-				show(edge(options, k === 'Home' ? 1 : -1));
+				show(edge(view, k === 'Home' ? 1 : -1));
 			} else if (k.length === 1 && k !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
 				typeahead(k);
 			}
@@ -211,28 +275,28 @@
 		switch (k) {
 			case 'ArrowDown':
 				e.preventDefault();
-				move(active < 0 ? edge(options, 1) : step(options, active, 1));
+				move(active < 0 ? edge(view, 1) : step(view, active, 1));
 				break;
 			case 'ArrowUp':
 				e.preventDefault();
 				if (e.altKey) choose(active);
-				else move(active < 0 ? edge(options, -1) : step(options, active, -1));
+				else move(active < 0 ? edge(view, -1) : step(view, active, -1));
 				break;
 			case 'PageDown':
 				e.preventDefault();
-				move(step(options, Math.max(active, 0), 1, 10));
+				move(step(view, Math.max(active, 0), 1, 10));
 				break;
 			case 'PageUp':
 				e.preventDefault();
-				move(step(options, Math.max(active, 0), -1, 10));
+				move(step(view, Math.max(active, 0), -1, 10));
 				break;
 			case 'Home':
 				e.preventDefault();
-				move(edge(options, 1));
+				move(edge(view, 1));
 				break;
 			case 'End':
 				e.preventDefault();
-				move(edge(options, -1));
+				move(edge(view, -1));
 				break;
 			case 'Enter':
 			case ' ':
@@ -261,7 +325,15 @@
 	}
 
 	function onclick() {
+		if (disabled || free) return;
+		if (open) hide();
+		else show(startIndex());
+	}
+
+	// Free text: the chevron opens or closes the list.
+	function toggle() {
 		if (disabled) return;
+		trigger?.focus();
 		if (open) hide();
 		else show(startIndex());
 	}
@@ -289,35 +361,85 @@
 		};
 	});
 
+	// Free text: the list changes size as the suggestions narrow; keep it placed.
+	$effect(() => {
+		if (!free || !expanded) return;
+		void view.length;
+		tick().then(position);
+	});
+
 	// Disabling while open closes.
 	$effect(() => {
 		if (disabled) hide(false);
 	});
 </script>
 
-<div class="dd {className}" class:open class:small={size === 'small'} bind:this={root} {onfocusout}>
+<div
+	class="dd {className}"
+	class:open={expanded}
+	class:free
+	class:small={size === 'small'}
+	bind:this={root}
+	{onfocusout}
+>
 	{#if name}<input type="hidden" {name} value={value ?? ''} />{/if}
-	<button
-		bind:this={trigger}
-		type="button"
-		id={baseId}
-		class="trigger"
-		role="combobox"
-		aria-haspopup="listbox"
-		aria-expanded={open}
-		aria-controls={listId}
-		aria-activedescendant={open && active >= 0 ? optId(active) : undefined}
-		aria-label={label}
-		aria-labelledby={labelledby}
-		aria-describedby={describedby}
-		{disabled}
-		{title}
-		{onclick}
-		{onkeydown}
-	>
-		<span class="value" class:placeholder={!triggerText}>{triggerText || placeholder}</span>
-		<span class="chev" aria-hidden="true"></span>
-	</button>
+	{#if free}
+		<input
+			bind:this={trigger}
+			type="text"
+			id={baseId}
+			class="trigger free"
+			role="combobox"
+			aria-autocomplete="list"
+			aria-expanded={expanded}
+			aria-controls={listId}
+			aria-activedescendant={expanded && active >= 0 ? optId(active) : undefined}
+			aria-label={label}
+			aria-labelledby={labelledby}
+			aria-describedby={describedby}
+			autocomplete="off"
+			spellcheck="false"
+			value={value ?? ''}
+			{placeholder}
+			{disabled}
+			{title}
+			{oninput}
+			{onkeydown}
+		/>
+		<button
+			type="button"
+			class="chev-btn"
+			tabindex="-1"
+			aria-label="Show suggestions"
+			aria-controls={listId}
+			aria-expanded={expanded}
+			{disabled}
+			onclick={toggle}
+			onmousedown={(e) => e.preventDefault()}><span class="chev" aria-hidden="true"></span></button
+		>
+	{:else}
+		<button
+			bind:this={trigger}
+			type="button"
+			id={baseId}
+			class="trigger"
+			role="combobox"
+			aria-haspopup="listbox"
+			aria-expanded={open}
+			aria-controls={listId}
+			aria-activedescendant={open && active >= 0 ? optId(active) : undefined}
+			aria-label={label}
+			aria-labelledby={labelledby}
+			aria-describedby={describedby}
+			{disabled}
+			{title}
+			{onclick}
+			{onkeydown}
+		>
+			<span class="value" class:placeholder={!triggerText}>{triggerText || placeholder}</span>
+			<span class="chev" aria-hidden="true"></span>
+		</button>
+	{/if}
 	<div
 		bind:this={list}
 		id={listId}
@@ -329,7 +451,7 @@
 		tabindex="-1"
 		aria-label={label}
 		aria-labelledby={labelledby}
-		hidden={!open}
+		hidden={!expanded}
 		onmousedown={(e) => e.preventDefault()}
 	>
 		{#each sections as sec, s (s)}
@@ -409,6 +531,43 @@
 	.trigger:disabled {
 		opacity: 0.45;
 		cursor: not-allowed;
+	}
+	/* free text: the field is the trigger, with the chevron as a button inside it */
+	input.trigger {
+		display: block;
+		padding-right: calc(var(--space-3) + 24px);
+		cursor: text;
+	}
+	input.trigger:hover:not(:disabled) {
+		border-color: var(--border-strong);
+	}
+	input.trigger::placeholder {
+		color: var(--fg-3);
+		opacity: 1;
+	}
+	.chev-btn {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: calc(var(--space-3) + 24px);
+		padding: 0;
+		border: 0;
+		background: none;
+		cursor: pointer;
+	}
+	.chev-btn:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.small input.trigger {
+		padding-right: calc(var(--space-2) + 20px);
+	}
+	.small .chev-btn {
+		width: calc(var(--space-2) + 20px);
 	}
 	.value {
 		min-width: 0;

@@ -96,3 +96,24 @@ export function place(
 		maxWidth: Math.floor(Math.max(end ? roomLeft : roomRight, 160))
 	};
 }
+
+/**
+ * Free text: the suggestions for what is typed. Everything when nothing is
+ * typed or the text is exactly one of them (so the list still offers the
+ * others); otherwise those whose label or value contains the text, the ones
+ * that start with it first.
+ */
+export function suggest<O extends DropdownOption>(options: O[], query: string): O[] {
+	const q = query.trim().toLocaleLowerCase();
+	if (!q) return options;
+	const lc = (o: O) => [o.label.toLocaleLowerCase(), o.value.toLocaleLowerCase()];
+	if (options.some((o) => lc(o).includes(q))) return options;
+	const starts: O[] = [];
+	const contains: O[] = [];
+	for (const o of options) {
+		const [l, v] = lc(o);
+		if (l.startsWith(q) || v.startsWith(q)) starts.push(o);
+		else if (l.includes(q) || v.includes(q)) contains.push(o);
+	}
+	return [...starts, ...contains];
+}

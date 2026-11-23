@@ -4,6 +4,7 @@
 	import { toasts, errorText } from '$lib/toasts.svelte';
 	import { presets, slugify, type Preset } from '$lib/sso';
 	import type { SSOProvider } from '$lib/types';
+	import Dropdown from './Dropdown.svelte';
 	import Toggle from './Toggle.svelte';
 	import SetupGuide from './SetupGuide.svelte';
 
@@ -11,6 +12,12 @@
 	let { provider, onsaved }: { provider?: SSOProvider; onsaved?: (p: SSOProvider) => void } = $props();
 	const editing = $derived(!!provider);
 	const uid = $props.id();
+	// Suggestions for the NameID format field (any URN can be typed too).
+	const nameIdSuggestions = [
+		{ value: 'persistent', label: 'persistent', description: 'A stable, opaque ID per user' },
+		{ value: 'email', label: 'email', description: 'The user’s email address' },
+		{ value: 'unspecified', label: 'unspecified', description: 'Whatever the IdP sends' }
+	];
 
 	// svelte-ignore state_referenced_locally
 	const p0 = provider;
@@ -325,22 +332,18 @@
 						>
 					</div>
 					<div class="row2">
-						<label class="field">
-							<span>NameID format</span>
-							<input
-								type="text"
+						<div class="field">
+							<span id="nameid-l-{uid}">NameID format</span>
+							<Dropdown
+								free
+								options={nameIdSuggestions}
 								bind:value={nameIdFormat}
-								list="nameid-{uid}"
+								labelledby="nameid-l-{uid}"
+								describedby="nameid-d-{uid}"
 								placeholder="The IdP’s default"
-								spellcheck="false"
 							/>
-							<datalist id="nameid-{uid}">
-								<option value="persistent"></option>
-								<option value="email"></option>
-								<option value="unspecified"></option>
-							</datalist>
-							<small>persistent, email, unspecified or a full URN.</small>
-						</label>
+							<small id="nameid-d-{uid}">persistent, email, unspecified or a full URN.</small>
+						</div>
 						<div class="field sign">
 							<Toggle
 								label="Sign requests"
