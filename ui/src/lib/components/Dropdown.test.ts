@@ -271,7 +271,8 @@ describe('Dropdown free text', () => {
 	});
 
 	it('opens and closes from the chevron, and picks by click', async () => {
-		const { combo, user, onchange } = free('');
+		const { combo, user, onchange } = free('urn:custom');
+		expect(combo.getAttribute('aria-expanded')).toBe('false');
 		await user.click(screen.getByRole('button', { name: 'Show suggestions' }));
 		expect(combo.getAttribute('aria-expanded')).toBe('true');
 		expect(document.activeElement).toBe(combo);

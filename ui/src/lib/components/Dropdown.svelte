@@ -21,7 +21,7 @@
 	filtered by what is typed. ↓ ↑ open and move through the suggestions;
 	Enter takes the highlighted one (with none highlighted it submits the form
 	as usual); Escape closes; Tab closes and moves on without changing the
-	text. The chevron opens and closes the list.
+	text. The chevron shows every suggestion, whatever is typed.
 
 	No inline style attributes: placement is classes plus two CSS custom
 	properties set through the CSSOM.
@@ -96,8 +96,10 @@
 	let trigger = $state<HTMLButtonElement | HTMLInputElement>();
 	let list: HTMLDivElement;
 
+	// Free text: opened from the chevron, so show every suggestion until the next keystroke.
+	let showAll = $state(false);
 	// The options on show: all of them, or (free text) the suggestions matching what is typed.
-	let view = $derived(free ? suggest(options, value ?? '') : options);
+	let view = $derived(free && !showAll ? suggest(options, value ?? '') : options);
 	// Free text with nothing matching keeps the list shut rather than showing it empty.
 	let expanded = $derived(open && view.length > 0);
 
@@ -145,6 +147,7 @@
 		if (!open) return;
 		open = false;
 		active = -1;
+		showAll = false;
 		if (refocus) trigger?.focus();
 		if (multiple) {
 			const now = [...values];
@@ -212,6 +215,7 @@
 	function oninput(e: Event) {
 		const text = (e.currentTarget as HTMLInputElement).value as V;
 		value = text;
+		showAll = false;
 		onchange?.(text);
 		if (open) active = -1;
 		else show(-1);
@@ -330,12 +334,15 @@
 		else show(startIndex());
 	}
 
-	// Free text: the chevron opens or closes the list.
-	function toggle() {
+	// Free text: the chevron shows every suggestion (or closes the list).
+	async function toggle() {
 		if (disabled) return;
 		trigger?.focus();
-		if (open) hide();
-		else show(startIndex());
+		if (expanded) return hide();
+		hide(false); // open with nothing matching: start over with everything
+		showAll = true;
+		await tick();
+		show(startIndex());
 	}
 
 	// Close when focus leaves the widget (Tab is handled above).
