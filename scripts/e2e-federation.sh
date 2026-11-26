@@ -16,7 +16,7 @@ trap 'for p in $PIDS; do kill "$p" 2>/dev/null || true; done; rm -rf "$TMP"' EXI
 (cd "$ROOT" && go build -o "$TMP/admin" ./cmd)
 printf 'version: 1\nnetwork:\n  name: Example Chat\n' > "$TMP/boson.yaml"
 
-FAKE_AUTH_ROLES=1 FAKE_AUTH_FEDERATION=1 node "$ROOT/ui/e2e/fake-auth.mjs" > "$TMP/fake-auth.log" 2>&1 &
+FAKE_AUTH_ROLES=1 FAKE_AUTH_FEDERATION=1 FAKE_AUTH_CONFIG_FILE="$TMP/boson.yaml" node "$ROOT/ui/e2e/fake-auth.mjs" > "$TMP/fake-auth.log" 2>&1 &
 PIDS="$PIDS $!"
 ENV=development HTTP_ADDR=127.0.0.1:18690 INTERNAL_ADDR=127.0.0.1:18691 \
 	PUBLIC_URL=http://localhost:18690 COOKIE_SECURE=false \

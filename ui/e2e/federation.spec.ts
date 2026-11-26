@@ -167,17 +167,18 @@ test('ban and unban a remote user, logged', async ({ page }) => {
 	expect((await audit(page)).map((e) => e.event)).toContain('federation_identity_unbanned');
 });
 
-test('block a whole home server: confirm says it ends sessions', async ({ page }, info) => {
+test('block a whole home server: confirm says it disconnects them', async ({ page }, info) => {
 	await page.goto('/federation');
 	await page.getByTestId('remote-usr_fed_bob').getByRole('button', { name: 'Block server' }).click();
 	const dlg = page.getByRole('dialog', { name: 'Block chat.example.net?' });
-	await expect(dlg).toContainText('Nobody from chat.example.net can sign in here until you unblock it');
-	await expect(dlg).toContainText('their sessions here end now');
-	// Accurate about IRC: a block doesn't drop open connections, a ban does.
-	await expect(dlg).toContainText('Anyone already connected to IRC stays connected');
+	await expect(dlg).toContainText('Nobody from chat.example.net can sign in here while it’s blocked');
+	// auth ≥ 1.26.0 (the fake's version): a block drops them from IRC too.
+	await expect(dlg).toContainText('dropped from IRC within seconds');
+	await expect(dlg).not.toContainText('stays connected');
+	await expect(dlg).toContainText('Unblocking lets them sign in again. Nothing is deleted');
 	await expect(dlg).toContainText('2 people');
 	if (info.project.name === 'desktop') await shoot(page, 'federation-block-confirm-desktop');
-	await dlg.getByRole('button', { name: 'Block and end sessions' }).click();
+	await dlg.getByRole('button', { name: 'Block and disconnect' }).click();
 	await expect(page.getByText('chat.example.net is blocked. 2 sessions ended.')).toBeVisible();
 	await expect(
 		page.getByTestId('remote-usr_fed_alice2').getByText('Server blocked', { exact: true })
@@ -188,12 +189,25 @@ test('block a whole home server: confirm says it ends sessions', async ({ page }
 		expect.objectContaining({ event: 'federation_domain_sessions_revoked', domain: 'chat.example.net' })
 	);
 
+	// auth applies the file's block a moment later (the fake: 2 s).
+	await expect(page.getByTestId('applying')).toHaveCount(0, { timeout: 15_000 });
+	await expect(
+		page.getByTestId('remote-usr_fed_bob').getByText('Server blocked', { exact: true })
+	).toBeVisible();
+
 	// Unblock from the row.
 	await page
 		.getByTestId('remote-usr_fed_bob')
 		.getByRole('button', { name: 'Unblock chat.example.net' })
 		.click();
 	await expect(page.getByText('chat.example.net is off the blocklist.')).toBeVisible();
+	// The row follows the panel's own write at once, before auth re-reads
+	// the file, and says it's applying; then auth catches up.
+	const bob = page.getByTestId('remote-usr_fed_bob');
+	await expect(page.getByText('Server blocked', { exact: true })).toHaveCount(0);
+	await expect(bob.getByTestId('applying')).toBeVisible();
+	if (info.project.name === 'desktop') await shoot(page, 'federation-unblock-applying-desktop');
+	await expect(bob.getByTestId('applying')).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByText('Server blocked', { exact: true })).toHaveCount(0);
 });
 
@@ -205,7 +219,8 @@ test('a block added in the form asks first and signs them out on save', async ({
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	const dlg = page.getByRole('dialog', { name: 'Block boson.chat?' });
 	await expect(dlg).toContainText('Nobody from boson.chat can sign in here');
-	await dlg.getByRole('button', { name: 'Save and end their sessions' }).click();
+	await expect(dlg).toContainText('dropped from IRC within seconds');
+	await dlg.getByRole('button', { name: 'Save and disconnect them' }).click();
 	await expect(page.getByText(/Federation saved\. 2 sessions ended\./)).toBeVisible();
 	await expect(
 		page.getByTestId('remote-usr_fed_alice').getByText('Server blocked', { exact: true })

@@ -240,7 +240,17 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	// Federation: auth's federation admin API, the auth.federation config
 	// keys, and this server's boson.json.
 	fedClient, _ := authClient.(authapi.FederationClient)
-	fedSvc := federation.New(federation.Options{Client: fedClient, Tokens: adminSvc, Config: stack,
+	// auth's release (its VERSION_TARGETS entry, by default
+	// AUTH_INTERNAL_URL/metrics): the block wording depends on it.
+	var authVersion func(context.Context) (string, error)
+	for _, t := range versions {
+		if t.Name == "auth" {
+			hc, u := health.NewHealthChecker(min(up.Timeout, 3*time.Second)), t.URL
+			authVersion = func(ctx context.Context) (string, error) { return hc.Version(ctx, u) }
+			break
+		}
+	}
+	fedSvc := federation.New(federation.Options{AuthVersion: authVersion, Client: fedClient, Tokens: adminSvc, Config: stack,
 		Home: &federation.HomeChecker{Domain: cfg.HomeDomain(), URL: bc.WellKnownURL, HTTP: &nethttp.Client{Timeout: min(up.Timeout, 5*time.Second)}}})
 	h.Federation = fedSvc
 	stack.AddCheck("auth.federation.", fedSvc.Check)

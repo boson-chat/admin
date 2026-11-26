@@ -191,9 +191,13 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   `users.moderate` or `users.manage` bans and unbans an identity (auth
   disables the account, so IRC drops them). Blocking a whole home server
   puts it on the blocklist and ends its sessions here (with a confirmation
-  that says so; a block added in the form asks the same on save); people
-  already connected to IRC stay connected until they disconnect and can't
-  reconnect. **Your server as a home** checks
+  that says so; a block added in the form asks the same on save). From auth
+  1.26.0 a block also drops the server's users from IRC within seconds and
+  refuses reconnects; unblocking lets them sign in again and deletes
+  nothing. With an older auth (the version read from its `/metrics`) the
+  page says people already on IRC stay until they disconnect. After the
+  panel saves a block or unblock, the rows change at once and say
+  "applying…" until auth has re-read the config file. **Your server as a home** checks
   `https://BOSON_DOMAIN/.well-known/boson.json` (or `WELLKNOWN_URL`): the
   federation block, its issuer against auth's, the JWKS, the endpoints and
   whether `accepts` matches the mode, with a link to the file. Auth audits
