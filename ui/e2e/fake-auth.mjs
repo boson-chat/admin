@@ -7,6 +7,8 @@
 // small default layout.
 //
 //   node e2e/fake-auth.mjs            # public :18680, internal :18681
+//   FAKE_AUTH_FEDERATION=1 node e2e/fake-auth.mjs   # + the federation admin API,
+//                                          # remote users, boson.json on :18681
 //   FAKE_AUTH_ROLES=1 node e2e/fake-auth.mjs   # an auth with roles (admin is
 //                                          # Owner) and role channels
 //   POST <internal>/__mode {"mode":"old"}  # act like auth 1.10.x: ignore
@@ -75,6 +77,65 @@ const refresh = new Set();
 let n = 0;
 let mode = 'new';
 const ROLES = process.env.FAKE_AUTH_ROLES === '1';
+// FAKE_AUTH_FEDERATION=1: auth's federation admin API (auth docs/federation.md),
+// remote users, and this server's boson.json + JWKS on the internal port.
+const FEDERATION = process.env.FAKE_AUTH_FEDERATION === '1';
+const seen = (h) => new Date(Date.now() - h * 3600_000).toISOString();
+const initialRemotes = () => [
+	{
+		id: 'usr_fed_alice',
+		identity: 'alice@boson.chat',
+		handle: 'alice',
+		home_domain: 'boson.chat',
+		display_name: 'Alice Moreau',
+		first_seen_at: seen(24 * 40),
+		last_seen_at: seen(0.2),
+		banned: false,
+		sessions: 2
+	},
+	{
+		id: 'usr_fed_bob',
+		identity: 'bob@chat.example.net',
+		handle: 'bob',
+		home_domain: 'chat.example.net',
+		first_seen_at: seen(24 * 3),
+		last_seen_at: seen(5),
+		banned: false,
+		sessions: 1
+	},
+	{
+		id: 'usr_fed_alice2',
+		identity: 'alice@chat.example.net',
+		handle: 'alice-chatexamplenet',
+		home_domain: 'chat.example.net',
+		display_name: 'Alice (other)',
+		first_seen_at: seen(30),
+		last_seen_at: seen(28),
+		banned: false,
+		sessions: 1
+	},
+	{
+		id: 'usr_fed_kai',
+		identity: 'kai@irc.mesh.example',
+		handle: 'kai',
+		home_domain: 'irc.mesh.example',
+		first_seen_at: seen(24 * 12),
+		last_seen_at: null,
+		banned: true,
+		banned_at: seen(24 * 2),
+		ban_reason: 'spam links',
+		sessions: 0
+	}
+];
+let remotes = initialRemotes();
+let homeState = 'published';
+const fedSources = () =>
+	Object.fromEntries(
+		['mode', 'allow', 'block', 'directory_url', 'remote_upload_quota', 'remote_voice'].map((k) => [
+			k,
+			'default'
+		])
+	);
 const PANEL_PERMS = [
 	'admin.panel',
 	'audit.view',
@@ -387,6 +448,67 @@ createServer(async (req, res) => {
 			if (req.method === 'GET') return send(res, 200, { role: r });
 		}
 	}
+	if (p.startsWith('/v1/admin/federation')) {
+		// Without federation: a plain 404, like an auth that has no such route.
+		if (!FEDERATION) {
+			res.writeHead(404, { 'Content-Type': 'text/plain' });
+			return res.end('404 page not found');
+		}
+		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		if (req.method === 'GET' && p === '/v1/admin/federation')
+			return send(res, 200, {
+				mode: 'directory',
+				allow: [],
+				block: [],
+				directory_url: 'https://directory.boson.chat',
+				remote_upload_quota: '',
+				remote_voice: true,
+				sources: fedSources(),
+				editable: false,
+				issuer: 'https://auth.example.org',
+				domain: 'example.org',
+				remote_users: remotes.length
+			});
+		if (req.method === 'GET' && p === '/v1/admin/federation/users') {
+			const q = (url.searchParams.get('q') ?? '').toLowerCase();
+			const list = remotes
+				.filter((u) => !q || (u.identity + ' ' + u.handle).includes(q))
+				.sort((a, b) => (b.last_seen_at ?? '').localeCompare(a.last_seen_at ?? ''));
+			return send(res, 200, { users: list, total: list.length });
+		}
+		const ban = p.match(/^\/v1\/admin\/federation\/users\/([^/]+)\/ban$/);
+		if (ban) {
+			const u = remotes.find((x) => x.id === decodeURIComponent(ban[1]));
+			if (!u) return send(res, 404, { error: 'not_found', message: 'no such remote user' });
+			if (req.method === 'POST') {
+				const b = await json(req).catch(() => ({}));
+				Object.assign(u, {
+					banned: true,
+					banned_at: new Date().toISOString(),
+					ban_reason: b.reason ?? '',
+					sessions: 0
+				});
+				audit.push({ event: 'federation_identity_banned', identity: u.identity, reason: b.reason ?? '' });
+			} else if (req.method === 'DELETE') {
+				Object.assign(u, { banned: false, banned_at: null, ban_reason: '' });
+				audit.push({ event: 'federation_identity_unbanned', identity: u.identity });
+			}
+			return send(res, 200, u);
+		}
+		const rv = p.match(/^\/v1\/admin\/federation\/domains\/([^/]+)\/revoke-sessions$/);
+		if (rv && req.method === 'POST') {
+			const d = decodeURIComponent(rv[1]);
+			let n = 0;
+			for (const u of remotes)
+				if (u.home_domain === d) {
+					n += u.sessions;
+					u.sessions = 0;
+				}
+			audit.push({ event: 'federation_domain_sessions_revoked', domain: d, revoked: n });
+			return send(res, 200, { domain: d, revoked: n });
+		}
+		return send(res, 404, { error: 'not_found', message: 'not found' });
+	}
 	// The user reads the Users pages need (uploads and users e2e). Newer auth
 	// reports last sign-in / activity and sorts by it; mode "old" doesn't.
 	if (req.method === 'GET' && p.startsWith('/v1/admin/')) {
@@ -423,7 +545,28 @@ createServer(async (req, res) => {
 		roleChannels = b?.role_channels === false ? {} : structuredClone(initialRoleChannels);
 		channelAccess = b?.role_channels === false ? [] : structuredClone(initialAccess);
 		audit.length = 0;
+		remotes = initialRemotes();
+		homeState = 'published';
 		return send(res, 200, {});
+	}
+	if (req.method === 'GET' && p === '/.well-known/boson.json') {
+		const doc = { version: 1, auth: { url: 'https://auth.example.org' } };
+		if (homeState !== 'missing')
+			doc.federation = {
+				version: 1,
+				issuer: 'https://auth.example.org',
+				jwks_uri: `http://127.0.0.1:${INTERNAL}/jwks.json`,
+				assertion_endpoint: 'https://auth.example.org/v1/federation/assertions',
+				login_endpoint: 'https://auth.example.org/v1/federation/login',
+				accepts: 'directory'
+			};
+		return send(res, 200, doc);
+	}
+	if (req.method === 'GET' && p === '/jwks.json')
+		return send(res, 200, { keys: [{ kty: 'OKP', crv: 'Ed25519', kid: 'k1', x: 'AAAA' }] });
+	if (req.method === 'POST' && p === '/__home') {
+		homeState = (await json(req)).state === 'missing' ? 'missing' : 'published';
+		return send(res, 200, { state: homeState });
 	}
 	if (req.method === 'POST' && p === '/__mode') {
 		mode = (await json(req)).mode === 'old' ? 'old' : 'new';

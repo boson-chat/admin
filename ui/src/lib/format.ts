@@ -124,6 +124,13 @@ const eventNames: Record<string, string> = {
 	role_deleted: 'Deleted a role',
 	user_roles_changed: 'Changed someone’s roles',
 	role_channels_updated: 'Changed a role’s channels',
+	federation_settings_updated: 'Changed federation settings',
+	federation_login: 'Signed in from another server',
+	federation_login_failed: 'Failed sign-in from another server',
+	federation_assertion_issued: 'Signed in on another server',
+	federation_identity_banned: 'Banned a remote user',
+	federation_identity_unbanned: 'Unbanned a remote user',
+	federation_domain_sessions_revoked: 'Signed out a blocked server’s users',
 	channel_access_updated: 'Changed channel access'
 };
 export function eventName(e: string): string {
@@ -132,7 +139,13 @@ export function eventName(e: string): string {
 
 /** Tone of an audit event for its marker. */
 export function eventTone(e: string): 'bad' | 'admin' | 'plain' {
-	if (e === 'login_failed' || e === 'refresh_token_reuse' || e === 'sso_login_failed') return 'bad';
+	if (
+		e === 'login_failed' ||
+		e === 'refresh_token_reuse' ||
+		e === 'sso_login_failed' ||
+		e === 'federation_login_failed'
+	)
+		return 'bad';
 	if (
 		e.startsWith('admin_') ||
 		e.startsWith('sso_provider_') ||

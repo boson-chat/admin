@@ -46,7 +46,8 @@
 	let eventOptions = $derived<DropdownOption[]>([
 		{ value: '', label: 'All events', group: 'Groups' },
 		{
-			value: 'admin_*,settings_updated,sso_provider_*,role_*,user_roles_changed,channel_access_updated',
+			value:
+				'admin_*,settings_updated,sso_provider_*,role_*,user_roles_changed,channel_access_updated,federation_settings_updated,federation_identity_*,federation_domain_sessions_revoked',
 			label: 'Admin actions',
 			description: 'Accounts, roles, invites, settings, sign-in providers',
 			group: 'Groups'
@@ -58,6 +59,12 @@
 			group: 'Groups'
 		},
 		{ value: 'login,login_failed,sso_login_failed', label: 'Sign-ins and failures', group: 'Groups' },
+		{
+			value: 'federation_*',
+			label: 'Federation',
+			description: 'Remote users, bans, blocked servers, federation settings',
+			group: 'Groups'
+		},
 		{ value: 'sso_identity_*,sso_login_failed', label: 'SSO links and failures', group: 'Groups' },
 		{ value: 'password_*,admin_password_reset_sent', label: 'Password changes and resets', group: 'Groups' },
 		...events.map((ev) => ({ value: ev, label: eventName(ev), description: ev, group: 'Single event' })),

@@ -29,6 +29,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/federation"
 	"github.com/boson-chat/admin/internal/services/files"
 	"github.com/boson-chat/admin/internal/services/hostmetrics"
 	"github.com/boson-chat/admin/internal/services/nickclaim"
@@ -236,6 +237,13 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 	filesSvc := files.New(files.Options{Client: filesClient})
 	h.Files = filesSvc
 	stack.AddCheck("files.", filesSvc.Check)
+	// Federation: auth's federation admin API, the auth.federation config
+	// keys, and this server's boson.json.
+	fedClient, _ := authClient.(authapi.FederationClient)
+	fedSvc := federation.New(federation.Options{Client: fedClient, Tokens: adminSvc, Config: stack,
+		Home: &federation.HomeChecker{Domain: cfg.HomeDomain(), URL: bc.WellKnownURL, HTTP: &nethttp.Client{Timeout: min(up.Timeout, 5*time.Second)}}})
+	h.Federation = fedSvc
+	stack.AddCheck("auth.federation.", fedSvc.Check)
 	if bc.DirectoryLocalURL != "" {
 		h.LocalDirectory = directory.NewLocalService(directory.LocalOptions{
 			Client: bosonapi.NewOperatorClient(bc.DirectoryLocalURL, bc.DirectoryInternalToken, up.Timeout, upstream("directory_local")),

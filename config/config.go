@@ -145,6 +145,26 @@ type BosonConfig struct {
 	// BOSON_CONFIG, admin.directory_hostname wins (and
 	// admin.directory_registration over DIRECTORY_REGISTRATION).
 	DirectoryHostname string `env:"DIRECTORY_HOSTNAME"`
+	// The stack's DOMAIN: the Federation page checks
+	// https://DOMAIN/.well-known/boson.json when auth doesn't say its
+	// domain. Empty = derived from AUTH_HOST (auth.example.org → example.org).
+	Domain string `env:"BOSON_DOMAIN"`
+	// Where the Federation page fetches boson.json instead, e.g. the
+	// wellknown container (http://wellknown:8080/.well-known/boson.json)
+	// when the panel can't reach its own public name.
+	WellKnownURL string `env:"WELLKNOWN_URL"`
+}
+
+// HomeDomain is BOSON_DOMAIN, else AUTH_HOST without its first label.
+func (c Config) HomeDomain() string {
+	if d := strings.ToLower(strings.TrimSpace(c.BosonConfig.Domain)); d != "" {
+		return d
+	}
+	h := strings.ToLower(strings.TrimSpace(c.UpstreamConfig.AuthHost))
+	if _, rest, ok := strings.Cut(h, "."); ok && strings.Contains(rest, ".") {
+		return rest
+	}
+	return ""
 }
 
 type AppConfig struct {

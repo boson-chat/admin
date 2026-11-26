@@ -61,6 +61,9 @@ type Fake struct {
 	RoleChans  map[string][]authapi.RoleChannel
 	ChanAccess []authapi.ChannelAccess
 
+	// Fed is the federation admin API (off until EnableFederation).
+	Fed FederationFake
+
 	// RefreshDelay slows refreshes down (to provoke races in tests).
 	RefreshDelay time.Duration
 	// RefreshErr, when set, is returned by Refresh.

@@ -42,7 +42,8 @@
 				{ href: '/roles', label: 'Roles' },
 				{ href: '/channels', label: 'Channel access' },
 				{ href: '/invites', label: 'Invites' },
-				{ href: '/sso', label: 'Sign-in providers' }
+				{ href: '/sso', label: 'Sign-in providers' },
+				{ href: '/federation', label: 'Federation' }
 			]
 		}
 	];

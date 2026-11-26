@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/branding"
 	"github.com/boson-chat/admin/internal/services/containers"
 	"github.com/boson-chat/admin/internal/services/directory"
+	"github.com/boson-chat/admin/internal/services/federation"
 	"github.com/boson-chat/admin/internal/services/files"
 	"github.com/boson-chat/admin/internal/services/hostmetrics"
 	"github.com/boson-chat/admin/internal/services/nickclaim"
@@ -91,6 +92,8 @@ type Handlers struct {
 	// HostMetrics: the Metrics page (never nil after Register; unconfigured
 	// without METRICS_URL).
 	HostMetrics hostmetrics.ServiceImpl
+	// Federation: the Federation page (never nil after Register).
+	Federation federation.ServiceImpl
 	// Updates: release checks and applying them (nil = off).
 	Updates  updates.ServiceImpl
 	Sessions *session.Codec
@@ -128,6 +131,17 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	}
 	if h.HostMetrics == nil {
 		h.HostMetrics = hostmetrics.New(hostmetrics.Options{})
+	}
+	if h.Federation == nil {
+		// The auth client the admin service uses, when it has the
+		// federation API (the real client and the test fake do).
+		var fc authapi.FederationClient = federation.Unsupported{}
+		if as, ok := h.Admin.(*admin.AdminService); ok {
+			if c, ok := as.Client.(authapi.FederationClient); ok {
+				fc = c
+			}
+		}
+		h.Federation = federation.New(federation.Options{Client: fc, Tokens: h.Admin, Config: h.Config})
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

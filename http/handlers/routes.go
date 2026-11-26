@@ -89,6 +89,17 @@ func (h *Handlers) routes() []route {
 		{"GET /api/files", moderate, true, h.listFiles},
 		{"DELETE /api/files/{id}", moderate, true, h.deleteFile},
 
+		// Federation: the settings are auth.federation.* config keys (or
+		// auth's own store); remote users and their bans are auth's, which
+		// enforces its own rules and audits them.
+		{"GET /api/federation", admin.PermSettingsManage, false, h.getFederation},
+		{"PATCH /api/federation", admin.PermSettingsManage, true, h.patchFederation},
+		{"GET /api/federation/users", admin.PermSettingsManage, false, h.remoteUsers},
+		{"POST /api/federation/users/{id}/ban", moderate, true, h.banRemoteUser},
+		{"DELETE /api/federation/users/{id}/ban", moderate, true, h.unbanRemoteUser},
+		{"POST /api/federation/blocked-domains", admin.PermSettingsManage, true, h.blockDomain},
+		{"DELETE /api/federation/blocked-domains/{domain}", admin.PermSettingsManage, true, h.unblockDomain},
+
 		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
 		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
 		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},
