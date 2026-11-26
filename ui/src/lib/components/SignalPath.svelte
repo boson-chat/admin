@@ -9,7 +9,8 @@
 		ircConfigured = false,
 		discovered = false,
 		probes = [],
-		browser = {}
+		browser = {},
+		updates = {}
 	}: {
 		services: ServiceHealth[];
 		certificates: Certificate[];
@@ -20,6 +21,8 @@
 		/** Public endpoints the browser times, by service name ("admin" = this panel, via the edge). */
 		probes?: PublicProbe[];
 		browser?: Record<string, BrowserLatency>;
+		/** Newer releases by service name (the Updates page's check). */
+		updates?: Record<string, string>;
 	} = $props();
 
 	let probeBy = $derived(Object.fromEntries(probes.map((p) => [p.name, p])));
@@ -116,6 +119,9 @@
 					<h3>{names[s.name] ?? s.name}</h3>
 					{#if roles[s.name]}<span class="role">{roles[s.name]}</span>{/if}
 					{#if s.version}<span class="version mono">{s.version}</span>{/if}
+					{#if updates[s.name]}<a class="upd mono" href="/updates" title="Update available: {updates[s.name]}"
+							>→ {updates[s.name]}<span class="sr-only"> available</span></a
+						>{/if}
 				</div>
 				<span class="status">{statusWord[s.status]}</span>
 				<span class="lat" class:none={!y && !latency(s)}>
@@ -325,6 +331,17 @@
 		padding: 0 var(--space-1);
 		border-radius: var(--radius-sm);
 		background: var(--surface-hover);
+	}
+	.upd {
+		color: var(--accent-text);
+		font-size: var(--text-xs);
+		padding: 0 var(--space-1);
+		border-radius: var(--radius-sm);
+		background: color-mix(in oklab, var(--accent), transparent 88%);
+		text-decoration: none;
+	}
+	.upd:hover {
+		text-decoration: underline;
 	}
 	.status {
 		color: var(--tone-text);

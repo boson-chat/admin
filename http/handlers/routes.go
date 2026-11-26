@@ -101,6 +101,15 @@ func (h *Handlers) routes() []route {
 		{"POST /api/services/{name}/{action}", admin.PermServicesManage, true, h.serviceAction},
 		{"GET /api/services/{name}/logs", admin.PermServicesView, true, h.serviceLogs},
 
+		// Updates: seeing them needs services.manage (they recreate
+		// services); applying and rolling back also settings.manage (they
+		// rewrite the stack's .env), checked in the handler.
+		{"GET /api/updates", admin.PermServicesManage, true, h.updatesStatus},
+		{"POST /api/updates/check", admin.PermServicesManage, true, h.updatesCheck},
+		{"POST /api/updates/plan", admin.PermServicesManage, true, h.updatesPlan},
+		{"POST /api/updates/apply", admin.PermServicesManage, true, h.updatesApply},
+		{"POST /api/updates/rollback", admin.PermServicesManage, true, h.updatesRollback},
+
 		{"GET /api/directory", admin.PermDirectoryManage, true, h.directoryStatus},
 		{"POST /api/directory", admin.PermDirectoryManage, true, h.directorySubmit},
 		{"PATCH /api/directory/{id}", admin.PermDirectoryManage, true, h.directoryUpdate},

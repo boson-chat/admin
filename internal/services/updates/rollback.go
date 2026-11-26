@@ -1,0 +1,253 @@
+package updates
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/boson-chat/admin/internal/logger"
+)
+
+func rollbackSteps(self bool) []Step {
+	st := []Step{
+		{ID: "inspect", Label: "Check whether the update migrated any database"},
+		{ID: "restore", Label: "Put back the previous images, .env and config (and data)"},
+		{ID: "health", Label: "Wait for the services to be healthy"},
+		{ID: "verify", Label: "Check that everything works"},
+	}
+	if self {
+		st = append(st, Step{ID: "self", Label: "Put back the previous admin panel (it reloads)"})
+	}
+	for i := range st {
+		st[i].State = StepPending
+	}
+	return st
+}
+
+// rollbackTarget finds the run to roll back: the current one or a recent one.
+func (s *Service) rollbackTarget(id string) *Run {
+	if c := s.journal.Current; c != nil && (id == "" || c.ID == id) && c.Kind == "update" {
+		return c.clone()
+	}
+	if r := s.journal.Runs[id]; r != nil && r.Kind == "update" {
+		return r.clone()
+	}
+	return nil
+}
+
+// Rollback puts back what an update changed: the previous image digests,
+// .env and config, and the databases and volumes when the update ran
+// migrations (or when asked), then checks the stack again.
+func (s *Service) Rollback(ctx context.Context, actor string, req RollbackRequest, token string) (*Run, error) {
+	if s.o.Jobs == nil {
+		return nil, errApplyOff
+	}
+	s.runMu.Lock()
+	if s.busy {
+		s.runMu.Unlock()
+		return nil, errBusy
+	}
+	orig := s.rollbackTarget(req.RunID)
+	if orig == nil || !orig.CanRollback || orig.Backup == nil || orig.RolledBackBy != "" && orig.State == StateRolledBack {
+		s.runMu.Unlock()
+		return nil, errNoRun
+	}
+	// Only what the update got as far as changing.
+	items := slices.Clone(orig.Items)
+	self := slices.ContainsFunc(items, func(i Item) bool { return i.Self }) && orig.step("self") != nil &&
+		orig.step("self").State != StepPending && orig.step("self").State != StepSkipped
+	if !self {
+		items = slices.DeleteFunc(items, func(i Item) bool { return i.Self })
+	}
+	var comps []Component
+	for _, it := range items {
+		if c, ok := s.catalog(it.Component); ok {
+			comps = append(comps, c)
+		}
+	}
+	run := &Run{ID: s.o.Now().UTC().Format("20060102T150405Z") + "-" + newID(), Kind: "rollback", Actor: actor,
+		State: StateRunning, StartedAt: s.o.Now().UTC(), Items: items, Summary: Summary(comps),
+		Steps: rollbackSteps(self), Checks: []Check{}, Log: []string{}, RollbackOf: orig.ID,
+		Backup: orig.Backup, Location: orig.Location, MigrationsRan: orig.MigrationsRan, Changed: true}
+	if req.RestoreData != nil {
+		run.RestoreData = *req.RestoreData
+	}
+	if s.journal.Current != nil && s.journal.Current.ID == orig.ID {
+		s.journal.finish(s.journal.Current)
+	}
+	s.journal.Current = run
+	s.busy = true
+	s.tokens[run.ID] = token
+	_ = s.journal.save()
+	out := run.clone()
+	s.runMu.Unlock()
+	log := logger.FromCtx(ctx).With().Str("actor", actor).Str("run", run.ID).Str("rollback_of", orig.ID).Logger()
+	for _, it := range items {
+		log.Info().Str("component", it.Component).Str("from", it.To).Str("to", it.From).Msg("rollback started by admin")
+	}
+	bg := logger.WithLogger(context.WithoutCancel(ctx), log)
+	go s.execRollback(bg, run.ID, req.RestoreData == nil)
+	return out, nil
+}
+
+func (s *Service) execRollback(ctx context.Context, runID string, autoData bool) {
+	log := logger.FromCtx(ctx)
+	fail := func(step string, err error) {
+		s.setStep(step, StepFailed, err.Error())
+		log.Error().Err(err).Str("step", step).Msg("rollback failed")
+		s.finish(StateRollbackFailed, err.Error())
+	}
+	run := s.current()
+	if run == nil || run.ID != runID {
+		return
+	}
+	loc := run.Location
+	if loc == nil {
+		var err error
+		if loc, err = s.o.Jobs.Locate(ctx); err != nil {
+			fail("inspect", err)
+			return
+		}
+		s.mutate(func(r *Run) { r.Location = loc })
+	}
+	env := s.env(loc, run)
+
+	// 1. Did the update migrate a database? Compare with the backup.
+	s.setStep("inspect", StepRunning, "")
+	out, err := s.job(ctx, run.ID, "fingerprint", scriptFingerprint, env)
+	if err != nil {
+		fail("inspect", err)
+		return
+	}
+	ran := migrated(run.Backup.Migrations, migrations(out))
+	restore := run.RestoreData
+	if autoData {
+		restore = len(ran) > 0
+	}
+	s.mutate(func(r *Run) { r.MigrationsRan, r.RestoreData = ran, restore })
+	detail := "no migrations ran: the data stays as it is"
+	if len(ran) > 0 {
+		detail = "migrations ran in " + strings.Join(ran, ", ")
+	}
+	if restore {
+		detail += "; restoring the data from the backup (changes since the update are lost)"
+	}
+	s.setStep("inspect", StepOK, detail)
+
+	// 2. Restore.
+	s.setStep("restore", StepRunning, "")
+	var sets, services, dbs, vols, stop []string
+	var selfItem *Item
+	for i, it := range run.Items {
+		if it.Self {
+			selfItem = &run.Items[i]
+			continue
+		}
+		if img := fallbackImage(it); img != "" && it.EnvVar != "" {
+			sets = append(sets, it.EnvVar+"="+img)
+		}
+		services = append(services, it.Services...)
+	}
+	if restore {
+		have := map[string]bool{}
+		for _, f := range run.Backup.Files {
+			have[f.Name] = true
+		}
+		clients := PostgresClients()
+		for _, db := range ran {
+			if !have["pg-"+db+".dump"] {
+				continue
+			}
+			dbs = append(dbs, db)
+			stop = append(stop, clients[db]...)
+		}
+		// Data restore asked for by hand: every database of the rolled-back components.
+		if !autoData {
+			for _, it := range run.Items {
+				for _, db := range it.Databases {
+					if have["pg-"+db+".dump"] && !slices.Contains(dbs, db) {
+						dbs = append(dbs, db)
+						stop = append(stop, clients[db]...)
+					}
+				}
+			}
+		}
+		for _, it := range run.Items {
+			for _, v := range it.Volumes {
+				if have["vol-"+v+".tgz"] {
+					vols = append(vols, v)
+					stop = append(stop, it.Services...)
+				}
+			}
+		}
+	}
+	_, presentSvc, _ := s.installedVersions(ctx)
+	// Everything that uses restored data stops first (the rolled-back
+	// services too: nothing may write to a database while it's replaced).
+	stop = slices.DeleteFunc(uniq(stop), func(x string) bool {
+		return x == "admin" || (presentSvc != nil && !presentSvc[x])
+	})
+	up := slices.DeleteFunc(slices.Clone(services), func(x string) bool { return slices.Contains(stop, x) })
+	if _, err := s.job(ctx, run.ID, "rollback", scriptRollback, with(env, "SETS", strings.Join(sets, " "),
+		"SERVICES", strings.Join(up, " "), "STOP", strings.Join(stop, " "),
+		"RESTORE_DBS", strings.Join(dbs, " "), "RESTORE_VOLUMES", strings.Join(vols, " "))); err != nil {
+		fail("restore", err)
+		return
+	}
+	d := "pinned " + strings.Join(sets, " ")
+	if len(dbs) > 0 {
+		d += "; restored databases " + strings.Join(dbs, ", ")
+	}
+	if len(vols) > 0 {
+		d += "; restored volumes " + strings.Join(vols, ", ")
+	}
+	s.setStep("restore", StepOK, d)
+
+	// 3. Health and 4. the same checks as after the update.
+	all := append(up, stop...)
+	if len(all) > 0 {
+		s.setStep("health", StepRunning, "")
+		if detail, err := s.waitHealthy(ctx, all); err != nil {
+			fail("health", err)
+			return
+		} else {
+			s.setStep("health", StepOK, detail)
+		}
+	} else {
+		s.setStep("health", StepSkipped, "")
+	}
+	var plain []Item
+	for _, it := range run.Items {
+		if !it.Self {
+			plain = append(plain, it)
+		}
+	}
+	if !s.verifyStep(ctx, run, plain, true) {
+		return
+	}
+	if selfItem == nil {
+		s.finish(StateRolledBack, "")
+		log.Info().Msg("rollback finished")
+		return
+	}
+	s.setStep("self", StepRunning, "the panel restarts; this page reconnects")
+	s.mutate(func(r *Run) { r.State, r.Handoff = StateRestarting, "self" })
+	if err := s.o.Jobs.Start(ctx, run.ID, "self", scriptSelf, with(env,
+		"TARGET_SETS", selfItem.EnvVar+"="+fallbackImage(*selfItem), "FALLBACK_SETS", selfItem.EnvVar+"="+selfItem.ToImage)); err != nil {
+		s.mutate(func(r *Run) { r.State, r.Handoff = StateRunning, "" })
+		fail("self", fmt.Errorf("starting the helper: %w", err))
+		return
+	}
+	s.collectHandoff(ctx)
+}
+
+func uniq(in []string) []string {
+	var out []string
+	for _, x := range in {
+		if !slices.Contains(out, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}

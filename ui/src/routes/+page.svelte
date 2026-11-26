@@ -10,6 +10,8 @@
 	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
 	import { due, measure, type BrowserLatency } from '$lib/probe';
+	import { updates } from '$lib/updates.svelte';
+	import { updatesByService } from '$lib/updates';
 
 	let data = $state<Overview | null>(null);
 	let error = $state('');
@@ -133,6 +135,12 @@
 		<button class="btn btn-small" onclick={() => load(true)} disabled={loading}
 			>{loading ? 'Checking…' : 'Check now'}</button
 		>
+		{#if updates.status?.available}
+			<a class="btn btn-small btn-primary" href="/updates"
+				>{updates.status.available}
+				{updates.status.available === 1 ? 'update' : 'updates'} available</a
+			>
+		{/if}
 		<a class="btn btn-small" href="/services"
 			>{session.info?.features.services ? 'Restart, stop, logs' : 'Services'}</a
 		>
@@ -157,6 +165,7 @@
 			discovered={data.discovery?.enabled ?? false}
 			probes={data.public_probes ?? []}
 			{browser}
+			updates={updatesByService(updates.status)}
 		/>
 		{#if failing.length}
 			<p class="fix">
