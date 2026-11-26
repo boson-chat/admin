@@ -14,6 +14,9 @@ var AuditEvents = []string{
 	"sso_provider_created", "sso_provider_updated", "sso_provider_deleted",
 	"role_created", "role_updated", "role_deleted", "user_roles_changed",
 	"role_channels_updated", "channel_access_updated",
+	// Federation (auth docs/federation.md).
+	"federation_settings_updated", "federation_login", "federation_login_failed", "federation_assertion_issued",
+	"federation_identity_banned", "federation_identity_unbanned", "federation_domain_sessions_revoked",
 }
 
 // expandEvents turns a filter ("login", "admin_*", "admin_*,settings_updated")

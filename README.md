@@ -169,6 +169,37 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   SSO, password events), who did it, the affected account, and a time window;
   scrolls through the whole history page by page. Usernames are resolved for
   the actor and for the account an admin action affected.
+- **Federation** (Accounts; auth ≥ v1.24.0, auth docs/federation.md):
+  people with an account on another Boson server sign in here as
+  `alice@boson.chat`. The trust mode (off, allowlist, verified servers =
+  the default, open) with what each one costs, the allowlist and blocklist
+  of home domains (`boson.chat`, or `*.example.org` for it and its
+  subdomains), the directory "verified servers" uses (advanced), remote
+  users' upload quota and whether they may join voice (auth refuses their
+  voice and call tokens when off). The quota isn't in their tokens: auth
+  sets it as each remote user's override on the files service when they
+  sign in, so a change reaches each one at their next sign-in (auth needs
+  `FILES_INTERNAL_URL`). These are `auth.federation.*` keys of the config
+  file (`mode`, `allow`, `block`, `directory_url`, `remote_upload_quota`,
+  `remote_voice`; env defaults `FEDERATION_*`); without the file they save
+  to auth's database (`PATCH /v1/admin/federation`; Reset sends `null`, back
+  to the env value), and when auth answers `409 settings_managed` or can't
+  store them the page shows them read-only with what to set. Permissions
+  follow auth's: anyone with the panel reads the settings, `settings.manage`
+  changes them and the blocklist, `users.view` or `settings.manage` lists
+  the remote users (identity, handle here, first and last seen),
+  `users.moderate` or `users.manage` bans and unbans an identity (auth
+  disables the account, so IRC drops them). Blocking a whole home server
+  puts it on the blocklist and ends its sessions here (with a confirmation
+  that says so; a block added in the form asks the same on save); people
+  already connected to IRC stay connected until they disconnect and can't
+  reconnect. **Your server as a home** checks
+  `https://BOSON_DOMAIN/.well-known/boson.json` (or `WELLKNOWN_URL`): the
+  federation block, its issuer against auth's, the JWKS, the endpoints and
+  whether `accepts` matches the mode, with a link to the file. Auth audits
+  bans, blocks and settings (the audit log's "Federation" group); config
+  saves are logged like every other. On an older auth the page shows the
+  settings only. Browser checks: `./scripts/e2e-federation.sh`.
 - **Sign-in providers:** add, edit, test, switch on/off and remove OpenID
   Connect and SAML providers, with the callback / ACS / SP metadata URLs to
   copy and setup steps for Google, Authentik, Zitadel, Keycloak, Okta and
@@ -341,6 +372,8 @@ stack's `.env` and recreate the service.
 | `BOSON_API_INTERNAL_TOKEN` | – | the api's `INTERNAL_API_TOKEN`, sent as `X-Internal-Token` |
 | `BOSON_FILES_INTERNAL_URL` | – | the files service's internal listener (`http://files:3001`): the Uploads page's status, Uploaded files and users' usage. Empty = those say it isn't reachable (settings still save to the file) |
 | `BOSON_FILES_INTERNAL_TOKEN` | – | the files service's `INTERNAL_TOKEN` (stack: `FILES_INTERNAL_TOKEN`), sent as `X-Internal-Token` |
+| `BOSON_DOMAIN` | from `AUTH_HOST` | the stack's `DOMAIN`: the Federation page checks `https://BOSON_DOMAIN/.well-known/boson.json` when auth doesn't report its domain. Empty = `AUTH_HOST` without its first label |
+| `WELLKNOWN_URL` | – | fetch boson.json from here instead (e.g. `http://wellknown:8080/.well-known/boson.json` when the panel can't reach its own public name); the page still links the public URL |
 | `BOSON_CDN_URL` | `https://cdn.boson.chat` | where avatars and server icons are served from; added to the CSP `img-src` |
 | `DIRECTORY_API_URL` | `https://directory.boson.chat` | the boson directory this network is listed in ([boson-chat/directory](https://github.com/boson-chat/directory), `/v1` API). Empty = the directory page is off |
 | `DIRECTORY_REGISTRATION` | `true` | *default*: `admin.directory_registration` in the config file wins. Register and edit this network's listing there (network key + DNS proof). `false` = the page only reports whether it is listed |
@@ -577,7 +610,7 @@ published yet".
 | Files | boson-chat/files | `files` (`FILES_IMAGE`) | the panel |
 | Directory | boson-chat/directory | `directory` (`DIRECTORY_IMAGE`) | the panel |
 | Web IRC gateway | boson-chat/webircgateway | `stack-webircgateway` (compose.yaml) | a stack update |
-| evrd (add-on, shown when an `evrd` service runs) | 4evrd/evrd | `evrd` (`EVRD_IMAGE`); `evrd-links` is never touched | the panel |
+| evrd (add-on, shown when an `evrd` service runs) | 4evrd/evrd | `ghcr.io/4evrd/evrd` (`EVRD_IMAGE`); `evrd-links` (same image, `EVRD_LINKS_IMAGE`) is never touched, and `bridge-sync` comes with a stack update | the panel |
 | Admin panel | boson-chat/admin | `admin` (`ADMIN_IMAGE`) | the panel, last |
 
 **Who is affected** is one table in code
@@ -613,7 +646,7 @@ logged with the admin's name and listed under History):
    stack directory; the newest `UPDATES_BACKUP_KEEP` are kept): `.env`,
    `config/`, compose files, every service's image **digest**, `pg_dump -Fc`
    of every stack database plus globals, the data volumes (Ergo's `ergo_db`,
-   `roleserv_data`, `voice_data`, `directory_media`, evrd's data), MinIO's
+   `roleserv_data`, `voice_data`, `directory_media`, evrd's `bridge_data`), MinIO's
    metadata (not the objects), and a fingerprint of every migrations table.
    A failed backup stops the update with nothing changed. The page shows its
    size, location and files.

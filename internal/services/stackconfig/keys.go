@@ -358,11 +358,59 @@ var Keys = append([]Key{
 	{Key: KeyFilesS3PathStyle, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{files}, Restart: true},
 	{Key: KeyFilesS3PublicBaseURL, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, Restart: true, item: httpsURL},
 
+	// Federation (auth docs/federation.md): which other Boson servers' users
+	// may sign in here with their home account, and what they get. auth
+	// reads them all: it enforces remote_voice on voice and call tokens, and
+	// pushes remote_upload_quota to the files service as each remote user's
+	// quota override at their next sign-in (files doesn't read this key).
+	{Key: KeyFederationMode, Kind: KindEnum, Enum: []string{"off", "allowlist", "directory", "open"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_MODE"},
+	{Key: KeyFederationAllow, Kind: KindList, MaxItems: MaxFederationDomains, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_ALLOW", item: FederationDomain},
+	{Key: KeyFederationBlock, Kind: KindList, MaxItems: MaxFederationDomains, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_BLOCK", item: FederationDomain},
+	{Key: KeyFederationDirectory, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_DIRECTORY_URL", item: httpsURL},
+	{Key: KeyFederationUploadQuota, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_REMOTE_UPLOAD_QUOTA", item: sizeBetween(0, MaxSize)},
+	{Key: KeyFederationRemoteVoice, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_REMOTE_VOICE"},
+
 	// Branding (auth serves it at /v1/branding; the panel pushes it to the
 	// directory listing). Images are written by the Branding page's uploads.
 	{Key: KeyBrandingTheme, Kind: KindTheme, Perm: admin.PermSettingsManage, Services: []string{auth}},
 	{Key: KeyBrandingImages, Kind: KindImages, Perm: admin.PermSettingsManage, Services: []string{auth}},
 }, emailKeys()...)
+
+// Federation keys (auth's federation section).
+const (
+	KeyFederationMode        = "auth.federation.mode"
+	KeyFederationAllow       = "auth.federation.allow"
+	KeyFederationBlock       = "auth.federation.block"
+	KeyFederationDirectory   = "auth.federation.directory_url"
+	KeyFederationUploadQuota = "auth.federation.remote_upload_quota"
+	KeyFederationRemoteVoice = "auth.federation.remote_voice"
+	// MaxFederationDomains bounds the allow and block lists (auth's limit).
+	MaxFederationDomains = 1000
+)
+
+// FederationDomain checks a home domain (boson_domain) as auth takes it in
+// the allow and block lists: a DNS name like boson.chat, or *.example.org
+// for it and every subdomain; lowercased.
+func FederationDomain(s string) (string, error) {
+	t := strings.TrimSpace(s)
+	base, wild := strings.CutPrefix(t, "*.")
+	d, err := Hostname(base)
+	if err != nil {
+		return "", fmt.Errorf("%q must be a domain like boson.chat, or *.example.org for it and its subdomains (no https://, no path)", t)
+	}
+	if wild {
+		return "*." + d, nil
+	}
+	return d, nil
+}
+
+// FederationDomainMatches: does entry (a domain or *.domain) cover domain?
+func FederationDomainMatches(entry, domain string) bool {
+	if base, ok := strings.CutPrefix(entry, "*."); ok {
+		return domain == base || strings.HasSuffix(domain, "."+base)
+	}
+	return entry == domain
+}
 
 // Nick registration keys (the api's nick_claim section).
 const (

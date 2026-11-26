@@ -183,3 +183,20 @@ func TestTLSHostsFromCertHosts(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestHomeDomain(t *testing.T) {
+	for _, tc := range []struct{ domain, auth, want string }{
+		{"Example.Org", "auth.other.org", "example.org"},
+		{"", "auth.example.org", "example.org"},
+		{"", "auth.chat.example.org", "chat.example.org"},
+		{"", "localhost", ""},
+		{"", "auth.localhost", ""},
+		{"", "", ""},
+	} {
+		var c Config
+		c.BosonConfig.Domain, c.UpstreamConfig.AuthHost = tc.domain, tc.auth
+		if got := c.HomeDomain(); got != tc.want {
+			t.Errorf("%q/%q: %q, want %q", tc.domain, tc.auth, got, tc.want)
+		}
+	}
+}

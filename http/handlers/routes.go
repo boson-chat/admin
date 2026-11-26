@@ -89,6 +89,19 @@ func (h *Handlers) routes() []route {
 		{"GET /api/files", moderate, true, h.listFiles},
 		{"DELETE /api/files/{id}", moderate, true, h.deleteFile},
 
+		// Federation (auth docs/federation.md), with auth's permissions:
+		// reading the settings needs admin.panel, changing them (and the
+		// blocklist) settings.manage; the remote users users.view or
+		// settings.manage; bans users.moderate or users.manage. The settings
+		// are auth.federation.* config keys (or auth's own store).
+		{"GET /api/federation", "", false, h.getFederation},
+		{"PATCH /api/federation", admin.PermSettingsManage, true, h.patchFederation},
+		{"GET /api/federation/users", admin.PermUsersView + "|" + admin.PermSettingsManage, false, h.remoteUsers},
+		{"POST /api/federation/users/{id}/ban", moderate, true, h.banRemoteUser},
+		{"DELETE /api/federation/users/{id}/ban", moderate, true, h.unbanRemoteUser},
+		{"POST /api/federation/blocked-domains", admin.PermSettingsManage, true, h.blockDomain},
+		{"DELETE /api/federation/blocked-domains/{domain}", admin.PermSettingsManage, true, h.unblockDomain},
+
 		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
 		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
 		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},
