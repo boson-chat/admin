@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { api, ApiError } from '$lib/api';
 	import { session } from '$lib/session.svelte';
 	import { toasts, errorText } from '$lib/toasts.svelte';
@@ -9,8 +9,10 @@
 		FIELD_LABELS,
 		MODES,
 		changes,
+		blockWords,
 		domainMatches,
 		draftFrom,
+		markBlocked,
 		homeSummary,
 		sourceText,
 		splitIdentity,
@@ -181,6 +183,12 @@
 	let q = $state('');
 	let reason = $state('');
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let settle: ReturnType<typeof setTimeout> | undefined;
+	let settleTries = 0;
+	onDestroy(() => {
+		clearTimeout(timer);
+		clearTimeout(settle);
+	});
 
 	async function loadUsers(more = false) {
 		if (!view?.supported || !canUsers) return;
@@ -191,6 +199,11 @@
 			if (more && next) params.set('cursor', next);
 			const p = await api<RemoteUserPage>('GET', '/federation/users' + (params.size ? '?' + params : ''));
 			users = more ? [...users, ...p.users] : p.users;
+			// auth re-reads the config file within seconds: look again until it agrees.
+			clearTimeout(settle);
+			if (users.some((u) => u.applying) && settleTries++ < 20)
+				settle = setTimeout(() => void loadUsers(), 3000);
+			else if (!users.some((u) => u.applying)) settleTries = 0;
 			total = p.total;
 			next = p.next_cursor ?? '';
 			usersError = '';
@@ -237,6 +250,8 @@
 			const keep = draft && saved ? changes(draft, saved) : {};
 			fill(r.view);
 			if (draft) Object.assign(draft, keep, { block: r.view.settings.block, allow: r.view.settings.allow });
+			users = markBlocked(users, r.domain, true);
+			settleTries = 0;
 			toasts.push(
 				r.revoke_error
 					? `${domain} is blocked, but its sessions couldn’t be ended: ${r.revoke_error}`
@@ -252,7 +267,10 @@
 	async function unblockDomain(domain: string) {
 		try {
 			fill(await api<FederationView>('DELETE', `/federation/blocked-domains/${encodeURIComponent(domain)}`));
-			toasts.push(`${domain} is off the blocklist.`);
+			// The panel's own write: show it now; the next fetch reconciles.
+			users = markBlocked(users, domain, false);
+			settleTries = 0;
+			toasts.push(`${domain} is off the blocklist. Its users can sign in again.`);
 			await loadUsers();
 		} catch (e) {
 			toasts.push(errorText(e), 'bad');
@@ -260,6 +278,7 @@
 	}
 	let peopleFrom = (d: string) => users.filter((u) => u.home_domain === d);
 	let blockEntry = (d: string) => saved?.block.find((b) => domainMatches(b, d)) ?? '';
+	let words = $derived(blockWords(!!view?.block_keeps_irc));
 	let canUsers = $derived(session.can('users.view') || session.can('settings.manage'));
 
 	onMount(async () => {
@@ -393,7 +412,7 @@
 								error={shownErrors.block}
 							/>
 							<small
-								>Refused in every mode. Saving a new block also ends that server’s sessions here.
+								>{words.help}
 								{@render sourceInline('block')}</small
 							>
 						</div>
@@ -500,7 +519,7 @@
 					{#if newBlocks.length}
 						<Confirm
 							title="Block {newBlocks.length === 1 ? newBlocks[0] : `${newBlocks.length} servers`}?"
-							action="Save and end their sessions"
+							action={words.saveAction}
 							danger
 							onconfirm={save}
 						>
@@ -512,11 +531,9 @@
 									onclick={open}>{saving ? 'Saving…' : 'Save changes'}</button
 								>
 							{/snippet}
-							<p>
-								Nobody from {newBlocks.join(', ')} can sign in here while it’s blocked, and their sessions here
-								end now. Anyone already connected to IRC stays connected until they disconnect; they can’t reconnect.
-								To drop someone at once, ban them. Their messages stay.
-							</p>
+							<p>Nobody from {newBlocks.join(', ')} can sign in here while it’s blocked.</p>
+							<p>{words.effect}</p>
+							<p>Unblocking lets them sign in again. Nothing is deleted; their messages stay.</p>
 						</Confirm>
 					{:else}
 						<button class="btn btn-primary" disabled={!dirty || hasErrors || saving || !editable}
@@ -648,6 +665,11 @@
 											{#if u.banned}<span class="tag tag-bad" title={u.ban_reason || undefined}>Banned</span
 												>{/if}
 											{#if u.domain_blocked}<span class="tag tag-bad">Server blocked</span>{/if}
+											{#if u.applying}<span
+													class="applying"
+													title="Saved. auth applies it within seconds."
+													data-testid="applying">applying…</span
+												>{/if}
 											<span class="show-s muted small"
 												>as {u.handle} · seen <Time at={u.last_seen_at} empty="never" compact /></span
 											>
@@ -704,7 +726,7 @@
 											{:else}
 												<Confirm
 													title="Block {u.home_domain}?"
-													action="Block and end sessions"
+													action={words.action}
 													danger
 													onconfirm={() => blockDomain(u.home_domain)}
 												>
@@ -712,15 +734,12 @@
 															>Block server</button
 														>{/snippet}
 													<p>
-														Nobody from <strong>{u.home_domain}</strong> can sign in here until you unblock
-														it, and their sessions here end now{#if peopleFrom(u.home_domain).length > 1}&nbsp;({peopleFrom(
+														Nobody from <strong>{u.home_domain}</strong> can sign in here while it’s blocked{#if peopleFrom(u.home_domain).length > 1}&nbsp;({peopleFrom(
 																u.home_domain
 															).length} people listed here){/if}.
 													</p>
-													<p>
-														Anyone already connected to IRC stays connected until they disconnect; they can’t
-														reconnect. To drop someone at once, ban them. Their messages stay.
-													</p>
+													<p>{words.effect}</p>
+													<p>Unblocking lets them sign in again. Nothing is deleted; their messages stay.</p>
 												</Confirm>
 											{/if}
 										{/if}
@@ -1113,6 +1132,22 @@
 	}
 	.badges:empty {
 		display: none;
+	}
+	.applying {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--fg-quiet);
+		animation: pulse 1.6s var(--ease-standard) infinite;
+	}
+	@keyframes pulse {
+		50% {
+			opacity: 0.45;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.applying {
+			animation: none;
+		}
 	}
 	.mono {
 		font-family: var(--font-mono);

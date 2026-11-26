@@ -4,7 +4,9 @@ import {
 	changes,
 	cleanDomain,
 	directoryProblem,
+	blockWords,
 	domainMatches,
+	markBlocked,
 	domainProblem,
 	homeSummary,
 	quotaProblem,
@@ -12,7 +14,8 @@ import {
 	sourceText,
 	validate,
 	type Draft,
-	type Home
+	type Home,
+	type RemoteUser
 } from './federation';
 
 const base: Draft = {
@@ -116,5 +119,41 @@ describe('words', () => {
 	it('splits identities', () => {
 		expect(splitIdentity('alice@boson.chat')).toEqual(['alice', 'boson.chat']);
 		expect(splitIdentity('weird')).toEqual(['weird', '']);
+	});
+});
+
+describe('blocking', () => {
+	it('says what a block does for this auth', () => {
+		const now = blockWords(false);
+		expect(now.effect).toContain('dropped from IRC within seconds');
+		expect(now.action).toBe('Block and disconnect');
+		expect(now.help).toContain('unblocking lets them sign in again');
+		const old = blockWords(true);
+		expect(old.effect).toContain('stays connected until they disconnect');
+		expect(old.action).toBe('Block and end sessions');
+	});
+	it('marks rows right away, applying until auth agrees', () => {
+		const u = (id: string, d: string, blocked = false): RemoteUser => ({
+			id,
+			identity: `x@${d}`,
+			handle: id,
+			home_domain: d,
+			first_seen_at: '',
+			banned: false,
+			sessions: 0,
+			domain_blocked: blocked
+		});
+		const list = [
+			u('a', 'chat.example.net', true),
+			u('b', 'x.example.net', true),
+			u('c', 'boson.chat', true)
+		];
+		const out = markBlocked(list, '*.example.net', false);
+		expect(out.map((x) => [x.id, x.domain_blocked, !!x.applying])).toEqual([
+			['a', false, true],
+			['b', false, true],
+			['c', true, false]
+		]);
+		expect(markBlocked(out, 'boson.chat', true)[2].applying).toBeFalsy();
 	});
 });

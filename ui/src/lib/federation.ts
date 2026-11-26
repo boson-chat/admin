@@ -71,6 +71,10 @@ export interface FederationView {
 	updated_by?: string;
 	/** auth reads the stack config file but this panel doesn't have it. */
 	auth_uses_file?: boolean;
+	/** The running auth release, when the panel can read it. */
+	auth_version?: string;
+	/** auth < 1.26.0: a domain block doesn't drop users already on IRC. */
+	block_keeps_irc?: boolean;
 	home?: Home;
 }
 
@@ -92,6 +96,8 @@ export interface RemoteUser {
 	ban_reason?: string;
 	domain_blocked?: boolean;
 	sessions: number;
+	/** The panel saved a block change auth hasn't applied yet. */
+	applying?: boolean;
 }
 
 export interface RemoteUserPage {
@@ -324,4 +330,37 @@ export function homeSummary(h: Home | undefined): {
 export function splitIdentity(id: string): [string, string] {
 	const i = id.lastIndexOf('@');
 	return i < 0 ? [id, ''] : [id.slice(0, i), id.slice(i + 1)];
+}
+
+/**
+ * What blocking a home server does, in words. From auth 1.26.0 a block
+ * also drops the server's users from IRC within seconds; before it, people
+ * already connected stayed until they disconnected. keepsIrc is that older
+ * behaviour (only when the panel knows auth is older).
+ */
+export function blockWords(keepsIrc: boolean) {
+	return keepsIrc
+		? {
+				action: 'Block and end sessions',
+				saveAction: 'Save and end their sessions',
+				effect:
+					'Their sessions here end now. Anyone already connected to IRC stays connected until they disconnect; they can’t reconnect. To drop someone at once, ban them.',
+				help: 'Refused in every mode. Saving a new block also ends that server’s sessions here (people already on IRC stay until they disconnect).'
+			}
+		: {
+				action: 'Block and disconnect',
+				saveAction: 'Save and disconnect them',
+				effect:
+					'Everyone from there is signed out now and dropped from IRC within seconds, and can’t reconnect while it’s blocked.',
+				help: 'Refused in every mode. Blocking signs a server’s users out and drops them from IRC within seconds; unblocking lets them sign in again.'
+			};
+}
+
+/** Marks the rows a block change covers until auth confirms it. */
+export function markBlocked(users: RemoteUser[], entry: string, blocked: boolean): RemoteUser[] {
+	return users.map((u) =>
+		domainMatches(entry, u.home_domain) && !!u.domain_blocked !== blocked
+			? { ...u, domain_blocked: blocked, applying: true }
+			: u
+	);
 }

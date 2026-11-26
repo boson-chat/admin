@@ -16,6 +16,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,8 +77,11 @@ type Tokens interface {
 }
 
 type Options struct {
-	Client authapi.FederationClient
-	Tokens Tokens
+	// AuthVersion reads the running auth release (nil or "" = unknown);
+	// cached for a few minutes here.
+	AuthVersion func(ctx context.Context) (string, error)
+	Client      authapi.FederationClient
+	Tokens      Tokens
 	// Config is the stack config file (never nil; disabled without BOSON_CONFIG).
 	Config *stackconfig.Service
 	// Home checks this server's boson.json (nil = not checked).
@@ -99,6 +103,64 @@ type ServiceImpl interface {
 type Service struct {
 	o  Options
 	mu sync.Mutex
+
+	verMu sync.Mutex
+	ver   string
+	verAt time.Time
+}
+
+// RequiresBlockDisconnect is the auth release whose domain blocks also drop
+// the domain's users from IRC (auth #30); before it they stayed connected
+// until they disconnected.
+const RequiresBlockDisconnect = "1.26.0"
+
+func (s *Service) authVersion(ctx context.Context) string {
+	if s.o.AuthVersion == nil {
+		return ""
+	}
+	s.verMu.Lock()
+	defer s.verMu.Unlock()
+	if !s.verAt.IsZero() && time.Since(s.verAt) < 5*time.Minute {
+		return s.ver
+	}
+	v, err := s.o.AuthVersion(ctx)
+	if err != nil {
+		v = ""
+	}
+	s.ver, s.verAt = strings.TrimPrefix(strings.TrimSpace(v), "v"), time.Now()
+	return s.ver
+}
+
+// olderThan: is version a release before min? Unparsable (dev builds) = no.
+func olderThan(version, min string) bool {
+	parse := func(v string) ([3]int, bool) {
+		var out [3]int
+		v, _, _ = strings.Cut(v, "-")
+		v, _, _ = strings.Cut(v, "+")
+		parts := strings.Split(v, ".")
+		if len(parts) != 3 {
+			return out, false
+		}
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil {
+				return out, false
+			}
+			out[i] = n
+		}
+		return out, true
+	}
+	a, ok1 := parse(version)
+	b, ok2 := parse(min)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
 }
 
 func New(o Options) *Service { return &Service{o: o} }
@@ -133,6 +195,11 @@ type View struct {
 	// AuthUsesFile: auth reads the stack config file but the panel doesn't
 	// have it (BOSON_CONFIG unset here), so neither can save.
 	AuthUsesFile bool `json:"auth_uses_file,omitempty"`
+	// AuthVersion is the running auth release when the panel can read it
+	// ("" = unknown). BlockKeepsIRC: it's older than RequiresBlockDisconnect,
+	// so a domain block doesn't drop users already on IRC.
+	AuthVersion   string `json:"auth_version,omitempty"`
+	BlockKeepsIRC bool   `json:"block_keeps_irc,omitempty"`
 
 	Home *Home `json:"home,omitempty"`
 }
@@ -203,6 +270,8 @@ func (s *Service) View(ctx context.Context, sess *session.Session, can func(stri
 		}
 	}
 	v.Editable = v.Store != StoreEnv && can(admin.PermSettingsManage)
+	v.AuthVersion = s.authVersion(ctx)
+	v.BlockKeepsIRC = v.AuthVersion != "" && olderThan(v.AuthVersion, RequiresBlockDisconnect)
 	if s.o.Home != nil {
 		v.Home = s.o.Home.Check(ctx, v.Domain, v.Issuer, v.Settings.Mode, fresh)
 		if v.Domain == "" {
@@ -533,22 +602,21 @@ func (s *Service) Users(ctx context.Context, sess *session.Session, q authapi.Re
 	if err != nil {
 		return nil, err
 	}
-	// Mark users whose home domain is blocked, from the effective list.
-	if st, err := s.status(ctx, sess); err == nil || s.o.Config.Enabled() {
+	// With the config file, the file's block list is what the panel saved
+	// and what auth applies once it re-reads it (within seconds). Until then
+	// auth still reports the old state: show the saved one, marked applying.
+	if s.o.Config.Enabled() {
 		var block []string
-		if st != nil {
-			block = st.Block
-		}
 		if x, ok := s.o.Config.FileValue(stackconfig.KeyFederationBlock); ok {
 			block = strList(x)
+		} else if st, err := s.status(ctx, sess); err == nil {
+			block = st.Block // from auth's env
 		}
-		// auth marks them too; a block just saved to the file may not have
-		// reached it yet.
 		for i := range page.Users {
-			for _, b := range block {
-				if stackconfig.FederationDomainMatches(b, page.Users[i].HomeDomain) {
-					page.Users[i].DomainBlocked = true
-				}
+			u := &page.Users[i]
+			saved := slices.ContainsFunc(block, func(b string) bool { return stackconfig.FederationDomainMatches(b, u.HomeDomain) })
+			if saved != u.DomainBlocked {
+				u.DomainBlocked, u.Applying = saved, true
 			}
 		}
 	}

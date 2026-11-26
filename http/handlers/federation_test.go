@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -278,5 +279,69 @@ func TestFederationNeedsSettingsManage(t *testing.T) {
 	}
 	if len(h.fake.Fed.Revoked) != 0 {
 		t.Fatal("a refused block ended sessions")
+	}
+}
+
+// The block wording follows auth's release: before 1.26.0 a domain block
+// doesn't drop users already on IRC; unknown = the current behaviour.
+func TestFederationBlockWordingFollowsAuthVersion(t *testing.T) {
+	h := newHarness(t)
+	h.fake.EnableFederation(true)
+	c, _ := h.login()
+	for _, tc := range []struct {
+		version string
+		keeps   bool
+	}{{"1.25.0", true}, {"v1.26.0", false}, {"", false}} {
+		version := tc.version
+		h.h.Federation = federation.New(federation.Options{Client: h.fake, Tokens: h.h.Admin, Config: h.h.Config,
+			AuthVersion: func(context.Context) (string, error) { return version, nil }})
+		v := fedView(t, h.do("GET", "/api/federation", nil, withCookie(c)))
+		if v.BlockKeepsIRC != tc.keeps || v.AuthVersion != strings.TrimPrefix(version, "v") {
+			t.Errorf("%q: keeps=%v version=%q", version, v.BlockKeepsIRC, v.AuthVersion)
+		}
+	}
+}
+
+// Right after the panel saves the block list, auth still answers from the
+// old one: the list shows the saved state, marked applying, until auth
+// agrees.
+func TestFederationBlockApplying(t *testing.T) {
+	h := newHarness(t)
+	h.withConfigFile("version: 1\nauth:\n  federation:\n    block: [chat.example.net]\n")
+	h.fake.EnableFederation(false)
+	h.withFederation("")
+	c, csrf := h.login()
+	users := func() map[string]authapi.RemoteUser {
+		var p authapi.RemoteUserPage
+		w := h.do("GET", "/api/federation/users", nil, withCookie(c))
+		if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil || w.Code != 200 {
+			t.Fatalf("users: %d %s", w.Code, w.Body)
+		}
+		out := map[string]authapi.RemoteUser{}
+		for _, u := range p.Users {
+			out[u.ID] = u
+		}
+		return out
+	}
+	// auth (the fake) hasn't applied the file's block yet.
+	if u := users()["usr_fed_bob"]; !u.DomainBlocked || !u.Applying {
+		t.Fatalf("block not applied yet: %+v", u)
+	}
+	// It has now.
+	for i := range h.fake.Fed.Remotes {
+		if h.fake.Fed.Remotes[i].HomeDomain == "chat.example.net" {
+			h.fake.Fed.Remotes[i].DomainBlocked = true
+		}
+	}
+	if u := users()["usr_fed_bob"]; !u.DomainBlocked || u.Applying {
+		t.Fatalf("applied: %+v", u)
+	}
+	// Unblock: shown unblocked at once, applying until auth re-reads.
+	fedView(t, h.do("DELETE", "/api/federation/blocked-domains/chat.example.net", nil, withCookie(c), withHeader(CSRFHeader, csrf)))
+	if u := users()["usr_fed_bob"]; u.DomainBlocked || !u.Applying {
+		t.Fatalf("unblock not applied yet: %+v", u)
+	}
+	if u := users()["usr_fed_alice"]; u.DomainBlocked || u.Applying {
+		t.Fatalf("other domain: %+v", u)
 	}
 }

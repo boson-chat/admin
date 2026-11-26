@@ -132,6 +132,9 @@ type RemoteUser struct {
 	// drops them; an admin can too).
 	Disabled bool `json:"disabled,omitempty"`
 	Sessions int  `json:"sessions"`
+	// Applying is the panel's own: its saved block list and auth's answer
+	// differ because auth hasn't re-read the config file yet.
+	Applying bool `json:"applying,omitempty"`
 }
 
 // RemoteUserQuery filters GET /v1/admin/federation/users.

@@ -16,6 +16,7 @@
 //                                          # last sign-in / activity
 //
 // Its password is "e2e-password" for the user "admin".
+import { readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import process from 'node:process';
 
@@ -142,6 +143,38 @@ const shaped = (u) => ({
 });
 let remotes = initialRemotes().map(shaped);
 let homeState = 'published';
+// Like auth, the fake reads auth.federation.block from the stack config file
+// (FAKE_AUTH_CONFIG_FILE), and like auth's settings poll it takes a moment:
+// a change shows up 2 s after the file was written.
+const CONFIG_FILE = process.env.FAKE_AUTH_CONFIG_FILE ?? '';
+let appliedBlock = [];
+function blockList() {
+	if (!CONFIG_FILE) return appliedBlock;
+	try {
+		if (Date.now() - statSync(CONFIG_FILE).mtimeMs < 2000) return appliedBlock;
+		const text = readFileSync(CONFIG_FILE, 'utf8');
+		// auth.federation.block as the panel writes it (a block list, any indent).
+		const fed = text.split(/\n(?=\s*federation:)/)[1] ?? '';
+		const m = fed.match(/\n(\s*)block:[ \t]*(\[.*\])?\n?((?:\1\s+- .*\n?)*)/);
+		appliedBlock = !m
+			? []
+			: m[2]
+				? m[2]
+						.slice(1, -1)
+						.split(',')
+						.map((x) => x.trim())
+						.filter(Boolean)
+				: m[3]
+						.split('\n')
+						.map((l) => l.replace(/^\s*- /, '').trim())
+						.filter(Boolean);
+	} catch {
+		/* keep the last good list */
+	}
+	return appliedBlock;
+}
+const covers = (entry, d) =>
+	entry.startsWith('*.') ? d === entry.slice(2) || d.endsWith('.' + entry.slice(1)) : entry === d;
 const fedSources = () =>
 	Object.fromEntries(
 		['mode', 'allow', 'block', 'directory_url', 'remote_upload_quota', 'remote_voice'].map((k) => [
@@ -493,7 +526,9 @@ createServer(async (req, res) => {
 			});
 		if (req.method === 'GET' && p === '/v1/admin/federation/users') {
 			const q = (url.searchParams.get('q') ?? '').toLowerCase();
+			const block = blockList();
 			const list = remotes
+				.map((u) => ({ ...u, domain_blocked: block.some((b) => covers(b, u.home_domain)) }))
 				.filter((u) => !q || (u.identity + ' ' + u.handle).includes(q))
 				.sort((a, b) => (b.last_seen_at ?? '').localeCompare(a.last_seen_at ?? ''));
 			return send(res, 200, { users: list, next_cursor: null, total: list.length });
@@ -573,6 +608,7 @@ createServer(async (req, res) => {
 		channelAccess = b?.role_channels === false ? [] : structuredClone(initialAccess);
 		audit.length = 0;
 		remotes = initialRemotes().map(shaped);
+		appliedBlock = [];
 		homeState = 'published';
 		return send(res, 200, {});
 	}
@@ -588,6 +624,13 @@ createServer(async (req, res) => {
 				accepts: 'directory'
 			};
 		return send(res, 200, doc);
+	}
+	// The version the panel reads (target_info, like auth's /metrics).
+	if (req.method === 'GET' && p === '/metrics') {
+		res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
+		return res.end(
+			`target_info{service_name="auth",service_version="${process.env.FAKE_AUTH_VERSION ?? '1.26.0'}"} 1\n`
+		);
 	}
 	if (req.method === 'GET' && p === '/jwks.json')
 		return send(res, 200, { keys: [{ kty: 'OKP', crv: 'Ed25519', kid: 'k1', x: 'AAAA' }] });
