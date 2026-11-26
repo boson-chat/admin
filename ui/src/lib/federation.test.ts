@@ -4,6 +4,7 @@ import {
 	changes,
 	cleanDomain,
 	directoryProblem,
+	domainMatches,
 	domainProblem,
 	homeSummary,
 	quotaProblem,
@@ -29,6 +30,8 @@ describe('domains', () => {
 		expect(cleanDomain('https://chat.example.org/path')).toBe('chat.example.org');
 		expect(cleanDomain('alice@boson.chat')).toBe('boson.chat');
 		expect(cleanDomain('boson.chat.')).toBe('boson.chat');
+		expect(cleanDomain('*.Example.org')).toBe('*.example.org');
+		expect(cleanDomain('*.*.example.org')).toBe('');
 		expect(cleanDomain('localhost')).toBe('');
 		expect(cleanDomain('203.0.113.9')).toBe('');
 		expect(cleanDomain('not a domain')).toBe('');
@@ -39,6 +42,15 @@ describe('domains', () => {
 		expect(domainProblem('Boson.chat', ['boson.chat'])).toMatch(/already listed/);
 		expect(domainProblem('boson.chat', [], { name: 'blocklist', list: ['boson.chat'] })).toMatch(/blocklist/);
 		expect(domainProblem('boson.chat', [])).toBe('');
+	});
+});
+
+describe('matching', () => {
+	it('covers subdomains with *.', () => {
+		expect(domainMatches('*.example.org', 'chat.example.org')).toBe(true);
+		expect(domainMatches('*.example.org', 'example.org')).toBe(true);
+		expect(domainMatches('*.example.org', 'badexample.org')).toBe(false);
+		expect(domainMatches('boson.chat', 'x.boson.chat')).toBe(false);
 	});
 });
 

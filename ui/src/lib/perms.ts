@@ -17,8 +17,7 @@ export const pagePerms: { prefix: string; perm: string; label: string }[] = [
 	{ prefix: '/roles', perm: 'roles.manage', label: 'Roles' },
 	{ prefix: '/channels', perm: 'roles.manage', label: 'Channel access' },
 	{ prefix: '/invites', perm: 'invites.manage', label: 'Invites' },
-	{ prefix: '/sso', perm: 'sso.manage', label: 'Sign-in providers' },
-	{ prefix: '/federation', perm: 'settings.manage', label: 'Federation' }
+	{ prefix: '/sso', perm: 'sso.manage', label: 'Sign-in providers' }
 ];
 /** The stack overview at "/" shows service health. */
 export const homePerm = 'services.view';

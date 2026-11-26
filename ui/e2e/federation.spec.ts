@@ -97,7 +97,7 @@ test('the page: modes with their tradeoffs, home status, remote users', async ({
 	// Remote users: identity, handle, banned ones marked.
 	const alice = page.getByTestId('remote-usr_fed_alice');
 	await expect(alice).toContainText('alice@boson.chat');
-	await expect(page.getByTestId('remote-usr_fed_kai').getByText('Banned')).toBeVisible();
+	await expect(page.getByTestId('remote-usr_fed_kai').getByText('Banned', { exact: true })).toBeVisible();
 	await expect(page.getByText('4 remote users')).toBeVisible();
 	await shoot(page, `federation-${info.project.name}`);
 
@@ -148,10 +148,11 @@ test('ban and unban a remote user, logged', async ({ page }) => {
 	const bob = page.getByTestId('remote-usr_fed_bob');
 	await bob.getByRole('button', { name: 'Ban' }).click();
 	const dlg = page.getByRole('dialog', { name: 'Ban bob@chat.example.net?' });
+	await expect(dlg).toContainText('dropped from IRC');
 	await expect(dlg).toContainText('Other people from chat.example.net aren’t affected');
 	await dlg.getByLabel(/Reason/).fill('flooding #lobby');
 	await dlg.getByRole('button', { name: 'Ban' }).click();
-	await expect(bob.getByText('Banned')).toBeVisible();
+	await expect(bob.getByText('Banned', { exact: true })).toBeVisible();
 	expect(await audit(page)).toContainEqual(
 		expect.objectContaining({
 			event: 'federation_identity_banned',
@@ -162,7 +163,7 @@ test('ban and unban a remote user, logged', async ({ page }) => {
 
 	await bob.getByRole('button', { name: 'Unban' }).click();
 	await page.getByRole('dialog', { name: /Unban/ }).getByRole('button', { name: 'Unban' }).click();
-	await expect(bob.getByText('Banned')).toHaveCount(0);
+	await expect(bob.getByText('Banned', { exact: true })).toHaveCount(0);
 	expect((await audit(page)).map((e) => e.event)).toContain('federation_identity_unbanned');
 });
 
@@ -170,13 +171,17 @@ test('block a whole home server: confirm says it ends sessions', async ({ page }
 	await page.goto('/federation');
 	await page.getByTestId('remote-usr_fed_bob').getByRole('button', { name: 'Block server' }).click();
 	const dlg = page.getByRole('dialog', { name: 'Block chat.example.net?' });
-	await expect(dlg).toContainText('signed out of this server now');
-	await expect(dlg).toContainText('their sessions end');
+	await expect(dlg).toContainText('Nobody from chat.example.net can sign in here until you unblock it');
+	await expect(dlg).toContainText('their sessions here end now');
+	// Accurate about IRC: a block doesn't drop open connections, a ban does.
+	await expect(dlg).toContainText('Anyone already connected to IRC stays connected');
 	await expect(dlg).toContainText('2 people');
 	if (info.project.name === 'desktop') await shoot(page, 'federation-block-confirm-desktop');
-	await dlg.getByRole('button', { name: 'Block and sign them out' }).click();
+	await dlg.getByRole('button', { name: 'Block and end sessions' }).click();
 	await expect(page.getByText('chat.example.net is blocked. 2 sessions ended.')).toBeVisible();
-	await expect(page.getByTestId('remote-usr_fed_alice2').getByText('Server blocked')).toBeVisible();
+	await expect(
+		page.getByTestId('remote-usr_fed_alice2').getByText('Server blocked', { exact: true })
+	).toBeVisible();
 	await expect(page.getByRole('list', { name: 'blocklist' }).getByText('chat.example.net')).toBeVisible();
 	expect(file()).toMatch(/block:\s*\n\s*- chat\.example\.net/);
 	expect(await audit(page)).toContainEqual(
@@ -189,7 +194,7 @@ test('block a whole home server: confirm says it ends sessions', async ({ page }
 		.getByRole('button', { name: 'Unblock chat.example.net' })
 		.click();
 	await expect(page.getByText('chat.example.net is off the blocklist.')).toBeVisible();
-	await expect(page.getByText('Server blocked')).toHaveCount(0);
+	await expect(page.getByText('Server blocked', { exact: true })).toHaveCount(0);
 });
 
 test('a block added in the form asks first and signs them out on save', async ({ page }) => {
@@ -199,10 +204,12 @@ test('a block added in the form asks first and signs them out on save', async ({
 	await add.press('Enter');
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	const dlg = page.getByRole('dialog', { name: 'Block boson.chat?' });
-	await expect(dlg).toContainText('Everyone from boson.chat is signed out');
-	await dlg.getByRole('button', { name: 'Save and sign them out' }).click();
+	await expect(dlg).toContainText('Nobody from boson.chat can sign in here');
+	await dlg.getByRole('button', { name: 'Save and end their sessions' }).click();
 	await expect(page.getByText(/Federation saved\. 2 sessions ended\./)).toBeVisible();
-	await expect(page.getByTestId('remote-usr_fed_alice').getByText('Server blocked')).toBeVisible();
+	await expect(
+		page.getByTestId('remote-usr_fed_alice').getByText('Server blocked', { exact: true })
+	).toBeVisible();
 });
 
 test('a home server without the federation block says so', async ({ page }, info) => {

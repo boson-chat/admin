@@ -9,6 +9,7 @@
 		FIELD_LABELS,
 		MODES,
 		changes,
+		domainMatches,
 		draftFrom,
 		homeSummary,
 		sourceText,
@@ -140,6 +141,12 @@
 			const f = fieldOf(err);
 			if (f && err instanceof Error) serverError = { field: f, message: err.message };
 			toasts.push(errorText(err), 'bad');
+			// auth went over to the config file meanwhile: show what's true now.
+			if (err instanceof ApiError && err.code === 'settings_managed') {
+				const keep = draft;
+				await load();
+				if (keep && view?.editable) draft = keep;
+			}
 			throw err;
 		} finally {
 			saving = false;
@@ -176,7 +183,7 @@
 	let timer: ReturnType<typeof setTimeout> | undefined;
 
 	async function loadUsers(more = false) {
-		if (!view?.supported) return;
+		if (!view?.supported || !canUsers) return;
 		usersLoading = true;
 		try {
 			const params = new URLSearchParams();
@@ -252,6 +259,8 @@
 		}
 	}
 	let peopleFrom = (d: string) => users.filter((u) => u.home_domain === d);
+	let blockEntry = (d: string) => saved?.block.find((b) => domainMatches(b, d)) ?? '';
+	let canUsers = $derived(session.can('users.view') || session.can('settings.manage'));
 
 	onMount(async () => {
 		await load();
@@ -296,7 +305,14 @@
 		{:else if view.error}
 			<Notice tone="bad">Couldn’t read auth’s federation status: {view.error}</Notice>
 		{/if}
-		{#if view.store === 'env'}
+		{#if view.store === 'env' && view.auth_uses_file}
+			<Notice tone="info">
+				<strong>auth reads these from the stack config file</strong>, which this panel doesn’t have. Set
+				<code>BOSON_CONFIG=/config/boson.yaml</code> on the admin service (with the stack’s
+				<code>config/</code> mounted) to change them here, or edit the file’s <code>auth.federation</code>
+				section by hand.
+			</Notice>
+		{:else if view.store === 'env'}
 			<Notice tone="info">
 				<strong>These settings come from auth’s environment.</strong> To change them, set them in the stack’s
 				<code>.env</code> and run <code>docker compose up -d auth</code>:
@@ -339,8 +355,8 @@
 					<div class="group-head">
 						<h2 id="fed-lists-h">Home servers</h2>
 						<p>
-							By domain: the part after the @ in <code>alice@boson.chat</code>. Paste an identity or a URL and
-							the domain is kept.
+							By domain: the part after the @ in <code>alice@boson.chat</code>, or <code>*.example.org</code>
+							for it and all its subdomains. Paste an identity or a URL and the domain is kept.
 						</p>
 					</div>
 					<div class="card fields">
@@ -377,7 +393,7 @@
 								error={shownErrors.block}
 							/>
 							<small
-								>Refused in every mode. Saving a new block also signs out everyone from that server.
+								>Refused in every mode. Saving a new block also ends that server’s sessions here.
 								{@render sourceInline('block')}</small
 							>
 						</div>
@@ -389,7 +405,8 @@
 						<h2 id="fed-remote-h">What remote users get</h2>
 						<p>
 							Remote users chat on your IRC server under their handle here and upload files to your server.
-							They get the <code>remote</code> role, plus any roles you give them.
+							{#if view.remote_role}They get the <code>{view.remote_role}</code> role, plus any roles you give them.{:else}They
+								get no role of their own, only what you give them.{/if}
 						</p>
 					</div>
 					<div class="card fields">
@@ -412,7 +429,9 @@
 								</p>{/if}
 							<small id="fed-quota-hint"
 								>Per remote user, over the uploads quota window, like <code>500MB</code>. Empty: the same as
-								your own accounts. {@render sourceInline('remote_upload_quota')}</small
+								your own accounts. auth sets it as each remote user’s quota on the files service when they
+								sign in, so a change reaches each one at their next sign-in (needs
+								<code>FILES_INTERNAL_URL</code> on auth). {@render sourceInline('remote_upload_quota')}</small
 							>
 						</div>
 						<div class="tgl">
@@ -466,7 +485,10 @@
 					{:else if view.store === 'file'}
 						Saved to <code>auth.federation</code> in config/boson.yaml
 					{:else if view.store === 'auth'}
-						Saved in auth’s database
+						Saved in auth’s database{#if view.updated_at}&nbsp;· changed <Time
+								at={view.updated_at}
+							/>{#if view.updated_by}&nbsp;by
+								{view.updated_by}{/if}{/if}
 					{:else}
 						Read-only: from auth’s env
 					{/if}
@@ -478,7 +500,7 @@
 					{#if newBlocks.length}
 						<Confirm
 							title="Block {newBlocks.length === 1 ? newBlocks[0] : `${newBlocks.length} servers`}?"
-							action="Save and sign them out"
+							action="Save and end their sessions"
 							danger
 							onconfirm={save}
 						>
@@ -491,8 +513,9 @@
 								>
 							{/snippet}
 							<p>
-								Everyone from {newBlocks.join(', ')} is signed out of this server now, and can’t sign in again while
-								it’s blocked. Their messages stay.
+								Nobody from {newBlocks.join(', ')} can sign in here while it’s blocked, and their sessions here
+								end now. Anyone already connected to IRC stays connected until they disconnect; they can’t reconnect.
+								To drop someone at once, ban them. Their messages stay.
 							</p>
 						</Confirm>
 					{:else}
@@ -566,7 +589,11 @@
 				<p>People from other servers who signed in here. Newest activity first.</p>
 			</div>
 		</div>
-		{#if !view.supported}
+		{#if !canUsers}
+			<Notice tone="info"
+				>Seeing remote users needs <code>users.view</code> or <code>settings.manage</code>.</Notice
+			>
+		{:else if !view.supported}
 			<State kind="unsupported" title="Needs a newer auth service">
 				The list of remote users comes with auth ≥ {view.requires ?? 'the federation release'}.
 			</State>
@@ -656,25 +683,28 @@
 															}}>Ban</button
 														>{/snippet}
 													<p>
-														{u.identity} is signed out here and can’t sign in again. Other people from
-														{u.home_domain} aren’t affected.
+														{u.identity} is signed out here, dropped from IRC, and can’t sign in again (their account
+														here is disabled while banned). Other people from {u.home_domain} aren’t affected.
 													</p>
 													<label class="reason">
 														<span>Reason (optional, for the audit log)</span>
-														<input type="text" bind:value={reason} maxlength="200" />
+														<input type="text" bind:value={reason} maxlength="500" />
 													</label>
 												</Confirm>
 											{/if}
 										{/if}
 										{#if editable}
 											{#if u.domain_blocked}
-												<button class="btn btn-small btn-ghost" onclick={() => unblockDomain(u.home_domain)}
-													>Unblock {u.home_domain}</button
-												>
+												{@const entry = blockEntry(u.home_domain)}
+												{#if entry}
+													<button class="btn btn-small btn-ghost" onclick={() => unblockDomain(entry)}
+														>Unblock {entry}</button
+													>
+												{/if}
 											{:else}
 												<Confirm
 													title="Block {u.home_domain}?"
-													action="Block and sign them out"
+													action="Block and end sessions"
 													danger
 													onconfirm={() => blockDomain(u.home_domain)}
 												>
@@ -682,11 +712,14 @@
 															>Block server</button
 														>{/snippet}
 													<p>
-														Everyone from <strong>{u.home_domain}</strong> is signed out of this server now
-														{#if peopleFrom(u.home_domain).length > 1}({peopleFrom(u.home_domain).length} people
-															listed here){/if}
-														and their sessions end. Nobody from {u.home_domain} can sign in again until you unblock
-														it. Their messages stay.
+														Nobody from <strong>{u.home_domain}</strong> can sign in here until you unblock
+														it, and their sessions here end now{#if peopleFrom(u.home_domain).length > 1}&nbsp;({peopleFrom(
+																u.home_domain
+															).length} people listed here){/if}.
+													</p>
+													<p>
+														Anyone already connected to IRC stays connected until they disconnect; they can’t
+														reconnect. To drop someone at once, ban them. Their messages stay.
 													</p>
 												</Confirm>
 											{/if}
@@ -723,7 +756,10 @@
 {#snippet sourceInline(f: Field)}
 	{#if view}
 		<span class="src"
-			>{sourceText(view.sources[f], envOf[f])}{#if view.store === 'file' && view.sources[f] === 'file'}
+			>{sourceText(
+				view.sources[f],
+				envOf[f]
+			)}{#if (view.store === 'file' && view.sources[f] === 'file') || (view.store === 'auth' && view.sources[f] === 'database')}
 				·
 				<button
 					class="linkish"
@@ -1092,6 +1128,10 @@
 	}
 	.acts :global(.btn) {
 		margin-left: var(--space-1);
+	}
+	.acts :global(dialog) {
+		text-align: left;
+		white-space: normal;
 	}
 	.empty {
 		color: var(--fg-quiet);

@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/boson-chat/admin/internal/apperr"
 	"github.com/boson-chat/admin/internal/clients/authapi"
@@ -34,7 +35,7 @@ const DefaultDirectoryURL = "https://directory.boson.chat"
 // auth can't be asked.
 var Defaults = authapi.FederationSettings{
 	Mode: authapi.FederationDirectory, Allow: []string{}, Block: []string{},
-	DirectoryURL: DefaultDirectoryURL,
+	DirectoryURL: DefaultDirectoryURL, RemoteVoice: true,
 }
 
 // Field is one setting: its JSON name, config key and env var.
@@ -124,6 +125,14 @@ type View struct {
 	Issuer      string `json:"issuer,omitempty"`
 	Domain      string `json:"domain,omitempty"`
 	RemoteUsers int    `json:"remote_users"`
+	// RemoteRole is the role new remote users get ("" = none).
+	RemoteRole string `json:"remote_role,omitempty"`
+	// UpdatedAt / UpdatedBy: auth's last stored change (database store).
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	UpdatedBy string     `json:"updated_by,omitempty"`
+	// AuthUsesFile: auth reads the stack config file but the panel doesn't
+	// have it (BOSON_CONFIG unset here), so neither can save.
+	AuthUsesFile bool `json:"auth_uses_file,omitempty"`
 
 	Home *Home `json:"home,omitempty"`
 }
@@ -142,7 +151,10 @@ func (s *Service) View(ctx context.Context, sess *session.Session, can func(stri
 	case err == nil:
 		v.Supported = true
 		v.Settings = st.FederationSettings
-		v.Issuer, v.Domain, v.RemoteUsers = st.Issuer, st.Domain, st.RemoteUsers
+		v.Issuer, v.Domain, v.RemoteUsers, v.RemoteRole, v.UpdatedAt = st.Issuer, st.Domain, st.RemoteUsers, st.RemoteRole, st.UpdatedAt
+		if st.UpdatedBy != nil {
+			v.UpdatedBy = *st.UpdatedBy
+		}
 		for _, f := range Fields {
 			v.Sources[f.Name] = "default"
 			if src := st.Sources[f.Name]; src != "" {
@@ -182,6 +194,13 @@ func (s *Service) View(ctx context.Context, sess *session.Session, can func(stri
 		v.Store = StoreAuth
 	default:
 		v.Store = StoreEnv
+	}
+	if v.Store == StoreEnv && st != nil {
+		for _, src := range st.Sources {
+			if src == "file" {
+				v.AuthUsesFile = true
+			}
+		}
 	}
 	v.Editable = v.Store != StoreEnv && can(admin.PermSettingsManage)
 	if s.o.Home != nil {
@@ -387,11 +406,23 @@ func (s *Service) Update(ctx context.Context, sess *session.Session, in Patch, c
 			return nil, err
 		}
 	case StoreAuth:
-		if len(in.Unset) > 0 {
-			return nil, apperr.Invalid("resetting to the default needs the stack config file")
+		for _, n := range in.Unset {
+			if _, ok := fieldByName(n); !ok {
+				return nil, apperr.Invalid(n + " isn't a federation setting")
+			}
+			if _, set := patchValue(p, n); !set {
+				p.Reset = append(p.Reset, n)
+			}
 		}
 		err := s.o.Tokens.WithToken(ctx, sess, func(at string) error { _, err := s.o.Client.UpdateFederation(ctx, at, p); return err })
-		logChange(ctx, sess, "federation.update", err, changes(before.Settings, apply(before.Settings, p)))
+		ch := changes(before.Settings, apply(before.Settings, p))
+		for _, n := range p.Reset {
+			ch = append(ch, n+": reset to the env value")
+		}
+		logChange(ctx, sess, "federation.update", err, ch)
+		if e, ok := apperr.As(err); ok && e.Status == http.StatusConflict && e.Code == "settings_managed" {
+			return nil, errManaged
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -400,6 +431,10 @@ func (s *Service) Update(ctx context.Context, sess *session.Session, in Patch, c
 	}
 	return s.View(ctx, sess, can, false), nil
 }
+
+// errManaged: auth switched to the stack config file after the page loaded.
+var errManaged = apperr.New(http.StatusConflict, "settings_managed",
+	"auth now reads its federation settings from the stack config file: set BOSON_CONFIG on the admin service (the same config/boson.yaml) to change them here, or edit the file's auth.federation section")
 
 var errReadOnly = apperr.New(http.StatusConflict, "federation_read_only",
 	"federation settings come from the auth service's env here: set FEDERATION_* in the stack's .env and recreate auth, or set BOSON_CONFIG to change them from the panel")
@@ -507,9 +542,13 @@ func (s *Service) Users(ctx context.Context, sess *session.Session, q authapi.Re
 		if x, ok := s.o.Config.FileValue(stackconfig.KeyFederationBlock); ok {
 			block = strList(x)
 		}
+		// auth marks them too; a block just saved to the file may not have
+		// reached it yet.
 		for i := range page.Users {
-			if slices.Contains(block, page.Users[i].HomeDomain) {
-				page.Users[i].DomainBlocked = true
+			for _, b := range block {
+				if stackconfig.FederationDomainMatches(b, page.Users[i].HomeDomain) {
+					page.Users[i].DomainBlocked = true
+				}
 			}
 		}
 	}
@@ -518,8 +557,8 @@ func (s *Service) Users(ctx context.Context, sess *session.Session, q authapi.Re
 
 func (s *Service) Ban(ctx context.Context, sess *session.Session, id, reason string) (*authapi.RemoteUser, error) {
 	reason = strings.TrimSpace(reason)
-	if len([]rune(reason)) > 200 || strings.ContainsAny(reason, "\r\n\x00") {
-		return nil, apperr.InvalidField("reason", "the reason is at most 200 characters on one line")
+	if len([]rune(reason)) > 500 || strings.ContainsAny(reason, "\r\n\x00") {
+		return nil, apperr.InvalidField("reason", "the reason is at most 500 characters on one line")
 	}
 	var u *authapi.RemoteUser
 	err := s.o.Tokens.WithToken(ctx, sess, func(at string) (err error) { u, err = s.o.Client.BanRemoteUser(ctx, at, id, reason); return })
@@ -560,7 +599,7 @@ func (s *Service) BlockDomain(ctx context.Context, sess *session.Session, domain
 		return nil, apperr.InvalidField("domain", err.Error())
 	}
 	cur := s.View(ctx, sess, can, false)
-	if cur.Domain != "" && d == cur.Domain {
+	if cur.Domain != "" && stackconfig.FederationDomainMatches(d, cur.Domain) {
 		return nil, apperr.InvalidField("domain", d+" is this server's own domain")
 	}
 	p := Patch{}

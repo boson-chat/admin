@@ -37,3 +37,20 @@ func TestParseFormatSize(t *testing.T) {
 		}
 	}
 }
+
+func TestFederationDomain(t *testing.T) {
+	for in, want := range map[string]string{"Boson.Chat": "boson.chat", " *.Example.org ": "*.example.org"} {
+		if got, err := FederationDomain(in); err != nil || got != want {
+			t.Errorf("%q: %q %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"*", "*.", "*.*.x.org", "https://boson.chat", "10.0.0.1", "a*.b.org"} {
+		if _, err := FederationDomain(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if !FederationDomainMatches("*.example.org", "chat.example.org") || !FederationDomainMatches("*.example.org", "example.org") ||
+		FederationDomainMatches("*.example.org", "badexample.org") || FederationDomainMatches("boson.chat", "x.boson.chat") {
+		t.Error("matching")
+	}
+}

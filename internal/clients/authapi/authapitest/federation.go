@@ -30,6 +30,9 @@ type FederationFake struct {
 	Remotes []authapi.RemoteUser
 	// Revoked counts revoke-sessions calls per domain.
 	Revoked map[string]int
+	// Managed: auth reads the stack config file (PATCH → 409
+	// settings_managed) although Status says editable.
+	Managed bool
 }
 
 // EnableFederation makes the fake an auth with the federation API, its
@@ -43,7 +46,7 @@ func (f *Fake) EnableFederation(editable bool) {
 			FederationSettings: authapi.FederationSettings{Mode: authapi.FederationDirectory, Allow: []string{}, Block: []string{},
 				DirectoryURL: "https://directory.boson.chat", RemoteVoice: true},
 			Sources:  map[string]string{"mode": "default", "allow": "default", "block": "default", "directory_url": "default", "remote_upload_quota": "default", "remote_voice": "default"},
-			Editable: editable, Issuer: "https://auth.example.org", Domain: "example.org",
+			Editable: editable, Issuer: "https://auth.example.org", Domain: "example.org", RemoteRole: "Remote",
 		},
 		Remotes: []authapi.RemoteUser{
 			{ID: "usr_fed_alice", Identity: "alice@boson.chat", Handle: "alice", HomeDomain: "boson.chat", FirstSeenAt: seen.Add(-72 * time.Hour), LastSeenAt: &seen, Sessions: 2},
@@ -82,8 +85,8 @@ func (f *Fake) UpdateFederation(_ context.Context, at string, p authapi.Federati
 	if err := f.fedLocked(at); err != nil {
 		return nil, err
 	}
-	if !f.Fed.Status.Editable {
-		return nil, apperr.New(http.StatusConflict, "settings_managed", "federation settings come from the config file or env")
+	if !f.Fed.Status.Editable || f.Fed.Managed {
+		return nil, apperr.New(http.StatusConflict, "settings_managed", "federation settings come from the stack config file")
 	}
 	st := &f.Fed.Status
 	set := func(name string) { st.Sources[name] = "database" }
@@ -111,6 +114,29 @@ func (f *Fake) UpdateFederation(_ context.Context, at string, p authapi.Federati
 		st.RemoteVoice = *p.RemoteVoice
 		set("remote_voice")
 	}
+	// null: back to the env value (the fake's env is the defaults).
+	for _, n := range p.Reset {
+		switch n {
+		case "mode":
+			st.Mode = authapi.FederationDirectory
+		case "allow":
+			st.Allow = []string{}
+		case "block":
+			st.Block = []string{}
+		case "directory_url":
+			st.DirectoryURL = "https://directory.boson.chat"
+		case "remote_upload_quota":
+			st.RemoteUploadQuota = ""
+		case "remote_voice":
+			st.RemoteVoice = true
+		default:
+			return nil, apperr.InvalidField(n, "unknown field")
+		}
+		st.Sources[n] = "default"
+	}
+	by := "admin"
+	now := time.Now().UTC()
+	st.UpdatedAt, st.UpdatedBy = &now, &by
 	f.auditLocked(at, EventFederationSettings, map[string]any{})
 	return f.fedStatusLocked(), nil
 }

@@ -359,8 +359,10 @@ var Keys = append([]Key{
 	{Key: KeyFilesS3PublicBaseURL, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{files}, Restart: true, item: httpsURL},
 
 	// Federation (auth docs/federation.md): which other Boson servers' users
-	// may sign in here with their home account, and what they get. Remote
-	// users' upload quota is read by auth (it puts it in their file tokens).
+	// may sign in here with their home account, and what they get. auth
+	// reads them all: it enforces remote_voice on voice and call tokens, and
+	// pushes remote_upload_quota to the files service as each remote user's
+	// quota override at their next sign-in (files doesn't read this key).
 	{Key: KeyFederationMode, Kind: KindEnum, Enum: []string{"off", "allowlist", "directory", "open"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_MODE"},
 	{Key: KeyFederationAllow, Kind: KindList, MaxItems: MaxFederationDomains, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_ALLOW", item: FederationDomain},
 	{Key: KeyFederationBlock, Kind: KindList, MaxItems: MaxFederationDomains, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "FEDERATION_BLOCK", item: FederationDomain},
@@ -382,18 +384,32 @@ const (
 	KeyFederationDirectory   = "auth.federation.directory_url"
 	KeyFederationUploadQuota = "auth.federation.remote_upload_quota"
 	KeyFederationRemoteVoice = "auth.federation.remote_voice"
-	// MaxFederationDomains bounds the allow and block lists.
-	MaxFederationDomains = 500
+	// MaxFederationDomains bounds the allow and block lists (auth's limit).
+	MaxFederationDomains = 1000
 )
 
-// FederationDomain checks a home domain (boson_domain): a DNS name like
-// boson.chat, lowercased.
+// FederationDomain checks a home domain (boson_domain) as auth takes it in
+// the allow and block lists: a DNS name like boson.chat, or *.example.org
+// for it and every subdomain; lowercased.
 func FederationDomain(s string) (string, error) {
-	d, err := Hostname(s)
+	t := strings.TrimSpace(s)
+	base, wild := strings.CutPrefix(t, "*.")
+	d, err := Hostname(base)
 	if err != nil {
-		return "", fmt.Errorf("%q must be a domain like boson.chat (no https://, no path)", strings.TrimSpace(s))
+		return "", fmt.Errorf("%q must be a domain like boson.chat, or *.example.org for it and its subdomains (no https://, no path)", t)
+	}
+	if wild {
+		return "*." + d, nil
 	}
 	return d, nil
+}
+
+// FederationDomainMatches: does entry (a domain or *.domain) cover domain?
+func FederationDomainMatches(entry, domain string) bool {
+	if base, ok := strings.CutPrefix(entry, "*."); ok {
+		return domain == base || strings.HasSuffix(domain, "."+base)
+	}
+	return entry == domain
 }
 
 // Nick registration keys (the api's nick_claim section).

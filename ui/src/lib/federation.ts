@@ -64,6 +64,13 @@ export interface FederationView {
 	issuer?: string;
 	domain?: string;
 	remote_users: number;
+	/** The role new remote users get ("" = none). */
+	remote_role?: string;
+	/** auth's last stored change (database store). */
+	updated_at?: string;
+	updated_by?: string;
+	/** auth reads the stack config file but this panel doesn't have it. */
+	auth_uses_file?: boolean;
 	home?: Home;
 }
 
@@ -72,10 +79,14 @@ export interface RemoteUser {
 	identity: string;
 	handle: string;
 	home_domain: string;
+	home_username?: string;
 	display_name?: string;
 	picture?: string | null;
 	first_seen_at: string;
+	last_login_at?: string | null;
 	last_seen_at?: string | null;
+	/** The local account is disabled (a ban does that). */
+	disabled?: boolean;
 	banned: boolean;
 	banned_at?: string | null;
 	ban_reason?: string;
@@ -141,21 +152,37 @@ export const FIELD_LABELS: Record<Field, string> = {
 
 const domainRe = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
-/** Cleans what someone typed into a home domain ("" when it isn't one). */
+/**
+ * Cleans what someone typed into a home domain, or *.domain for it and its
+ * subdomains ("" when it isn't one).
+ */
 export function cleanDomain(s: string): string {
 	let d = s.trim().toLowerCase();
+	const wild = d.startsWith('*.');
+	if (wild) d = d.slice(2);
 	d = d.replace(/^https?:\/\//, '');
 	d = d.replace(/\/.*$/, '');
 	d = d.replace(/^[^@]*@/, ''); // alice@boson.chat → boson.chat
 	d = d.replace(/\.$/, '');
-	return domainRe.test(d) ? d : '';
+	if (!domainRe.test(d)) return '';
+	return wild ? '*.' + d : d;
+}
+
+/** Does a list entry (domain or *.domain) cover a home domain? */
+export function domainMatches(entry: string, domain: string): boolean {
+	if (entry.startsWith('*.')) {
+		const base = entry.slice(2);
+		return domain === base || domain.endsWith('.' + base);
+	}
+	return entry === domain;
 }
 
 /** Why a typed domain can't be added, or ''. */
 export function domainProblem(s: string, list: string[], other?: { name: string; list: string[] }): string {
 	if (!s.trim()) return '';
 	const d = cleanDomain(s);
-	if (!d) return `“${s.trim()}” isn’t a domain. Type the home server’s domain, like boson.chat.`;
+	if (!d)
+		return `“${s.trim()}” isn’t a domain. Type the home server’s domain, like boson.chat, or *.example.org for it and its subdomains.`;
 	if (list.includes(d)) return `${d} is already listed.`;
 	if (other?.list.includes(d)) return `${d} is on the ${other.name}. Take it off there first.`;
 	return '';
@@ -228,6 +255,7 @@ export function changes(d: Draft, saved: Draft): Partial<FederationSettings> {
 
 /** Where a value comes from, in words. */
 export function sourceText(src: Source | undefined, env: string): string {
+	// Every field has a FEDERATION_* env var in auth.
 	switch (src) {
 		case 'file':
 			return 'Set in config/boson.yaml';

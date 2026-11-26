@@ -127,7 +127,20 @@ const initialRemotes = () => [
 		sessions: 0
 	}
 ];
-let remotes = initialRemotes();
+// The real RemoteUser shape (auth docs/federation.md).
+const shaped = (u) => ({
+	home_username: u.identity.split('@')[0],
+	issuer: `https://auth.${u.home_domain}`,
+	subject: `usr_${u.handle}`,
+	picture: null,
+	email_verified: true,
+	last_login_at: u.last_seen_at,
+	domain_blocked: false,
+	disabled: u.banned,
+	display_name: u.identity.split('@')[0],
+	...u
+});
+let remotes = initialRemotes().map(shaped);
 let homeState = 'published';
 const fedSources = () =>
 	Object.fromEntries(
@@ -467,14 +480,23 @@ createServer(async (req, res) => {
 				editable: false,
 				issuer: 'https://auth.example.org',
 				domain: 'example.org',
-				remote_users: remotes.length
+				remote_users: remotes.length,
+				remote_role: 'Remote',
+				updated_at: null,
+				updated_by: null
+			});
+		// The panel has the config file, so auth refuses PATCH like the real one.
+		if (req.method === 'PATCH' && p === '/v1/admin/federation')
+			return send(res, 409, {
+				error: 'settings_managed',
+				message: 'federation settings come from the stack config file'
 			});
 		if (req.method === 'GET' && p === '/v1/admin/federation/users') {
 			const q = (url.searchParams.get('q') ?? '').toLowerCase();
 			const list = remotes
 				.filter((u) => !q || (u.identity + ' ' + u.handle).includes(q))
 				.sort((a, b) => (b.last_seen_at ?? '').localeCompare(a.last_seen_at ?? ''));
-			return send(res, 200, { users: list, total: list.length });
+			return send(res, 200, { users: list, next_cursor: null, total: list.length });
 		}
 		const ban = p.match(/^\/v1\/admin\/federation\/users\/([^/]+)\/ban$/);
 		if (ban) {
@@ -482,15 +504,20 @@ createServer(async (req, res) => {
 			if (!u) return send(res, 404, { error: 'not_found', message: 'no such remote user' });
 			if (req.method === 'POST') {
 				const b = await json(req).catch(() => ({}));
+				if ((b.reason ?? '').length > 500)
+					return send(res, 400, { error: 'invalid_request', message: 'reason too long', field: 'reason' });
 				Object.assign(u, {
 					banned: true,
+					disabled: true,
 					banned_at: new Date().toISOString(),
 					ban_reason: b.reason ?? '',
 					sessions: 0
 				});
 				audit.push({ event: 'federation_identity_banned', identity: u.identity, reason: b.reason ?? '' });
 			} else if (req.method === 'DELETE') {
-				Object.assign(u, { banned: false, banned_at: null, ban_reason: '' });
+				Object.assign(u, { banned: false, disabled: false });
+				delete u.banned_at;
+				delete u.ban_reason;
 				audit.push({ event: 'federation_identity_unbanned', identity: u.identity });
 			}
 			return send(res, 200, u);
@@ -545,7 +572,7 @@ createServer(async (req, res) => {
 		roleChannels = b?.role_channels === false ? {} : structuredClone(initialRoleChannels);
 		channelAccess = b?.role_channels === false ? [] : structuredClone(initialAccess);
 		audit.length = 0;
-		remotes = initialRemotes();
+		remotes = initialRemotes().map(shaped);
 		homeState = 'published';
 		return send(res, 200, {});
 	}

@@ -2,6 +2,7 @@ package authapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -58,9 +59,16 @@ type FederationStatus struct {
 	Domain string `json:"domain,omitempty"`
 	// RemoteUsers is how many federated accounts exist here.
 	RemoteUsers int `json:"remote_users"`
+	// RemoteRole is the role new federated accounts get
+	// (FEDERATION_REMOTE_ROLE; "" = none).
+	RemoteRole string `json:"remote_role"`
+	// UpdatedAt / UpdatedBy: the last change through PATCH (database store).
+	UpdatedAt *time.Time `json:"updated_at"`
+	UpdatedBy *string    `json:"updated_by"`
 }
 
-// FederationPatch is PATCH /v1/admin/federation: only the fields set change.
+// FederationPatch is PATCH /v1/admin/federation: only the fields set
+// change; Reset fields are sent as null (back to auth's env value).
 type FederationPatch struct {
 	Mode              *string   `json:"mode,omitempty"`
 	Allow             *[]string `json:"allow,omitempty"`
@@ -68,12 +76,33 @@ type FederationPatch struct {
 	DirectoryURL      *string   `json:"directory_url,omitempty"`
 	RemoteUploadQuota *string   `json:"remote_upload_quota,omitempty"`
 	RemoteVoice       *bool     `json:"remote_voice,omitempty"`
+	// Reset names fields to send as null.
+	Reset []string `json:"-"`
 }
 
 // Empty: nothing to change.
 func (p FederationPatch) Empty() bool {
 	return p.Mode == nil && p.Allow == nil && p.Block == nil && p.DirectoryURL == nil &&
-		p.RemoteUploadQuota == nil && p.RemoteVoice == nil
+		p.RemoteUploadQuota == nil && p.RemoteVoice == nil && len(p.Reset) == 0
+}
+
+// MarshalJSON writes the set fields plus a null per Reset field.
+func (p FederationPatch) MarshalJSON() ([]byte, error) {
+	type plain FederationPatch
+	b, err := json.Marshal(plain(p))
+	if err != nil || len(p.Reset) == 0 {
+		return b, err
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	for _, f := range p.Reset {
+		if _, set := m[f]; !set {
+			m[f] = nil
+		}
+	}
+	return json.Marshal(m)
 }
 
 // RemoteUser is a federated account: someone from another server who
@@ -91,13 +120,18 @@ type RemoteUser struct {
 	DisplayName string     `json:"display_name,omitempty"`
 	Picture     *string    `json:"picture,omitempty"`
 	FirstSeenAt time.Time  `json:"first_seen_at"`
-	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
-	Banned      bool       `json:"banned"`
-	BannedAt    *time.Time `json:"banned_at,omitempty"`
-	BanReason   string     `json:"ban_reason,omitempty"`
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	// LastSeenAt is the later of the last sign-in and the last activity.
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
+	Banned     bool       `json:"banned"`
+	BannedAt   *time.Time `json:"banned_at,omitempty"`
+	BanReason  string     `json:"ban_reason,omitempty"`
 	// DomainBlocked: their home domain is on the block list.
 	DomainBlocked bool `json:"domain_blocked,omitempty"`
-	Sessions      int  `json:"sessions"`
+	// Disabled: the local account is disabled (a ban does that, so IRC
+	// drops them; an admin can too).
+	Disabled bool `json:"disabled,omitempty"`
+	Sessions int  `json:"sessions"`
 }
 
 // RemoteUserQuery filters GET /v1/admin/federation/users.

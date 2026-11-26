@@ -142,13 +142,18 @@ var Catalog = []Component{
 			Who: "Web client users are disconnected from IRC briefly and reconnect automatically."},
 	},
 	{
-		// The bridge in the add-on install mode: only shown when the stack
-		// runs an evrd service. Its links holder keeps the IRC connections
-		// open across evrd restarts and is never restarted by an update.
+		// The bridge in the add-on install mode (the stack's bridge
+		// profile): only shown when the stack runs an evrd service. Both
+		// evrd and its links holder run ghcr.io/4evrd/evrd, set separately
+		// (EVRD_IMAGE / EVRD_LINKS_IMAGE): the links holder keeps every IRC
+		// connection open across evrd restarts, so an update only moves
+		// EVRD_IMAGE and never recreates evrd-links. bridge-sync is built in
+		// the stack repo and pinned in compose.yaml: it comes with a stack
+		// update.
 		ID: "evrd", Name: "evrd", About: "IRC bridge (add-on)",
-		Repo: "4evrd/evrd", Image: "harbor.floret.dev/boson/evrd", EnvVar: "EVRD_IMAGE",
+		Repo: "4evrd/evrd", Image: "ghcr.io/4evrd/evrd", EnvVar: "EVRD_IMAGE",
 		Services: []string{"evrd"}, NeverRestart: []string{"evrd-links"}, Mode: ModeImage, AddOn: true,
-		Volumes: []string{"evrd_data"},
+		Volumes: []string{"bridge_data"},
 		Impact: Impact{Restart: true, Downtime: 5 * time.Second,
 			Who: "The bridge restarts; its IRC connections survive because the links holder (evrd-links) is never restarted."},
 	},

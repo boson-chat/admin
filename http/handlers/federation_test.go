@@ -98,9 +98,9 @@ func TestFederationSettingsInConfigFile(t *testing.T) {
 		t.Fatalf("home: %+v", v.Home)
 	}
 
-	body := map[string]any{"mode": "allowlist", "allow": []string{"Boson.Chat", "chat.example.net"}, "remote_upload_quota": "1 gb", "remote_voice": false}
+	body := map[string]any{"mode": "allowlist", "allow": []string{"Boson.Chat", "*.Example.NET"}, "remote_upload_quota": "1 gb", "remote_voice": false}
 	v = fedView(t, h.do("PATCH", "/api/federation", body, withCookie(c), withHeader(CSRFHeader, csrf)))
-	if v.Settings.Mode != "allowlist" || !slices.Equal(v.Settings.Allow, []string{"boson.chat", "chat.example.net"}) ||
+	if v.Settings.Mode != "allowlist" || !slices.Equal(v.Settings.Allow, []string{"boson.chat", "*.example.net"}) ||
 		v.Settings.RemoteUploadQuota != "1GB" || v.Settings.RemoteVoice || v.Sources["mode"] != "file" {
 		t.Fatalf("after save: %+v %v", v.Settings, v.Sources)
 	}
@@ -118,6 +118,7 @@ func TestFederationSettingsInConfigFile(t *testing.T) {
 	// Bad input never reaches the file.
 	for _, bad := range []map[string]any{
 		{"allow": []string{"https://boson.chat/"}},
+		{"allow": []string{"*.*.example.org"}},
 		{"allow": []string{}},             // allowlist mode with nobody on it
 		{"block": []string{"boson.chat"}}, // on both lists
 		{"directory_url": "http://directory.example"},
@@ -157,8 +158,16 @@ func TestFederationSettingsInAuth(t *testing.T) {
 	if !slices.ContainsFunc(h.fake.Audit, func(e authapi.AuditEntry) bool { return e.Event == authapitest.EventFederationSettings }) {
 		t.Fatal("no audit entry")
 	}
-	if w := h.do("PATCH", "/api/federation", map[string]any{"unset": []string{"mode"}}, withCookie(c), withHeader(CSRFHeader, csrf)); w.Code != 400 {
-		t.Fatalf("reset without a file: %d %s", w.Code, w.Body)
+	// Reset goes to auth as null.
+	v = fedView(t, h.do("PATCH", "/api/federation", map[string]any{"unset": []string{"mode"}}, withCookie(c), withHeader(CSRFHeader, csrf)))
+	if v.Settings.Mode != "directory" || v.Sources["mode"] != "default" || v.UpdatedBy != "admin" || v.RemoteRole != "Remote" {
+		t.Fatalf("after reset: %+v %v", v.Settings, v.Sources)
+	}
+	// auth switched to the config file meanwhile: a clear 409.
+	h.fake.Fed.Managed = true
+	w := h.do("PATCH", "/api/federation", map[string]any{"mode": "open"}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != http.StatusConflict || errCode(t, w.Body.String()) != "settings_managed" || !strings.Contains(w.Body.String(), "BOSON_CONFIG") {
+		t.Fatalf("managed: %d %s", w.Code, w.Body)
 	}
 }
 
@@ -254,8 +263,11 @@ func TestFederationNeedsSettingsManage(t *testing.T) {
 	h.fake.SetRoles("usr_ops", "rol_ops")
 	c, csrf := h.loginAs("ops", "ops password")
 	opts := []reqOpt{withCookie(c), withHeader(CSRFHeader, csrf)}
+	// Reading is fine (admin.panel), not saving.
+	if v := fedView(t, h.do("GET", "/api/federation", nil, opts...)); v.Editable {
+		t.Fatal("editable without settings.manage")
+	}
 	for _, w := range []*httptest.ResponseRecorder{
-		h.do("GET", "/api/federation", nil, opts...),
 		h.do("PATCH", "/api/federation", map[string]any{"mode": "open"}, opts...),
 		h.do("POST", "/api/federation/blocked-domains", map[string]any{"domain": "boson.chat"}, opts...),
 		h.do("PATCH", "/api/config", map[string]any{"set": map[string]any{stackconfig.KeyFederationMode: "open"}}, opts...),
