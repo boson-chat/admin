@@ -25,6 +25,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
+	"github.com/boson-chat/admin/internal/services/updates"
 	"github.com/boson-chat/admin/internal/session"
 )
 
@@ -65,6 +66,8 @@ type Features struct {
 	// Files: BOSON_FILES_INTERNAL_URL is set (uploads status, moderation,
 	// users' usage).
 	Files bool `json:"files"`
+	// Updates: the Updates page (release checks) is on.
+	Updates bool `json:"updates"`
 }
 
 // Handlers is the DI container for the HTTP layer.
@@ -88,7 +91,9 @@ type Handlers struct {
 	// HostMetrics: the Metrics page (never nil after Register; unconfigured
 	// without METRICS_URL).
 	HostMetrics hostmetrics.ServiceImpl
-	Sessions    *session.Codec
+	// Updates: release checks and applying them (nil = off).
+	Updates  updates.ServiceImpl
+	Sessions *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features

@@ -52,8 +52,10 @@ func (c Container) Name() string {
 
 // Inspect is the part of GET /containers/{id}/json the panel uses.
 type Inspect struct {
-	ID           string `json:"Id"`
-	Name         string `json:"Name"`
+	ID   string `json:"Id"`
+	Name string `json:"Name"`
+	// Image is the image ID (sha256:…) the container was created from.
+	Image        string `json:"Image"`
 	RestartCount int    `json:"RestartCount"`
 	State        struct {
 		Status     string    `json:"Status"`
@@ -368,4 +370,185 @@ func IsUnavailable(err error) bool {
 	}
 	e, ok := apperr.As(err)
 	return ok && (e.Code == "docker_unavailable" || e.Code == "docker_forbidden")
+}
+
+// Helper jobs (updates): a short-lived container that runs one shell script
+// with the Docker socket and the stack directory mounted. These calls need a
+// wider allowlist (POST /images/create, POST /containers/create, DELETE
+// /containers/{id}), which the stack only grants on a separate proxy (its
+// updates profile).
+
+// JobSpec is the container a helper job runs in.
+type JobSpec struct {
+	Name   string
+	Image  string
+	Cmd    []string
+	Env    []string
+	Labels map[string]string
+	// Binds are host:container[:mode] mounts.
+	Binds      []string
+	WorkingDir string
+	// NetworkMode: "none" (the default) keeps the helper off every network;
+	// it only speaks to the Docker daemon through the mounted socket.
+	NetworkMode string
+}
+
+// JobsClientImpl starts and inspects helper containers.
+type JobsClientImpl interface {
+	DockerClientImpl
+	// Pull fetches an image (POST /images/create), reading the progress stream to the end.
+	Pull(ctx context.Context, image string) error
+	// Create creates a container and returns its ID.
+	Create(ctx context.Context, spec JobSpec) (string, error)
+	// Remove deletes a container (force: even if it runs).
+	Remove(ctx context.Context, id string, force bool) error
+	// ListLabel lists containers (all states) with a label (key or key=value).
+	ListLabel(ctx context.Context, label string) ([]Container, error)
+}
+
+// NewJobsClient talks to a proxy that allows helper jobs.
+func NewJobsClient(baseURL string, timeout time.Duration, observe Observer) JobsClientImpl {
+	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: timeout}, Observe: observe, MaxLogBytes: 16 << 20}
+}
+
+func (c *Client) send(ctx context.Context, op, method, path string, body any, limit int64) ([]byte, error) {
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rd = bytes.NewReader(b)
+	}
+	start := time.Now()
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rd)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.HTTP.Do(req)
+	status := 0
+	defer func() {
+		if c.Observe != nil {
+			c.Observe(op, status, err, time.Since(start))
+		}
+	}()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer resp.Body.Close()
+	status = resp.StatusCode
+	out, rerr := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if rerr != nil {
+		err = fmt.Errorf("%w: reading response: %v", ErrUnavailable, rerr)
+		return nil, err
+	}
+	switch {
+	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusMethodNotAllowed:
+		err = apperr.New(http.StatusBadGateway, "docker_forbidden",
+			"the Docker socket proxy refused "+method+" "+strings.SplitN(path, "?", 2)[0]+"; check its allowlist (the stack's updates profile)")
+		return nil, err
+	case resp.StatusCode == http.StatusNotFound:
+		err = apperr.New(http.StatusNotFound, "not_found", "Docker: "+dockerMessage(out, "not found"))
+		return nil, err
+	case resp.StatusCode >= 400:
+		err = apperr.New(http.StatusBadGateway, "docker_error", "Docker: "+dockerMessage(out, http.StatusText(resp.StatusCode)))
+		return nil, err
+	}
+	return out, nil
+}
+
+func dockerMessage(body []byte, def string) string {
+	var e struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &e)
+	if e.Message == "" {
+		return def
+	}
+	return e.Message
+}
+
+func (c *Client) Pull(ctx context.Context, image string) error {
+	ref, tag := image, ""
+	// repo[:tag][@digest]: split the tag off the last path segment only.
+	if i := strings.LastIndex(ref, "/"); !strings.Contains(ref[i+1:], "@") {
+		if j := strings.LastIndex(ref[i+1:], ":"); j >= 0 {
+			ref, tag = image[:i+1+j], image[i+2+j:]
+		}
+	}
+	q := url.Values{"fromImage": {ref}}
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	body, err := c.send(ctx, "pull", http.MethodPost, "/images/create?"+q.Encode(), nil, 32<<20)
+	if err != nil {
+		return err
+	}
+	// The stream is JSON lines; an error is a line with "error".
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		var l struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(sc.Bytes(), &l) == nil && l.Error != "" {
+			return apperr.New(http.StatusBadGateway, "docker_error", "Docker: pulling "+image+": "+l.Error)
+		}
+	}
+	return nil
+}
+
+func (c *Client) Create(ctx context.Context, s JobSpec) (string, error) {
+	nm := s.NetworkMode
+	if nm == "" {
+		nm = "none"
+	}
+	body := map[string]any{
+		"Image": s.Image, "Cmd": s.Cmd, "Env": s.Env, "Labels": s.Labels, "WorkingDir": s.WorkingDir,
+		"Tty": false, "AttachStdout": false, "AttachStderr": false,
+		"HostConfig": map[string]any{"Binds": s.Binds, "NetworkMode": nm, "AutoRemove": false,
+			"LogConfig": map[string]any{"Type": "json-file", "Config": map[string]string{"max-size": "10m"}}},
+	}
+	out, err := c.send(ctx, "create", http.MethodPost, "/containers/create?name="+url.QueryEscape(s.Name), body, 64<<10)
+	if err != nil {
+		return "", err
+	}
+	var r struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(out, &r); err != nil || r.ID == "" {
+		return "", fmt.Errorf("%w: decoding create: %v", ErrUnavailable, err)
+	}
+	return r.ID, nil
+}
+
+func (c *Client) Remove(ctx context.Context, id string, force bool) error {
+	q := "?v=1"
+	if force {
+		q += "&force=1"
+	}
+	_, err := c.send(ctx, "remove", http.MethodDelete, idPath(id)+q, nil, 64<<10)
+	return err
+}
+
+func (c *Client) ListLabel(ctx context.Context, label string) ([]Container, error) {
+	f, _ := json.Marshal(map[string][]string{"label": {label}})
+	var out []Container
+	if err := c.getJSON(ctx, "list", "/containers/json?all=1&filters="+url.QueryEscape(string(f)), &out); err != nil {
+		return nil, err
+	}
+	k, v, hasV := strings.Cut(label, "=")
+	kept := out[:0]
+	for _, ct := range out {
+		if got, ok := ct.Labels[k]; ok && (!hasV || got == v) {
+			kept = append(kept, ct)
+		}
+	}
+	return kept, nil
 }

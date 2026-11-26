@@ -24,6 +24,53 @@ type Config struct {
 	BosonConfig     BosonConfig
 	TelemetryConfig TelemetryConfig
 	StackConfig     StackConfig
+	UpdatesConfig   UpdatesConfig
+}
+
+// UpdatesConfig is the Updates page: release checks against GitHub and the
+// image registry, and (with UPDATES_DOCKER_PROXY_URL) applying them.
+type UpdatesConfig struct {
+	// Check for updates at all (GitHub + registry requests from the panel).
+	Enabled bool `default:"true" env:"UPDATES_ENABLED"`
+	// How often to check (plus the Check now button).
+	Interval time.Duration `default:"6h" env:"UPDATES_CHECK_INTERVAL"`
+	// Optional GitHub token (no scopes needed): 5,000 API requests an hour
+	// instead of 60 per IP.
+	GitHubToken string `env:"UPDATES_GITHUB_TOKEN"`
+	GitHubURL   string `default:"https://api.github.com" env:"UPDATES_GITHUB_API_URL"`
+	// Send registry checks here instead of each image's registry (a mirror;
+	// tests). Empty = harbor.floret.dev etc. directly.
+	RegistryURL string `env:"UPDATES_REGISTRY_URL"`
+	// A Docker socket proxy that also allows helper jobs (POST
+	// /containers/create, /images/create, DELETE /containers/{id}): the
+	// stack's updates profile. Empty = updates are shown but not applied.
+	// This grants root-equivalent access to the host; it is opt-in.
+	DockerProxyURL string `env:"UPDATES_DOCKER_PROXY_URL"`
+	// The helper image (docker CLI with the compose plugin) and the image
+	// used for tar/du on volumes.
+	HelperImage string `default:"docker:29.9.3-cli" env:"UPDATES_HELPER_IMAGE"`
+	UtilImage   string `default:"busybox:1.37.0" env:"UPDATES_UTIL_IMAGE"`
+	// Host directory for backups (absolute). Empty = backups/updates in the
+	// stack directory.
+	BackupDir string `env:"UPDATES_BACKUP_DIR"`
+	// How many update backups to keep.
+	BackupKeep int `default:"5" env:"UPDATES_BACKUP_KEEP"`
+	// Free space (MiB) that must remain after the backup.
+	MinFreeMB int64 `default:"1024" env:"UPDATES_MIN_FREE_MB"`
+	// Where the update journal is kept (a volume): runs survive the
+	// panel's own restart, which updating the panel itself needs.
+	StateDir string `env:"UPDATES_STATE_DIR"`
+	// The stack's version, when the stack passes it (STACK_VERSION).
+	StackVersion string `env:"STACK_VERSION"`
+	// How long services get to become healthy after an update.
+	HealthTimeout time.Duration `default:"3m" env:"UPDATES_HEALTH_TIMEOUT"`
+	// id=url overrides for the post-update checks (api, web, voice, files…).
+	CheckTargets string `env:"UPDATES_CHECK_TARGETS"`
+}
+
+// Checks parses UPDATES_CHECK_TARGETS.
+func (c UpdatesConfig) Checks() ([]Target, error) {
+	return parseTargets("UPDATES_CHECK_TARGETS", c.CheckTargets)
 }
 
 // StackConfig is the stack's shared config file (config/boson.yaml).
@@ -221,6 +268,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	d := &c.DockerConfig
 	d.ProxyURL = trim(d.ProxyURL)
+	up := &c.UpdatesConfig
+	up.DockerProxyURL, up.GitHubURL, up.RegistryURL = trim(up.DockerProxyURL), trim(up.GitHubURL), trim(up.RegistryURL)
+	up.GitHubToken = strings.TrimSpace(up.GitHubToken)
+	if up.BackupKeep < 1 {
+		up.BackupKeep = 1
+	}
 	b := &c.BosonConfig
 	b.APIURL, b.CDNURL, b.DirectoryURL = trim(b.APIURL), trim(b.CDNURL), trim(b.DirectoryURL)
 	b.APIInternalURL, b.APIInternalToken = trim(b.APIInternalURL), strings.TrimSpace(b.APIInternalToken)
@@ -300,12 +353,17 @@ func (c Config) Validate() error {
 	if _, err := c.StackConfig.Statuses(); err != nil {
 		return err
 	}
+	if _, err := c.UpdatesConfig.Checks(); err != nil {
+		return err
+	}
 	for name, v := range map[string]string{"AUTH_URL": c.UpstreamConfig.AuthURL, "AUTH_INTERNAL_URL": c.UpstreamConfig.AuthInternalURL,
 		"METRICS_URL": c.UpstreamConfig.MetricsURL, "GRAFANA_URL": c.UpstreamConfig.GrafanaURL,
 		"DOCKER_PROXY_URL": c.DockerConfig.ProxyURL, "BOSON_API_URL": c.BosonConfig.APIURL,
 		"BOSON_CDN_URL": c.BosonConfig.CDNURL, "DIRECTORY_API_URL": c.BosonConfig.DirectoryURL,
 		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL, "BOSON_API_INTERNAL_URL": c.BosonConfig.APIInternalURL,
-		"BOSON_FILES_INTERNAL_URL": c.BosonConfig.FilesInternalURL} {
+		"BOSON_FILES_INTERNAL_URL": c.BosonConfig.FilesInternalURL,
+		"UPDATES_DOCKER_PROXY_URL": c.UpdatesConfig.DockerProxyURL, "UPDATES_GITHUB_API_URL": c.UpdatesConfig.GitHubURL,
+		"UPDATES_REGISTRY_URL": c.UpdatesConfig.RegistryURL} {
 		if v == "" {
 			continue
 		}
@@ -318,6 +376,12 @@ func (c Config) Validate() error {
 	}
 	if strings.HasPrefix(c.DockerConfig.ProxyURL, "unix:") || strings.Contains(c.DockerConfig.ProxyURL, "docker.sock") {
 		return errors.New("DOCKER_PROXY_URL must be a socket proxy's http:// URL, never the Docker socket")
+	}
+	if strings.HasPrefix(c.UpdatesConfig.DockerProxyURL, "unix:") || strings.Contains(c.UpdatesConfig.DockerProxyURL, "docker.sock") {
+		return errors.New("UPDATES_DOCKER_PROXY_URL must be a socket proxy's http:// URL, never the Docker socket")
+	}
+	if d := c.UpdatesConfig.BackupDir; d != "" && !strings.HasPrefix(d, "/") {
+		return errors.New("UPDATES_BACKUP_DIR must be an absolute path on the host")
 	}
 	if c.BosonConfig.DirectoryRegistration && c.BosonConfig.DirectoryURL == "" {
 		return errors.New("DIRECTORY_REGISTRATION needs DIRECTORY_API_URL")

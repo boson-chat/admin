@@ -58,6 +58,10 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   says how to turn it on (the stack's `metrics` profile) and still shows the
   service health. The browser never sends PromQL: the BFF runs a fixed set
   of queries (cached 10 s).
+- **Updates:** newer releases of every part of the install with their full
+  changelogs (every version in between), who each update affects, breaking
+  changes, and applying them with a backup, checks and rollback. See
+  "Updates" below.
 - **Network settings:** registration (open, invite only, closed), required
   email verification, and who may create text channels and voice rooms. With
   auth ≥ 1.7.0 also channel registration: register new channels to their
@@ -319,6 +323,19 @@ stack's `.env` and recreate the service.
 | `DOCKER_PROJECT` | `boson` | compose project whose containers are shown and controlled; nothing outside it is touched |
 | `DOCKER_PROTECTED_SERVICES` | `admin,traefik` | compose services whose name must be typed to stop or restart them (the panel's own container always is) |
 | `DOCKER_TIMEOUT` | `20s` | per Docker call (stats take about a second) |
+| `UPDATES_ENABLED` | `true` | the Updates page (GitHub and registry requests) |
+| `UPDATES_CHECK_INTERVAL` | `6h` | how often releases are checked |
+| `UPDATES_GITHUB_TOKEN` | – | optional, no scopes: 5,000 GitHub API requests an hour instead of 60 |
+| `UPDATES_GITHUB_API_URL`, `UPDATES_REGISTRY_URL` | api.github.com, – | other endpoints (a mirror; tests) |
+| `UPDATES_DOCKER_PROXY_URL` | – | the socket proxy that allows helper jobs (stack `updates` profile). Empty = updates shown, not applied. Root-equivalent: opt-in |
+| `UPDATES_HELPER_IMAGE`, `UPDATES_UTIL_IMAGE` | `docker:29.9.3-cli`, `busybox:1.37.0` | the helper (docker CLI + compose) and the tar/du image |
+| `UPDATES_BACKUP_DIR` | `<stack>/backups/updates` | host path for update backups |
+| `UPDATES_BACKUP_KEEP` | `5` | update backups kept |
+| `UPDATES_MIN_FREE_MB` | `1024` | free space that must remain after the backup |
+| `UPDATES_STATE_DIR` | – | the update journal (a volume); needed for the panel to update itself |
+| `UPDATES_HEALTH_TIMEOUT` | `3m` | how long updated services get to become healthy |
+| `UPDATES_CHECK_TARGETS` | – | `id=url` overrides for the post-update checks |
+| `STACK_VERSION` | – | the stack's version, when the stack passes one |
 | `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
 | `BOSON_API_INTERNAL_URL` | – | the api's internal listener (`http://api:3001`): the Nick registration page's status and Test connection. Empty = the page says the api isn't reachable (settings still save to the file) |
 | `BOSON_API_INTERNAL_TOKEN` | – | the api's `INTERNAL_API_TOKEN`, sent as `X-Internal-Token` |
@@ -530,6 +547,119 @@ Checked against the real proxy: `DOCKER_PROXY_TEST_URL=http://127.0.0.1:2375
 DOCKER_PROXY_TEST_PROJECT=… DOCKER_PROXY_TEST_CONTAINER=… go test -run
 TestAgainstProxy ./internal/clients/dockerapi/` (a container that writes to
 stdout and stderr).
+
+## Updates
+
+The **Updates** page (nav badge with the count; a "N updates available"
+button and a `→ version` chip per service on the Stack page) says when any
+part of the install has a newer release, shows every changelog between the
+installed and the newest version, who an update affects, and applies it.
+
+**What's installed** comes from the compose project's containers (through
+`DOCKER_PROXY_URL`): each component's image tag. **What's released** comes
+from GitHub Releases (semantic-release changelogs), checked every 6 h
+(`UPDATES_CHECK_INTERVAL`) and on **Check now**, with ETag caching (a 304 is
+free), the last answer kept when GitHub is down or rate-limits (the page
+says until when; `UPDATES_GITHUB_TOKEN` raises 60/h to 5,000/h). A release
+is only offered once its image is in the registry (anonymous `HEAD
+/v2/…/manifests/<tag>` on harbor.floret.dev); newer ones are listed as "not
+published yet".
+
+| Component | Releases | Image (`.env` variable) | Applied by |
+|---|---|---|---|
+| Stack | boson-chat/stack | – | git pull on the server |
+| Ergo (+ RoleServ) | ergochat/ergo | `stack-ergo` (pinned in compose.yaml) | a stack update |
+| Auth | boson-chat/auth | `auth` (`AUTH_IMAGE`) | the panel |
+| API | boson-chat/backend | `backend` (`API_IMAGE`; runs `api-migrate` first) | the panel |
+| Web client | boson-chat/boson | `web` (`WEB_IMAGE`) | the panel |
+| Voice | boson-chat/quicvoice | `quicvoice` (`QUICVOICE_IMAGE`) | the panel |
+| Video | boson-chat/quicvideo | `quicvideo` (`QUICVIDEO_IMAGE`) | the panel |
+| Files | boson-chat/files | `files` (`FILES_IMAGE`) | the panel |
+| Directory | boson-chat/directory | `directory` (`DIRECTORY_IMAGE`) | the panel |
+| Web IRC gateway | boson-chat/webircgateway | `stack-webircgateway` (compose.yaml) | a stack update |
+| evrd (add-on, shown when an `evrd` service runs) | 4evrd/evrd | `evrd` (`EVRD_IMAGE`); `evrd-links` is never touched | the panel |
+| Admin panel | boson-chat/admin | `admin` (`ADMIN_IMAGE`) | the panel, last |
+
+**Who is affected** is one table in code
+(`internal/services/updates/catalog.go`, `Impact` per component) that the
+cards, the confirm box's summary ("This update will disconnect all chat users
+for ~10 seconds…") and **Without disconnecting users** (leaves out Ergo,
+voice, video, files and the web gateway) all read:
+
+| Component | Restart | Who notices |
+|---|---|---|
+| Ergo | yes, ~10 s | everyone on IRC is disconnected; clients reconnect automatically |
+| Auth | yes, ~5 s | sign-ins and token refresh pause; connected people stay connected |
+| API | yes, ~5 s | profiles, avatars, nick claims pause; chat unaffected |
+| Web client | yes, ~2 s | users get the new version on their next load; nobody disconnected |
+| Voice / Video | yes, ~5 s | ongoing calls drop |
+| Files | yes, ~5 s | uploads in progress fail |
+| Directory | yes, ~5 s | directory site/API unavailable briefly |
+| Web IRC gateway | yes, ~5 s | web users reconnect to IRC |
+| evrd | yes, ~5 s | IRC links survive (the links holder is never restarted) |
+| Admin panel | yes, ~5 s | this panel reloads |
+
+**Breaking releases** (a new major version, `BREAKING CHANGE`, or a note
+asking for manual steps such as "before upgrading, run …") are marked on the
+card with their notes, and the confirm button stays off until the admin ticks
+that they've read them.
+
+**Applying** (needs `services.manage` and `settings.manage`; every run is
+logged with the admin's name and listed under History):
+
+1. **Preflight:** the compose project parses; the backup fits on the disk
+   with `UPDATES_MIN_FREE_MB` to spare, else nothing happens.
+2. **Backup** to `UPDATES_BACKUP_DIR/<run>` (default `backups/updates` in the
+   stack directory; the newest `UPDATES_BACKUP_KEEP` are kept): `.env`,
+   `config/`, compose files, every service's image **digest**, `pg_dump -Fc`
+   of every stack database plus globals, the data volumes (Ergo's `ergo_db`,
+   `roleserv_data`, `voice_data`, `directory_media`, evrd's data), MinIO's
+   metadata (not the objects), and a fingerprint of every migrations table.
+   A failed backup stops the update with nothing changed. The page shows its
+   size, location and files.
+3. **Pull** the new images (still nothing changed if that fails).
+4. **Set** the `*_IMAGE` lines in `.env` (rewritten in place, other lines kept).
+5. **Recreate** only those services, `up -d --no-deps` (one-off migration
+   services like `api-migrate` first).
+6. **Health:** each container running (and healthy, with a healthcheck).
+7. **Checks:** IRC connects over TLS and registers; auth issues a token (a
+   voice token with the admin's own access token, else its signing keys);
+   the api, voice, video, files, directory and gateway answer; the web
+   client's page and config load; each version is the target. Whether a
+   database migration ran is recorded.
+8. **The panel itself** goes last: a detached helper recreates `admin` and
+   waits for it to stay up; the new panel picks the run up from its journal
+   (`UPDATES_STATE_DIR`, a volume), checks again and the page reloads into it.
+   If the new panel doesn't stay up, the helper puts the previous digest back.
+
+**Rollback** (offered after a failure, and after a success): `.env` and
+`config/` from the backup, each component pinned to the exact previous
+`repo:tag@sha256:…`, and when the update migrated a database (or the admin
+asks) that database and the components' volumes restored from the backup
+with their services stopped; then the same health and checks run again.
+
+Host work runs in a short-lived `docker:cli` helper container (labelled
+`chat.boson.updates`, removed after each step) that the panel creates through
+a **second** socket proxy, the stack's `updates` profile, which also allows
+`POST /containers/create`, `POST /images/create` and `DELETE
+/containers/{id}`. The helper mounts the Docker socket and the stack
+directory, so **turning this on gives the panel root-equivalent access to the
+host**; without it, updates are shown but not applied. The stack directory,
+compose files and `.env` are read from compose's labels on the panel's own
+container.
+
+Tests: `go test ./internal/services/updates/` (versions, changelog ranges,
+breaking detection, the impact table and summary, and the whole flow against
+a fake GitHub, registry and Docker API: update → changelog → apply → health →
+done; failure after a migration → rollback with the database restored;
+self-update hand-off and fall-back; disk full; rate limit).
+`UPDATES_DOCKER_TEST=1 go test -run TestScriptsAgainstDocker
+./internal/services/updates/` runs the real helper scripts on Docker through
+`wollomatic/socket-proxy` with the stack's allowlist (Postgres with a
+migrations table, a volume, update → migrate → fail → rollback restores the
+database, the volume and the digest; the self-update helper and its
+fall-back). Browser: `./scripts/e2e-updates.sh` (fake host in
+`dev/fakestack`).
 
 ## Directory
 
@@ -786,6 +916,9 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `POST /api/users/{id}/password-reset`, `/verification` | 204 |
 | `GET /api/users/{id}/profile` | always 200: `{configured, profile?, servers?, unsupported?, error?}` |
 | `GET /api/services`, `GET /api/services/{name}` | containers of `DOCKER_PROJECT` |
+| `GET /api/updates`, `POST /api/updates/check` | `{checked_at, available, components[{id, installed, latest, releases[], breaking, impact, applyable}], run?, history[], apply, rate_limit?}` (`services.manage`) |
+| `POST /api/updates/plan` `{mode: all\|selected\|quiet, components}` | `{items, skipped, summary, breaking, impacts}` |
+| `POST /api/updates/apply` `{mode, components, acknowledge_breaking}`, `POST /api/updates/rollback` `{run_id, restore_data?}` | 202 with the run (also `settings.manage`); 409 while one runs, 428 for an unacknowledged breaking release |
 | `POST /api/services/{name}/{start\|stop\|restart}` `{confirm}` | 428 `confirmation_required` for a protected service without its name; 202 for the panel itself |
 | `GET /api/services/{name}/logs?tail=&since=&download=1` | `{lines, last_at}` or a text/plain attachment |
 | `GET /api/permissions` | `{permissions[{id, group, label, description}], source}`; `source: "panel"` (the panel's own list) on auth < 1.5.0 |
@@ -830,6 +963,8 @@ internal/services/admin        sign-in, token refresh (single-flight), admin ope
 internal/services/overview     health, versions, certificates, PromQL stats
 internal/services/containers   services control (Docker through the socket proxy)
 internal/services/directory    boson.chat directory status and registration
+internal/services/updates      release checks, impact table, backup/apply/rollback through helper jobs
+internal/fakestack             fake GitHub + registry + Docker API + services (Updates tests; dev/fakestack serves it)
 internal/clients/{authapi,health,tlsprobe,ircprobe,promql,dockerapi,bosonapi}   upstream clients behind interfaces
 internal/session               sealed session cookie
 metrics/                       OpenTelemetry instruments + Prometheus exporter

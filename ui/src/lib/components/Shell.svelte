@@ -12,6 +12,7 @@
 	import { permFor } from '$lib/perms';
 	import { stackConfig } from '$lib/stackconfig.svelte';
 	import Notice from './Notice.svelte';
+	import { updates } from '$lib/updates.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -22,6 +23,7 @@
 				{ href: '/', label: 'Stack' },
 				{ href: '/services', label: 'Services' },
 				{ href: '/metrics', label: 'Metrics' },
+				{ href: '/updates', label: 'Updates' },
 				{ href: '/settings', label: 'Network settings' },
 				{ href: '/branding', label: 'Branding' },
 				{ href: '/emails', label: 'Emails' },
@@ -52,6 +54,7 @@
 				...g,
 				items: g.items.filter((i) => {
 					const p = permFor(i.href);
+					if (i.href === '/updates' && !session.info?.features.updates) return false;
 					return !p || session.can(p);
 				})
 			}))
@@ -126,6 +129,13 @@
 		const t = setInterval(() => checkConfig(true), 60000);
 		return () => clearInterval(t);
 	});
+	// Update badge: checked on load and every 10 minutes.
+	$effect(() => {
+		if (!updates.allowed) return;
+		void updates.load();
+		const t = setInterval(() => void updates.load(true), 600000);
+		return () => clearInterval(t);
+	});
 	let configError = $derived(session.info?.features.config_file ? stackConfig.view?.error : undefined);
 </script>
 
@@ -153,6 +163,15 @@
 						<li>
 							<a href={item.href} aria-current={active(item.href) ? 'page' : undefined}>
 								{item.label}
+								{#if item.href === '/updates' && updates.status?.available}<span
+										class="count"
+										title="{updates.status.available} {updates.status.available === 1
+											? 'update'
+											: 'updates'} available"
+										>{updates.status.available}<span class="sr-only">
+											{updates.status.available === 1 ? 'update' : 'updates'} available</span
+										></span
+									>{/if}
 								{#if item.soon}<span class="soon">Soon</span>{/if}
 							</a>
 						</li>
@@ -211,6 +230,19 @@
 </div>
 
 <style>
+	.count {
+		margin-left: auto;
+		min-width: 18px;
+		padding: 0 5px;
+		border-radius: 999px;
+		background: var(--accent);
+		color: var(--accent-on);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 700;
+		line-height: 16px;
+		text-align: center;
+	}
 	.cfg-banner {
 		margin-bottom: var(--space-6);
 		max-width: 760px;

@@ -34,6 +34,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
+	"github.com/boson-chat/admin/internal/services/updates"
 	"github.com/boson-chat/admin/internal/session"
 	"github.com/boson-chat/admin/metrics"
 )
@@ -242,6 +243,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		})
 		h.Features.DirectoryLocal = true
 	}
+	if uc := cfg.UpdatesConfig; uc.Enabled {
+		h.Updates = buildUpdates(ctx, cfg, irc, upstream)
+		h.Features.Updates = true
+	}
 	mux := nethttp.NewServeMux()
 	h.Register(mux)
 	mux.Handle("/", spa)
@@ -308,4 +313,53 @@ func Serve(ctx context.Context, app *App) error {
 		_ = srv.Shutdown(sctx)
 	}
 	return err
+}
+
+// buildUpdates wires the Updates page: GitHub releases, the image registry,
+// installed versions from the socket proxy, and (with the updates proxy)
+// helper jobs that apply them.
+func buildUpdates(ctx context.Context, cfg config.Config, irc *config.IRCTarget,
+	upstream func(string) func(string, int, error, time.Duration)) *updates.Service {
+	uc, up, dc := cfg.UpdatesConfig, cfg.UpstreamConfig, cfg.DockerConfig
+	reg := updates.NewOCIRegistry(10 * time.Second)
+	reg.Override = uc.RegistryURL
+	o := updates.Options{
+		Releases: updates.NewGitHub(uc.GitHubURL, uc.GitHubToken, 15*time.Second),
+		Registry: reg, Project: dc.Project, SelfVersion: cfg.AppConfig.Version, StackVersion: uc.StackVersion,
+		Interval: uc.Interval, StateDir: uc.StateDir, BackupRoot: uc.BackupDir, Keep: uc.BackupKeep,
+		MinFree: uc.MinFreeMB << 20, UtilImage: uc.UtilImage, HealthTimeout: uc.HealthTimeout,
+	}
+	if dc.ProxyURL != "" {
+		o.Docker = dockerapi.NewDockerClient(dc.ProxyURL, dc.Timeout, upstream("docker"))
+	}
+	switch {
+	case uc.DockerProxyURL == "":
+		o.ApplyOff = "updates are shown but not applied here: the stack's updates profile (UPDATES_DOCKER_PROXY_URL) is off"
+	case dc.ProxyURL == "":
+		o.ApplyOff = "applying updates needs DOCKER_PROXY_URL too (to see what runs)"
+	default:
+		self, _ := os.Hostname()
+		o.Jobs = &updates.Helper{
+			Client:  dockerapi.NewJobsClient(uc.DockerProxyURL, 2*time.Minute, upstream("docker_updates")),
+			Project: dc.Project, SelfID: self, Image: uc.HelperImage, BackupRoot: uc.BackupDir,
+		}
+	}
+	checks := updates.DefaultHTTPChecks()
+	over, _ := uc.Checks()
+	for _, t := range over {
+		for i := range checks {
+			if checks[i].ID == t.Name {
+				checks[i].URL = t.URL
+			}
+		}
+	}
+	v := &updates.StackVerifier{HTTP: &nethttp.Client{Timeout: 5 * time.Second}, AuthURL: up.AuthURL, Checks: checks,
+		IRC: ircprobe.NewIRCProber(10 * time.Second)}
+	if irc != nil {
+		v.IRCAddr, v.IRCServer, v.IRCTLS = irc.Address, irc.ServerName, irc.TLS
+	}
+	o.Verifier = v
+	svc := updates.New(o)
+	svc.Start(ctx)
+	return svc
 }

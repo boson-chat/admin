@@ -118,6 +118,8 @@ export interface Features {
 	email_preview?: boolean;
 	/** The files service's internal listener is configured (BOSON_FILES_INTERNAL_URL). */
 	files?: boolean;
+	/** The Updates page (release checks) is on. */
+	updates?: boolean;
 }
 
 export interface SessionInfo {
