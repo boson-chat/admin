@@ -308,3 +308,62 @@ describe('network settings: network channels', () => {
 		).toBe(true);
 	});
 });
+
+describe('network settings: guests first', () => {
+	beforeEach(() => api.mockReset());
+	const firstSwitch = () => screen.getByRole('switch', { name: /Guests first/ }) as HTMLInputElement;
+
+	it('turns guests first on with a landing channel and sends only those fields', async () => {
+		serve({ ...base, guest_access: true, guest_first: false, guest_first_channel: '' });
+		const user = userEvent.setup();
+		render(Page);
+		const sw = (await screen.findByRole('switch', { name: /Guests first/ })) as HTMLInputElement;
+		expect(sw.checked).toBe(false);
+		expect(sw.hasAttribute('disabled')).toBe(false);
+		expect(screen.queryByRole('combobox', { name: 'Land on' })).toBeNull();
+
+		await user.click(sw);
+		const box = screen.getByRole('combobox', { name: 'Land on' });
+		await user.type(box, '#IRCForever');
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', {
+			guest_first: true,
+			guest_first_channel: '#IRCForever'
+		});
+		expect(firstSwitch().checked).toBe(true);
+	});
+
+	it('blocks saving a landing channel that is not a channel name', async () => {
+		serve({ ...base, guest_access: true, guest_first: true, guest_first_channel: '' });
+		const user = userEvent.setup();
+		render(Page);
+		await user.type(await screen.findByRole('combobox', { name: 'Land on' }), 'lobby');
+		expect(screen.getByText(/starts with #/)).toBeTruthy();
+		expect(screen.getByText('Fix the guests first channel to save')).toBeTruthy();
+	});
+
+	it('turns off with guest access, and saving sends both', async () => {
+		serve({ ...base, guest_access: true, guest_first: true, guest_first_channel: '#lobby' });
+		const user = userEvent.setup();
+		render(Page);
+		expect((await screen.findByRole('switch', { name: /Guests first/ })).hasAttribute('disabled')).toBe(
+			false
+		);
+		await user.click(screen.getByRole('switch', { name: /Guest access/ }));
+		expect(firstSwitch().hasAttribute('disabled')).toBe(true);
+		expect(screen.getByText(/turns guests first off too/)).toBeTruthy();
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: false, guest_first: false });
+	});
+
+	it('disables the toggle on older auth and never sends it', async () => {
+		serve({ ...base, guest_access: true });
+		const user = userEvent.setup();
+		render(Page);
+		expect(await screen.findByText(/Until then the web client opens on the sign-in screen/)).toBeTruthy();
+		expect(firstSwitch().hasAttribute('disabled')).toBe(true);
+		await user.click(screen.getByRole('switch', { name: /Guest access/ }));
+		await user.click(saveButton());
+		expect(api).toHaveBeenLastCalledWith('PATCH', '/settings', { guest_access: false });
+	});
+});

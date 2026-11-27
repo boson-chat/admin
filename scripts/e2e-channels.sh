@@ -2,7 +2,7 @@
 # Role channels and Channel access browser checks, self-contained: starts
 # the fake auth with roles (ui/e2e/fake-auth.mjs, FAKE_AUTH_ROLES=1) and the
 # panel on it with a throwaway config file, runs ui/e2e/channels.spec.ts
-# and ui/e2e/network-channels.spec.ts,
+# ui/e2e/network-channels.spec.ts and ui/e2e/guest-first.spec.ts,
 # and stops everything.
 #
 #   ./scripts/e2e-channels.sh      # SCREENSHOT_DIR=... to keep screenshots
@@ -32,4 +32,4 @@ done
 
 cd "$ROOT/ui"
 BASE_URL=http://localhost:18690 FAKE_AUTH_INTERNAL_URL=http://127.0.0.1:18681 ADMIN_PASSWORD=e2e-password \
-	BOSON_CONFIG_FILE="$TMP/boson.yaml" npx playwright test e2e/auth.setup e2e/channels.spec e2e/network-channels.spec "$@"
+	BOSON_CONFIG_FILE="$TMP/boson.yaml" npx playwright test e2e/auth.setup e2e/channels.spec e2e/network-channels.spec e2e/guest-first.spec "$@"

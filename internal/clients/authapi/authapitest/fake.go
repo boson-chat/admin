@@ -87,7 +87,8 @@ func New() *Fake {
 		Users: map[string]*authapi.User{}, Passwords: map[string]string{},
 		access: map[string]string{}, refresh: map[string]string{}, used: map[string]bool{},
 		Settings: authapi.NetworkSettings{Registration: "invite", ChannelCreation: "registered", VoiceChannelCreation: "founders",
-			ChannelAutoRegister: new(true), ChannelExpiryDays: new(0), GuestAccess: new(true), GuestVoice: new(false)},
+			ChannelAutoRegister: new(true), ChannelExpiryDays: new(0), GuestAccess: new(true), GuestVoice: new(false),
+			GuestFirst: new(false), GuestFirstChannel: new("")},
 		Roles: defaultRoles(), UserRoles: map[string][]string{},
 	}
 }

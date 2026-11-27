@@ -196,6 +196,10 @@ export interface NetworkSettings {
 	guest_access?: boolean;
 	/** auth ≥ 1.18: guests may also join voice rooms (and so video). Absent on older auth. Only takes effect with guest_access. */
 	guest_voice?: boolean;
+	/** Newer auth: web clients open straight into chat as a guest. Absent on older auth. Needs guest_access. */
+	guest_first?: boolean;
+	/** Newer auth: where guest-first visitors land; '' = the first auto-join channel. Absent on older auth. */
+	guest_first_channel?: string;
 	updated_at?: string;
 	updated_by?: string;
 	updated_by_username?: string;

@@ -268,6 +268,39 @@ func TestSettingsGuestVoice(t *testing.T) {
 	}
 }
 
+// guest_first / guest_first_channel: unknown (nil) on older auth; "" is a
+// real value (the default landing channel) and is sent.
+func TestSettingsGuestFirst(t *testing.T) {
+	var get, patched string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			b, _ := io.ReadAll(r.Body)
+			patched = string(b)
+		}
+		_, _ = w.Write([]byte(get))
+	}))
+	defer srv.Close()
+	c := NewAuthClient(srv.URL, time.Second, nil)
+	ctx := context.Background()
+
+	get = `{"registration":"closed","guest_access":true,"guest_first":true,"guest_first_channel":"#IRCForever"}`
+	s, err := c.GetSettings(ctx, "t")
+	if err != nil || s.GuestFirst == nil || !*s.GuestFirst || s.GuestFirstChannel == nil || *s.GuestFirstChannel != "#IRCForever" {
+		t.Fatalf("settings: %v %+v", err, s)
+	}
+	get = `{"registration":"closed","guest_access":true}`
+	if s, err = c.GetSettings(ctx, "t"); err != nil || s.GuestFirst != nil || s.GuestFirstChannel != nil {
+		t.Fatalf("older auth: %v %+v", err, s)
+	}
+	if b, _ := json.Marshal(s); strings.Contains(string(b), "guest_first") {
+		t.Fatalf("unknown guest_first re-encoded: %s", b)
+	}
+	if _, err = c.UpdateSettings(ctx, "t", SettingsPatch{GuestFirst: new(false), GuestFirstChannel: new("")}); err != nil ||
+		patched != `{"guest_first":false,"guest_first_channel":""}` {
+		t.Fatalf("patch: %v %s", err, patched)
+	}
+}
+
 // Auth without SMTP: /v1/config says so, and resets / setup links come
 // back as links for the admin to share; older auth answers {status} only.
 func TestNoEmailWireFormat(t *testing.T) {

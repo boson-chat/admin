@@ -475,7 +475,9 @@ createServer(async (req, res) => {
 				channel_auto_register: true,
 				channel_expiry_days: 0,
 				guest_access: true,
-				guest_voice: false
+				guest_voice: false,
+				guest_first: false,
+				guest_first_channel: ''
 			});
 		if (p === '/v1/admin/channel-access') {
 			if (req.method === 'PUT') {

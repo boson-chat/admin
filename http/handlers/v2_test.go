@@ -345,3 +345,22 @@ func TestAuthAccounts(t *testing.T) {
 		t.Fatalf("signed out: %d", w.Code)
 	}
 }
+
+func TestSettingsGuestFirst(t *testing.T) {
+	h := newHarness(t)
+	c, csrf := h.login()
+	w := h.do("GET", "/api/settings", nil, withCookie(c))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"guest_first":false`) || !strings.Contains(w.Body.String(), `"guest_first_channel":""`) {
+		t.Fatalf("get: %d %s", w.Code, w.Body)
+	}
+	w = h.do("PATCH", "/api/settings", map[string]any{"guest_first": true, "guest_first_channel": "#lobby"}, withCookie(c), withHeader(CSRFHeader, csrf))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"guest_first":true`) || !strings.Contains(w.Body.String(), `"guest_first_channel":"#lobby"`) {
+		t.Fatalf("patch: %d %s", w.Code, w.Body)
+	}
+	// Older auth: no guest_first, and the panel doesn't invent one.
+	h.fake.Settings.GuestFirst, h.fake.Settings.GuestFirstChannel = nil, nil
+	w = h.do("GET", "/api/settings", nil, withCookie(c))
+	if w.Code != 200 || strings.Contains(w.Body.String(), "guest_first") {
+		t.Fatalf("older auth settings: %d %s", w.Code, w.Body)
+	}
+}

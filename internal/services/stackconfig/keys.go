@@ -268,6 +268,10 @@ var Keys = append([]Key{
 	{Key: "auth.require_email_verification", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "REQUIRE_EMAIL_VERIFICATION"},
 	{Key: "auth.guest_access", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
 	{Key: "auth.guest_voice", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
+	// Web clients open straight into chat as a guest (needs guest_access),
+	// landing on guest_first_channel ("" = the first auto-join channel).
+	{Key: KeyGuestFirst, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},
+	{Key: KeyGuestFirstChannel, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, item: optionalChannel},
 	{Key: "auth.channel_creation", Kind: KindEnum, Enum: []string{"registered", "admins"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "IRC_CHANNEL_CREATION"},
 	{Key: "auth.voice_channel_creation", Kind: KindEnum, Enum: []string{"admins", "founders", "registered"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "VOICE_CHANNEL_CREATION"},
 	{Key: "auth.channel_auto_register", Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}},

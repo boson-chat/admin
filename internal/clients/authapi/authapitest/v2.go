@@ -73,6 +73,15 @@ func (f *Fake) UpdateSettings(_ context.Context, at string, p authapi.SettingsPa
 		v := *p.GuestVoice
 		f.Settings.GuestVoice = &v
 	}
+	// Older auth ignores guest_first / guest_first_channel.
+	if p.GuestFirst != nil && f.Settings.GuestFirst != nil {
+		v := *p.GuestFirst
+		f.Settings.GuestFirst = &v
+	}
+	if p.GuestFirstChannel != nil && f.Settings.GuestFirstChannel != nil {
+		v := *p.GuestFirstChannel
+		f.Settings.GuestFirstChannel = &v
+	}
 	now := time.Now().UTC()
 	uid := f.access[at]
 	f.Settings.UpdatedAt, f.Settings.UpdatedBy = &now, &uid
