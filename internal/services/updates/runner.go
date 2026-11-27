@@ -555,6 +555,7 @@ func (s *Service) execUpdate(ctx context.Context, runID string) {
 			s.mutate(func(r *Run) {
 				x := r.Items[stackAt].Stack
 				x.Recreated, x.Ran, x.Kept, x.Files, x.Migrations = res.recreate, res.oneshots, res.kept, res.files, res.migrations
+				x.Images = imagesAfterSets(x.Images, x.Envs, allSets, plain)
 				r.Items[stackAt].Services = res.recreate
 			})
 			if res.self && len(selfItems) == 0 {

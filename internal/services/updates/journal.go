@@ -67,6 +67,10 @@ type StackItem struct {
 	// Images: each service's image after the update; Pull those that change.
 	Images map[string]string `json:"images,omitempty"`
 	Pull   []string          `json:"pull,omitempty"`
+	// Envs: the .env variable naming a service's image (the manifest's
+	// env), so a component update in the same run (AUTH_IMAGE=…) moves
+	// what the checks expect.
+	Envs map[string]string `json:"envs,omitempty"`
 	// From the manifest: bind mounts and one-shot services.
 	Mounts  map[string][]string `json:"mounts,omitempty"`
 	Oneshot []string            `json:"oneshot,omitempty"`
