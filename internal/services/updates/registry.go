@@ -30,17 +30,13 @@ type OCIRegistry struct {
 	// registry host (tests, or a pull-through mirror): "http://127.0.0.1:5000".
 	Override string
 
-	mu    sync.Mutex
-	known map[string]regEntry
-}
-
-type regEntry struct {
-	ok bool
-	at time.Time
+	mu sync.Mutex
+	// pushed: tags seen in the registry (a pushed tag stays).
+	pushed map[string]bool
 }
 
 func NewOCIRegistry(timeout time.Duration) *OCIRegistry {
-	return &OCIRegistry{HTTP: &http.Client{Timeout: timeout}, Scheme: "https", known: map[string]regEntry{}}
+	return &OCIRegistry{HTTP: &http.Client{Timeout: timeout}, Scheme: "https", pushed: map[string]bool{}}
 }
 
 const manifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, " +
@@ -49,11 +45,14 @@ const manifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd
 func (r *OCIRegistry) TagExists(ctx context.Context, image, tag string) (bool, error) {
 	key := image + ":" + tag
 	r.mu.Lock()
-	e, hit := r.known[key]
+	hit := r.pushed[key]
 	r.mu.Unlock()
-	// A pushed tag stays; a missing one is asked again after 10 minutes.
-	if hit && (e.ok || time.Since(e.at) < 10*time.Minute) {
-		return e.ok, nil
+	// A pushed tag stays. A missing one is never remembered: the image is
+	// usually being pushed right then (a GitHub release comes a minute or
+	// two before its image), and a remembered miss hid the update from
+	// every check for the next 10 minutes (internetneko, web 0.104.2).
+	if hit {
+		return true, nil
 	}
 	host, repo, ok := strings.Cut(image, "/")
 	if !ok || !strings.ContainsAny(host, ".:") {
@@ -86,9 +85,11 @@ func (r *OCIRegistry) TagExists(ctx context.Context, image, tag string) (bool, e
 	default:
 		return false, fmt.Errorf("registry %s answered %d for %s", host, status, key)
 	}
-	r.mu.Lock()
-	r.known[key] = regEntry{ok: exists, at: time.Now()}
-	r.mu.Unlock()
+	if exists {
+		r.mu.Lock()
+		r.pushed[key] = true
+		r.mu.Unlock()
+	}
 	return exists, nil
 }
 

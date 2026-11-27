@@ -42,6 +42,14 @@ type Options struct {
 	StackVersion string
 	// Interval between automatic checks (default 6 h).
 	Interval time.Duration
+	// While a release waits for its image (Pending), the rows waiting are
+	// checked again every PendingInterval (default 2 min), at most
+	// PendingChecks times (default 15) per full check, so the update is
+	// offered once the push finishes instead of an Interval later. Only
+	// those rows are asked again (GitHub's unauthenticated limit is 60 an
+	// hour).
+	PendingInterval time.Duration
+	PendingChecks   int
 	// StateDir keeps the update journal (runs survive the panel's own
 	// restart). Empty = in memory only; the panel can't update itself.
 	StateDir string
@@ -141,6 +149,12 @@ func New(o Options) *Service {
 	if o.Interval <= 0 {
 		o.Interval = 6 * time.Hour
 	}
+	if o.PendingInterval <= 0 {
+		o.PendingInterval = 2 * time.Minute
+	}
+	if o.PendingChecks <= 0 {
+		o.PendingChecks = 15
+	}
 	if o.Keep <= 0 {
 		o.Keep = 5
 	}
@@ -170,24 +184,49 @@ func New(o Options) *Service {
 	return s
 }
 
-// Start checks now and every Interval, and picks up a run that was
-// handing off to the panel's new version.
+// Start checks now and every Interval (sooner for releases waiting for
+// their image), and picks up a run that was handing off to the panel's new
+// version.
 func (s *Service) Start(ctx context.Context) {
 	go s.resume(ctx)
 	go func() {
 		t := time.NewTimer(5 * time.Second)
 		defer t.Stop()
+		var due time.Time // the next full check (zero: now)
+		rechecks := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
 			case <-s.kick:
+				due = time.Time{}
 			}
-			s.Check(ctx)
-			t.Reset(s.o.Interval)
+			var st *Status
+			if !due.IsZero() && time.Now().Before(due) {
+				st = s.RecheckPending(ctx)
+				rechecks++
+			} else {
+				st = s.Check(ctx)
+				due, rechecks = time.Now().Add(s.o.Interval), 0
+			}
+			t.Reset(s.wait(st, due, rechecks, time.Now()))
 		}
 	}()
+}
+
+// wait is how long the loop sleeps after st: until the full check due,
+// or PendingInterval while rows wait for their image (rechecks so far).
+func (s *Service) wait(st *Status, due time.Time, rechecks int, now time.Time) time.Duration {
+	w := due.Sub(now)
+	if hasPending(st) && rechecks < s.o.PendingChecks {
+		w = min(w, s.o.PendingInterval)
+	}
+	return max(w, time.Second)
+}
+
+func hasPending(st *Status) bool {
+	return st != nil && slices.ContainsFunc(st.Components, func(c ComponentStatus) bool { return len(c.Pending) > 0 })
 }
 
 func (s *Service) applyInfo() ApplyInfo {
@@ -291,6 +330,71 @@ func (s *Service) Check(ctx context.Context) *Status {
 	return s.Status(ctx)
 }
 
+// RecheckPending asks again for the rows of the last check whose newest
+// release waited for its image (the rest of the check stays).
+func (s *Service) RecheckPending(ctx context.Context) *Status {
+	s.mu.Lock()
+	old := s.status
+	if s.checking || !hasPending(old) {
+		s.mu.Unlock()
+		return s.Status(ctx)
+	}
+	s.checking = true
+	s.mu.Unlock()
+	st := s.recheck(ctx, old)
+	s.mu.Lock()
+	s.status, s.checking = st, false
+	s.mu.Unlock()
+	return s.Status(ctx)
+}
+
+func (s *Service) recheck(ctx context.Context, old *Status) *Status {
+	st := *old
+	st.Components = slices.Clone(old.Components)
+	var inst map[string]installed
+	for i, cs := range st.Components {
+		c, ok := s.catalog(cs.ID)
+		if len(cs.Pending) == 0 || !ok {
+			continue
+		}
+		if c.Mode == ModeStack {
+			st.Components[i] = s.stackComponent(ctx, c)
+			continue
+		}
+		if inst == nil {
+			var err error
+			if inst, err = s.installed(ctx); err != nil {
+				return old
+			}
+		}
+		st.Components[i] = s.component(ctx, c, inst[c.ID])
+	}
+	st.Available = 0
+	for _, c := range st.Components {
+		if c.Update {
+			st.Available++
+		}
+	}
+	logger.FromCtx(ctx).Info().Int("available", st.Available).Msg("update recheck (releases waiting for their image)")
+	return &st
+}
+
+// installed is installedVersions with the panel's own version filled in.
+func (s *Service) installed(ctx context.Context) (map[string]installed, error) {
+	inst, _, err := s.installedVersions(ctx)
+	if s.o.SelfVersion != "" {
+		if _, ok := ParseVersion(s.o.SelfVersion); ok {
+			i := inst["admin"]
+			if _, ok := ParseVersion(i.version); !ok {
+				i.version = strings.TrimPrefix(s.o.SelfVersion, "v")
+			}
+			i.present = true
+			inst["admin"] = i
+		}
+	}
+	return inst, err
+}
+
 // CheckSoon wakes the loop (POST /api/updates/check answers right away
 // with Checking set when a check is already running).
 func (s *Service) CheckSoon() {
@@ -304,19 +408,9 @@ func (s *Service) check(ctx context.Context) *Status {
 	now := s.o.Now().UTC()
 	next := now.Add(s.o.Interval)
 	st := &Status{CheckedAt: &now, NextCheckAt: &next, Components: []ComponentStatus{}}
-	inst, _, err := s.installedVersions(ctx)
+	inst, err := s.installed(ctx)
 	if err != nil {
 		st.Error = err.Error()
-	}
-	if s.o.SelfVersion != "" {
-		if _, ok := ParseVersion(s.o.SelfVersion); ok {
-			i := inst["admin"]
-			if _, ok := ParseVersion(i.version); !ok {
-				i.version = strings.TrimPrefix(s.o.SelfVersion, "v")
-			}
-			i.present = true
-			inst["admin"] = i
-		}
 	}
 	var wg sync.WaitGroup
 	comps := make([]ComponentStatus, len(s.o.Catalog))

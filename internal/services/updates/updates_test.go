@@ -343,3 +343,26 @@ func TestComposeCandidates(t *testing.T) {
 		t.Fatalf("a custom set probes only its own files: %v", got)
 	}
 }
+
+func TestWaitRechecksPendingSoon(t *testing.T) {
+	s := New(Options{Releases: nil, Interval: 6 * time.Hour})
+	now := time.Now()
+	due := now.Add(6 * time.Hour)
+	none := &Status{Components: []ComponentStatus{{ID: "web"}}}
+	waiting := &Status{Components: []ComponentStatus{{ID: "auth"}, {ID: "web", Pending: []string{"0.104.2"}}}}
+	if w := s.wait(none, due, 0, now); w != 6*time.Hour {
+		t.Fatalf("nothing waiting: %s", w)
+	}
+	if w := s.wait(waiting, due, 0, now); w != 2*time.Minute {
+		t.Fatalf("a release waits for its image: %s", w)
+	}
+	if w := s.wait(waiting, due, 15, now); w != 6*time.Hour {
+		t.Fatalf("after PendingChecks rechecks, back to the interval: %s", w)
+	}
+	if w := s.wait(waiting, now.Add(30*time.Second), 0, now); w != 30*time.Second {
+		t.Fatalf("the full check comes first: %s", w)
+	}
+	if w := s.wait(nil, now.Add(-time.Minute), 0, now); w != time.Second {
+		t.Fatalf("overdue: %s", w)
+	}
+}

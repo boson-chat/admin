@@ -578,3 +578,76 @@ func TestStackRollbackFailureStartsServicesAgain(t *testing.T) {
 		t.Fatalf("ergo runs the restored files' image: %s", fs.Image("ergo"))
 	}
 }
+
+// internetneko 2026-11-27: installed from stack release 1.0.1 (the setup
+// wizard: VERSION and the manifest recorded), whose manifest pins the web
+// client to 0.104.0; .env's WEB_IMAGE is the newer 0.104.1. The web
+// client's 0.104.2 was released on GitHub a minute before its image was
+// pushed: the check in between saw the tag missing, and the registry
+// client remembered that miss for 10 minutes, so the checks after the push
+// still said "available: 0". A stack release being installed must not hide
+// the component's own update, and a miss must not be remembered.
+func TestStackReleaseInstalledStillOffersNewerComponent(t *testing.T) {
+	fs, srv := newStack(t)
+	fs.Set(func(s *fakestack.Stack) {
+		s.AddService("traefik", "traefik:v3.7.20")
+		s.AddService("roleserv", harbor+"stack-ergo:1.1.0")
+		s.RunImage("ergo", harbor+"stack-ergo:1.1.0")
+		s.RunImage("web", harbor+"web:0.104.1")
+		s.Env["WEB_IMAGE"] = harbor + "web:0.104.1"
+		s.Profiles = "irc,auth,api,web,voice,admin,updates"
+		s.StackReleases = []*fakestack.StackRelease{stackRelease(t)} // pins web 0.100.0
+		s.StackVersion, s.StackBaseline = "1.1.0", true
+		s.Releases["boson-chat/boson"] = []fakestack.Release{
+			{Tag: "v0.104.2", Name: "v0.104.2", Body: "## 0.104.2\n\n* fix", At: "2026-11-27T17:11:59Z"},
+			{Tag: "v0.104.1", Name: "v0.104.1", At: "2026-11-27T16:19:30Z"},
+			{Tag: "v0.104.0", Name: "v0.104.0", At: "2026-11-27T14:34:14Z"},
+		}
+		s.Tags["boson/web:0.104.1"] = true
+	})
+	svc := newService(t, fs, srv, "1.26.0", t.TempDir())
+	ctx := context.Background()
+
+	// The image is still being pushed: pending, not offered.
+	st := svc.Check(ctx)
+	if c := component(st, "stack"); c.Update || c.Installed != "1.1.0" {
+		t.Fatalf("stack: %+v", c)
+	}
+	w := component(st, "web")
+	if w.Update || w.Installed != "0.104.1" || !slices.Equal(w.Pending, []string{"0.104.2"}) {
+		t.Fatalf("web before the push: %+v", w)
+	}
+
+	fs.Set(func(s *fakestack.Stack) { s.Tags["boson/web:0.104.2"] = true })
+
+	// The rows waiting are asked again (only their repository on GitHub).
+	calls := fs.GitHubCalls()
+	st = svc.RecheckPending(ctx)
+	w = component(st, "web")
+	if !w.Update || w.Latest != "0.104.2" || len(w.Pending) != 0 || !w.Applyable {
+		t.Fatalf("web after the push (recheck): %+v (%s)", w, w.Why)
+	}
+	if n := fs.GitHubCalls() - calls; n > 1 {
+		t.Fatalf("the recheck asked GitHub %d times; only boson-chat/boson waits", n)
+	}
+	if a := component(st, "auth"); !a.Update || a.Latest != "1.22.0" {
+		t.Fatalf("the rows not waiting stay: auth %+v", a)
+	}
+	if st.Available != 4 { // auth, api, web, admin
+		t.Fatalf("available = %d: %+v", st.Available, st.Components)
+	}
+
+	// And a full check right after the push offers it too.
+	st = svc.Check(ctx)
+	if w = component(st, "web"); !w.Update || w.Latest != "0.104.2" || versions(w.Releases) != "0.104.2" {
+		t.Fatalf("web after the push (check): %+v", w)
+	}
+}
+
+func versions(rs []updates.Release) string {
+	var v []string
+	for _, r := range rs {
+		v = append(v, r.Version)
+	}
+	return strings.Join(v, ",")
+}

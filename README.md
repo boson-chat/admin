@@ -600,7 +600,9 @@ free), the last answer kept when GitHub is down or rate-limits (the page
 says until when; `UPDATES_GITHUB_TOKEN` raises 60/h to 5,000/h). A release
 is only offered once its image is in the registry (anonymous `HEAD
 /v2/…/manifests/<tag>` on harbor.floret.dev); newer ones are listed as "not
-published yet".
+published yet". A missing tag is asked again on every check, and while a
+release waits for its image only those rows are checked again every 2
+minutes (up to 15 times), so the update shows up once the push finishes.
 
 | Component | Releases | Image (`.env` variable) | Applied by |
 |---|---|---|---|
