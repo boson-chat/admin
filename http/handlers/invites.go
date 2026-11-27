@@ -42,3 +42,29 @@ func (h *Handlers) revokeInvite(w http.ResponseWriter, r *http.Request, s *sessi
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// authAccounts is what the panel needs from auth's /v1/config to explain
+// its account settings: whether auth can send email (no SMTP: no email
+// verification, no reset emails, links to share by hand) and where
+// accounts live (local or NickServ).
+func (h *Handlers) authAccounts(w http.ResponseWriter, r *http.Request, _ *session.Session) {
+	cfg, err := h.Admin.AuthConfig(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	// Older auth doesn't report email (assumed configured) or accounts.
+	out := map[string]any{
+		"email_configured":           cfg.EmailConfigured(),
+		"email_reported":             cfg.Email != nil,
+		"account_backend":            cfg.AccountBackend(),
+		"require_email_verification": cfg.RequireEmailVerification,
+		"password_reset":             cfg.AccountBackend() == authapi.AccountBackendLocal && cfg.EmailConfigured(),
+		"signup":                     cfg.Registration != "closed",
+		"signup_message":             nil,
+	}
+	if a := cfg.Accounts; a != nil {
+		out["password_reset"], out["signup"], out["signup_message"] = a.PasswordReset, a.Signup, a.SignupMessage
+	}
+	writeJSON(w, http.StatusOK, out)
+}

@@ -49,6 +49,9 @@ func (h *Handlers) routes() []route {
 		{"PUT /api/users/{id}/roles", admin.PermRolesManage, false, h.setUserRoles},
 		{"DELETE /api/sessions/{id}", moderate, false, h.revokeSession},
 
+		// What auth's accounts can do here: email configured, account backend.
+		{"GET /api/auth/accounts", "", false, h.authAccounts},
+
 		{"GET /api/invites", admin.PermInvitesManage, false, h.listInvites},
 		{"POST /api/invites", admin.PermInvitesManage, false, h.createInvite},
 		{"DELETE /api/invites/{id}", admin.PermInvitesManage, false, h.revokeInvite},

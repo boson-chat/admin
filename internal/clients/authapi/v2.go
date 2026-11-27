@@ -78,6 +78,11 @@ type NetworkSettings struct {
 	GuestVoice               *bool      `json:"guest_voice,omitempty"`
 	UpdatedAt                *time.Time `json:"updated_at,omitempty"`
 	UpdatedBy                *string    `json:"updated_by,omitempty"`
+	// EmailConfigured: auth can send email (nil: older auth, assumed yes).
+	EmailConfigured *bool `json:"email_configured,omitempty"`
+	// RequireEmailVerificationEffective is what sign-in enforces: false
+	// while email isn't configured even if RequireEmailVerification is on.
+	RequireEmailVerificationEffective *bool `json:"require_email_verification_effective,omitempty"`
 }
 
 // SettingsPatch is PATCH /v1/admin/settings; nil fields are left alone.
@@ -385,6 +390,17 @@ type CreatedUser struct {
 	User User `json:"user"`
 	// InviteEmailSent is true when the set-your-password email was queued.
 	InviteEmailSent bool `json:"invite_email_sent"`
+	// SetupLink is the set-your-password link for the admin to share when
+	// auth can't send email (InviteEmailSent false).
+	SetupLink string `json:"setup_link,omitempty"`
+}
+
+// PasswordReset is the answer to POST /v1/admin/users/{id}/password-reset.
+type PasswordReset struct {
+	// EmailSent: the link was emailed. False when auth can't send email;
+	// Link is then the reset link for the admin to share.
+	EmailSent bool   `json:"email_sent"`
+	Link      string `json:"link,omitempty"`
 }
 
 func (c *AuthClient) CreateUser(ctx context.Context, at string, in CreateUser) (*CreatedUser, error) {
@@ -395,9 +411,17 @@ func (c *AuthClient) CreateUser(ctx context.Context, at string, in CreateUser) (
 	return &out, nil
 }
 
-func (c *AuthClient) SendPasswordReset(ctx context.Context, at, id string) error {
-	err := c.do(ctx, "admin.users.password_reset", http.MethodPost, "/v1/admin/users/"+url.PathEscape(id)+"/password-reset", at, nil, nil)
-	return feature(err, "Sending password resets", RequiresUserEmails)
+func (c *AuthClient) SendPasswordReset(ctx context.Context, at, id string) (*PasswordReset, error) {
+	// Older auth answers {status} only: the link was emailed.
+	out := PasswordReset{EmailSent: true}
+	err := c.do(ctx, "admin.users.password_reset", http.MethodPost, "/v1/admin/users/"+url.PathEscape(id)+"/password-reset", at, nil, &out)
+	if err != nil {
+		return nil, feature(err, "Sending password resets", RequiresUserEmails)
+	}
+	if out.Link != "" {
+		out.EmailSent = false
+	}
+	return &out, nil
 }
 
 func (c *AuthClient) ResendVerification(ctx context.Context, at, id string) error {

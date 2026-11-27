@@ -39,6 +39,11 @@ type Fake struct {
 	Providers []authapi.SSOProviderConfig
 	// Emails records password-reset / verification sends as "kind:userID".
 	Emails []string
+	// NoEmail makes the fake an auth without SMTP: /v1/config says
+	// email.configured false and resets / setup links come back as links.
+	NoEmail bool
+	// Backend is /v1/config's accounts.backend ("" = local).
+	Backend string
 
 	// LastListSort is the sort the last ListUsers asked for.
 	LastListSort string
@@ -224,7 +229,17 @@ func (f *Fake) Me(_ context.Context, at string) (*authapi.User, error) {
 }
 
 func (f *Fake) PublicConfig(context.Context) (*authapi.PublicConfig, error) {
-	return &authapi.PublicConfig{Registration: "invite", SSOProviders: []authapi.SSOProvider{}}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	backend := f.Backend
+	if backend == "" {
+		backend = authapi.AccountBackendLocal
+	}
+	return &authapi.PublicConfig{Registration: "invite", SSOProviders: []authapi.SSOProvider{},
+		RequireEmailVerification: f.Settings.RequireEmailVerification && !f.NoEmail,
+		Email:                    &authapi.PublicEmail{Configured: !f.NoEmail},
+		Accounts:                 &authapi.PublicAccounts{Backend: backend, Signup: true, PasswordReset: backend == authapi.AccountBackendLocal && !f.NoEmail},
+	}, nil
 }
 
 func (f *Fake) ListUsers(_ context.Context, at, _, sort string, _, _ int) (*authapi.UserList, error) {

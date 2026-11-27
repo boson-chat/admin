@@ -15,6 +15,9 @@
 	import Avatar from '$lib/components/Avatar.svelte';
 	import State from '$lib/components/State.svelte';
 	import Confirm from '$lib/components/Confirm.svelte';
+	import Dialog from '$lib/components/Dialog.svelte';
+	import CopyField from '$lib/components/CopyField.svelte';
+	import { loadAuthAccounts, type AuthAccounts } from '$lib/accounts';
 	import type { DropdownOption } from '$lib/dropdown';
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Time from '$lib/components/Time.svelte';
@@ -161,13 +164,27 @@
 		if (ownedFromDirectory) loadOwned();
 	});
 
+	// No SMTP on auth: resets come back as a link to share, and there is no
+	// verification to resend (sign-in doesn't ask for it then).
+	let accounts = $state<AuthAccounts | null>(null);
+	let emailOff = $derived(accounts?.email_configured === false);
+	loadAuthAccounts().then((a) => (accounts = a));
+	let resetLink = $state('');
+	let linkDlg = $state<Dialog>();
+
 	async function sendMail(kind: 'reset' | 'verification') {
 		mailing = kind;
 		try {
-			await api(
+			const r = await api<{ email_sent?: boolean; link?: string } | undefined>(
 				'POST',
 				`/users/${encodeURIComponent(id)}/${kind === 'reset' ? 'password-reset' : 'verification'}`
 			);
+			if (kind === 'reset' && r?.link) {
+				resetLink = r.link;
+				linkDlg?.open();
+				loadActivity();
+				return;
+			}
 			toasts.push(
 				kind === 'reset'
 					? `Sent ${user?.username} a password reset link.`
@@ -282,23 +299,37 @@
 		</div>
 		<div class="actions">
 			{#if user.email && canManage}
-				{#if !user.email_verified}
+				{#if !user.email_verified && !emailOff}
 					<button class="btn btn-small" onclick={() => sendMail('verification')} disabled={!!mailing}
 						>{mailing === 'verification' ? 'Sending…' : 'Resend verification'}</button
 					>
 				{/if}
 				<Confirm
-					title="Send {user.username} a password reset?"
-					action="Send reset link"
+					title={emailOff
+						? `Make a password reset link for ${user.username}?`
+						: `Send ${user.username} a password reset?`}
+					action={emailOff ? 'Make reset link' : 'Send reset link'}
 					onconfirm={() => sendMail('reset')}
 				>
 					{#snippet trigger(open)}
 						<button class="btn btn-small" onclick={open} disabled={!!mailing}
-							>{mailing === 'reset' ? 'Sending…' : 'Send password reset'}</button
+							>{mailing === 'reset'
+								? emailOff
+									? 'Making…'
+									: 'Sending…'
+								: emailOff
+									? 'Password reset link'
+									: 'Send password reset'}</button
 						>
 					{/snippet}
-					They get an email at <strong>{user.email}</strong> with a link to choose a new password. Their current
-					password keeps working until they do.
+					{#if emailOff}
+						Email isn’t set up on this network, so nothing is sent: you get a link to choose a new password
+						and pass it on to them over a channel you trust. Their current password keeps working until they
+						use it.
+					{:else}
+						They get an email at <strong>{user.email}</strong> with a link to choose a new password. Their current
+						password keeps working until they do.
+					{/if}
 				</Confirm>
 			{/if}
 			{#if !canModerate}
@@ -756,7 +787,32 @@
 	</section>
 {/if}
 
+<Dialog title="Password reset link" bind:this={linkDlg} onclose={() => (resetLink = '')}>
+	<div class="link-dlg" data-testid="reset-link">
+		<p>
+			Email isn’t set up, so this link wasn’t sent. Give it to {user?.username ?? 'them'} over a channel you trust:
+			anyone with it can set the account’s password, until it expires or is used.
+		</p>
+		<CopyField label="Reset link" value={resetLink} />
+		<div class="link-acts">
+			<button class="btn btn-primary" type="button" onclick={() => linkDlg?.close()}>Done</button>
+		</div>
+	</div>
+</Dialog>
+
 <style>
+	.link-dlg {
+		display: grid;
+		gap: var(--space-4);
+	}
+	.link-dlg p {
+		margin: 0;
+		color: var(--fg-2);
+	}
+	.link-acts {
+		display: flex;
+		justify-content: flex-end;
+	}
 	.crumb {
 		font-family: var(--font-mono);
 		font-size: var(--text-sm);

@@ -6,6 +6,7 @@
 	import type { DropdownOption } from '$lib/dropdown';
 	import Dialog from './Dialog.svelte';
 	import Dropdown from './Dropdown.svelte';
+	import CopyField from './CopyField.svelte';
 
 	let dlg: Dialog;
 	let username = $state('');
@@ -15,6 +16,10 @@
 	let password = $state('');
 	let busy = $state(false);
 	let error = $state('');
+	// Email isn't set up on auth: the set-password link to pass on by hand.
+	let setupLink = $state('');
+	let created = $state<User | null>(null);
+	let { emailOff = false }: { emailOff?: boolean } = $props();
 	const uid = $props.id();
 
 	const roles: DropdownOption<'user' | 'admin'>[] = [
@@ -23,7 +28,8 @@
 	];
 
 	export function open() {
-		username = email = password = error = '';
+		username = email = password = error = setupLink = '';
+		created = null;
 		role = 'user';
 		how = 'email';
 		dlg.open();
@@ -34,12 +40,22 @@
 		busy = true;
 		error = '';
 		try {
-			const r = await api<{ user: User; invite_email_sent?: boolean }>('POST', '/users', {
-				username: username.trim(),
-				email: email.trim() || undefined,
-				role,
-				...(how === 'email' ? { send_invite_email: true } : { password })
-			});
+			const r = await api<{ user: User; invite_email_sent?: boolean; setup_link?: string }>(
+				'POST',
+				'/users',
+				{
+					username: username.trim(),
+					email: email.trim() || undefined,
+					role,
+					...(how === 'email' ? { send_invite_email: true } : { password })
+				}
+			);
+			if (r.setup_link) {
+				// Shown in the dialog until they copy it.
+				setupLink = r.setup_link;
+				created = r.user;
+				return;
+			}
 			toasts.push(
 				r.invite_email_sent
 					? `Created ${r.user.username} and emailed them a link to set a password.`
@@ -58,63 +74,96 @@
 	}
 </script>
 
-<Dialog title="Create a user" bind:this={dlg}>
-	<form class="cu" onsubmit={submit}>
-		<label class="field">
-			<span>Username</span>
-			<input
-				type="text"
-				bind:value={username}
-				required
-				maxlength="30"
-				autocomplete="off"
-				spellcheck="false"
-			/>
-			<small>Also their IRC nick: letters, digits and a few symbols, no spaces.</small>
-		</label>
-		<label class="field">
-			<span>Email</span>
-			<input
-				type="email"
-				bind:value={email}
-				required={how === 'email'}
-				autocomplete="off"
-				spellcheck="false"
-			/>
-		</label>
-		<div class="field">
-			<span id="cu-role-{uid}">Role</span>
-			<Dropdown options={roles} bind:value={role} labelledby="cu-role-{uid}" />
-		</div>
-		<fieldset class="how">
-			<legend>First sign-in</legend>
-			<label class:on={how === 'email'}>
-				<input type="radio" bind:group={how} value="email" />
-				<span
-					><strong>Email a set-password link</strong>They choose their own password. Needs an email address.</span
+<Dialog title={created ? `Created ${created.username}` : 'Create a user'} bind:this={dlg}>
+	{#if created}
+		<div class="cu" data-testid="setup-link">
+			<p class="done">
+				Email isn’t set up, so no email went out. Give {created.username} this link to choose their password, over
+				a channel you trust: anyone with it can set the password until it expires or is used.
+			</p>
+			<CopyField label="Set-password link" value={setupLink} />
+			<div class="acts">
+				<button
+					class="btn btn-primary"
+					type="button"
+					onclick={() => {
+						const u = created;
+						dlg.close();
+						if (u) goto(`/users/${encodeURIComponent(u.id)}`);
+					}}>Done</button
 				>
-			</label>
-			<label class:on={how === 'password'}>
-				<input type="radio" bind:group={how} value="password" />
-				<span><strong>Set a password now</strong>You pass it on; they can change it later.</span>
-			</label>
-		</fieldset>
-		{#if how === 'password'}
-			<label class="field">
-				<span>Password</span>
-				<input type="password" bind:value={password} required minlength="10" autocomplete="new-password" />
-				<small>At least 10 characters.</small>
-			</label>
-		{/if}
-		{#if error}<p class="err" role="alert">{error}</p>{/if}
-		<div class="acts">
-			<button class="btn btn-ghost" type="button" onclick={() => dlg.close()}>Cancel</button>
-			<button class="btn btn-primary" disabled={busy}>{busy ? 'Creating…' : 'Create user'}</button>
+			</div>
 		</div>
-	</form>
+	{:else}
+		<form class="cu" onsubmit={submit}>
+			<label class="field">
+				<span>Username</span>
+				<input
+					type="text"
+					bind:value={username}
+					required
+					maxlength="30"
+					autocomplete="off"
+					spellcheck="false"
+				/>
+				<small>Also their IRC nick: letters, digits and a few symbols, no spaces.</small>
+			</label>
+			<label class="field">
+				<span>Email</span>
+				<input
+					type="email"
+					bind:value={email}
+					required={how === 'email'}
+					autocomplete="off"
+					spellcheck="false"
+				/>
+			</label>
+			<div class="field">
+				<span id="cu-role-{uid}">Role</span>
+				<Dropdown options={roles} bind:value={role} labelledby="cu-role-{uid}" />
+			</div>
+			<fieldset class="how">
+				<legend>First sign-in</legend>
+				<label class:on={how === 'email'}>
+					<input type="radio" bind:group={how} value="email" />
+					{#if emailOff}
+						<span
+							><strong>Make a set-password link</strong>Email isn’t set up, so you get the link and pass it
+							on. They choose their own password. Needs an email address.</span
+						>
+					{:else}
+						<span
+							><strong>Email a set-password link</strong>They choose their own password. Needs an email
+							address.</span
+						>
+					{/if}
+				</label>
+				<label class:on={how === 'password'}>
+					<input type="radio" bind:group={how} value="password" />
+					<span><strong>Set a password now</strong>You pass it on; they can change it later.</span>
+				</label>
+			</fieldset>
+			{#if how === 'password'}
+				<label class="field">
+					<span>Password</span>
+					<input type="password" bind:value={password} required minlength="10" autocomplete="new-password" />
+					<small>At least 10 characters.</small>
+				</label>
+			{/if}
+			{#if error}<p class="err" role="alert">{error}</p>{/if}
+			<div class="acts">
+				<button class="btn btn-ghost" type="button" onclick={() => dlg.close()}>Cancel</button>
+				<button class="btn btn-primary" disabled={busy}>{busy ? 'Creating…' : 'Create user'}</button>
+			</div>
+		</form>
+	{/if}
 </Dialog>
 
 <style>
+	.done {
+		margin: 0;
+		color: var(--fg-2);
+	}
 	.cu {
 		display: grid;
 		gap: var(--space-4);

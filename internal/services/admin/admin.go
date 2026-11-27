@@ -100,7 +100,7 @@ type AdminServiceImpl interface {
 	TestSSOProvider(ctx context.Context, s *session.Session, id string) (*authapi.SSOTestResult, error)
 
 	CreateUser(ctx context.Context, s *session.Session, in authapi.CreateUser) (*authapi.CreatedUser, error)
-	SendPasswordReset(ctx context.Context, s *session.Session, id string) error
+	SendPasswordReset(ctx context.Context, s *session.Session, id string) (*authapi.PasswordReset, error)
 	ResendVerification(ctx context.Context, s *session.Session, id string) error
 	// AccessToken returns a fresh access token for calls to other boson
 	// services that accept auth tokens (the boson API's admin profile read).

@@ -255,8 +255,10 @@ func (s *AdminService) CreateUser(ctx context.Context, sess *session.Session, in
 	return out, friendly(err)
 }
 
-func (s *AdminService) SendPasswordReset(ctx context.Context, sess *session.Session, id string) error {
-	return friendly(s.call(ctx, sess, func(at string) error { return s.Client.SendPasswordReset(ctx, at, id) }))
+func (s *AdminService) SendPasswordReset(ctx context.Context, sess *session.Session, id string) (*authapi.PasswordReset, error) {
+	var out *authapi.PasswordReset
+	err := s.call(ctx, sess, func(at string) (err error) { out, err = s.Client.SendPasswordReset(ctx, at, id); return })
+	return out, friendly(err)
 }
 
 func (s *AdminService) ResendVerification(ctx context.Context, sess *session.Session, id string) error {
@@ -271,6 +273,8 @@ var friendlyMessages = map[string]string{
 	"slug_taken":       "Another provider already uses that slug. Pick a different one; it becomes part of the callback URL.",
 	"username_taken":   "That username is taken. Usernames are also IRC nicks, so they must be unique.",
 	"email_taken":      "Another account already uses that email address.",
+	"email_not_configured": "This network can't send email (no SMTP server is set up), so there is nothing to send. " +
+		"Set up SMTP under Emails, or share a link instead.",
 }
 
 func friendly(err error) error {

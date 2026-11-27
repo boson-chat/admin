@@ -261,6 +261,9 @@ func (f *Fake) CreateUser(_ context.Context, at string, in authapi.CreateUser) (
 	if in.Password != nil {
 		f.Passwords[in.Username] = *in.Password
 	}
+	if in.SendInviteEmail && f.NoEmail {
+		return &authapi.CreatedUser{User: *u, SetupLink: "https://app.example.test/reset#token=tok_" + id}, nil
+	}
 	return &authapi.CreatedUser{User: *u, InviteEmailSent: in.SendInviteEmail}, nil
 }
 
@@ -280,8 +283,14 @@ func (f *Fake) userEmail(at, id, kind string) error {
 	return nil
 }
 
-func (f *Fake) SendPasswordReset(_ context.Context, at, id string) error {
-	return f.userEmail(at, id, "reset")
+func (f *Fake) SendPasswordReset(_ context.Context, at, id string) (*authapi.PasswordReset, error) {
+	if err := f.userEmail(at, id, "reset"); err != nil {
+		return nil, err
+	}
+	if f.NoEmail {
+		return &authapi.PasswordReset{Link: "https://app.example.test/reset#token=tok_" + id}, nil
+	}
+	return &authapi.PasswordReset{EmailSent: true}, nil
 }
 
 func (f *Fake) ResendVerification(_ context.Context, at, id string) error {

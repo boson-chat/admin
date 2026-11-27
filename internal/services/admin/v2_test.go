@@ -108,7 +108,7 @@ func TestCreateUserValidation(t *testing.T) {
 	if err != nil || u.User.Username != "ana" || !u.InviteEmailSent || u.User.Role != "user" {
 		t.Fatalf("create: %v %+v", err, u)
 	}
-	if err := svc.SendPasswordReset(ctx, s, u.User.ID); err != nil || f.Emails[0] != "reset:"+u.User.ID {
+	if r, err := svc.SendPasswordReset(ctx, s, u.User.ID); err != nil || !r.EmailSent || f.Emails[0] != "reset:"+u.User.ID {
 		t.Fatalf("reset: %v %v", err, f.Emails)
 	}
 	if err := svc.ResendVerification(ctx, s, "usr_nope"); err == nil {

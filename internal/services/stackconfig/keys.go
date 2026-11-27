@@ -280,6 +280,11 @@ var Keys = append([]Key{
 	{Key: "auth.smtp.port", Kind: KindInt, Min: 1, Max: 65535, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "SMTP_PORT"},
 	{Key: "auth.smtp.from", Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "SMTP_FROM", item: text(254)},
 	{Key: "auth.smtp.tls", Kind: KindEnum, Enum: []string{"starttls", "tls", "none"}, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "SMTP_TLS"},
+	// NickServ account backend only (accounts.backend: nickserv): whether
+	// Boson sign-up registers a NickServ account, and what sign-up says
+	// when it doesn't ("" = auth's default: register on IRC).
+	{Key: KeyNickServRegistration, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "NICKSERV_REGISTRATION"},
+	{Key: KeyNickServSignupMessage, Kind: KindString, Perm: admin.PermSettingsManage, Services: []string{auth}, Env: "NICKSERV_SIGNUP_MESSAGE", item: optionalText(500)},
 
 	// irc.plaintext_port is left to hand edits: compose publishes the
 	// container's 6667, so changing it here would silently break the mapping.
@@ -375,6 +380,12 @@ var Keys = append([]Key{
 	{Key: KeyBrandingTheme, Kind: KindTheme, Perm: admin.PermSettingsManage, Services: []string{auth}},
 	{Key: KeyBrandingImages, Kind: KindImages, Perm: admin.PermSettingsManage, Services: []string{auth}},
 }, emailKeys()...)
+
+// NickServ account backend keys (auth.nickserv).
+const (
+	KeyNickServRegistration  = "auth.nickserv.registration"
+	KeyNickServSignupMessage = "auth.nickserv.signup_message"
+)
 
 // Federation keys (auth's federation section).
 const (

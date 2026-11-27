@@ -9,10 +9,14 @@
 	import Notice from '$lib/components/Notice.svelte';
 	import Time from '$lib/components/Time.svelte';
 	import CreateUser from '$lib/components/CreateUser.svelte';
+	import { loadAuthAccounts } from '$lib/accounts';
 	import RoleChip from '$lib/components/RoleChip.svelte';
 	import { session } from '$lib/session.svelte';
 
 	let creator = $state<CreateUser>();
+	// No SMTP on auth: create-user hands back the set-password link.
+	let emailOff = $state(false);
+	loadAuthAccounts().then((a) => (emailOff = a?.email_configured === false));
 
 	const sizes: DropdownOption[] = [
 		{ value: '25', label: '25 per page' },
@@ -99,7 +103,7 @@
 		<button class="btn btn-primary" onclick={() => creator?.open()}>Create user</button>
 	{/if}
 </div>
-{#if session.can('users.manage')}<CreateUser bind:this={creator} />{/if}
+{#if session.can('users.manage')}<CreateUser bind:this={creator} {emailOff} />{/if}
 
 <div class="toolbar">
 	<label class="search">

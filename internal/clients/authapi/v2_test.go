@@ -44,7 +44,7 @@ func TestOlderAuthIsUnsupported(t *testing.T) {
 	if _, err := c.CreateUser(ctx, "t", CreateUser{Username: "x"}); !apperr.IsUnsupported(err) { // 405
 		t.Fatalf("create user: %v", err)
 	}
-	if err := c.SendPasswordReset(ctx, "t", "usr_1"); !apperr.IsUnsupported(err) {
+	if _, err := c.SendPasswordReset(ctx, "t", "usr_1"); !apperr.IsUnsupported(err) {
 		t.Fatalf("reset: %v", err)
 	}
 	u, err := c.GetUser(ctx, "t", "usr_1")
@@ -265,5 +265,52 @@ func TestSettingsGuestVoice(t *testing.T) {
 	s, err = c.UpdateSettings(ctx, "t", SettingsPatch{GuestVoice: new(true)})
 	if err != nil || patched != `{"guest_voice":true}` || s.GuestVoice == nil || !*s.GuestVoice {
 		t.Fatalf("patch: %v %s %+v", err, patched, s)
+	}
+}
+
+// Auth without SMTP: /v1/config says so, and resets / setup links come
+// back as links for the admin to share; older auth answers {status} only.
+func TestNoEmailWireFormat(t *testing.T) {
+	noEmail := true
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/config", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"registration":"open","require_email_verification":false,"sso_providers":[],
+			"email":{"configured":false},"accounts":{"backend":"nickserv","signup":true,"signup_message":null,"password_reset":false}}`))
+	})
+	mux.HandleFunc("POST /v1/admin/users/{id}/password-reset", func(w http.ResponseWriter, _ *http.Request) {
+		if noEmail {
+			_, _ = w.Write([]byte(`{"status":"x","email_sent":false,"link":"https://app.example/reset#token=t"}`))
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"status":"a password reset link has been sent to the user's email address"}`))
+	})
+	mux.HandleFunc("POST /v1/admin/users", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"user":{"id":"usr_1","username":"a","role":"user"},"invite_email_sent":false,"setup_link":"https://app.example/reset#token=s"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewAuthClient(srv.URL, time.Second, nil)
+	ctx := context.Background()
+
+	cfg, err := c.PublicConfig(ctx)
+	if err != nil || cfg.EmailConfigured() || cfg.AccountBackend() != AccountBackendNickServ || cfg.Accounts.PasswordReset {
+		t.Fatalf("config: %v %+v", err, cfg)
+	}
+	if (&PublicConfig{}).AccountBackend() != AccountBackendLocal || !(&PublicConfig{}).EmailConfigured() {
+		t.Error("an older auth's config should read as local with email")
+	}
+	r, err := c.SendPasswordReset(ctx, "t", "usr_1")
+	if err != nil || r.EmailSent || r.Link != "https://app.example/reset#token=t" {
+		t.Fatalf("reset without email: %v %+v", err, r)
+	}
+	noEmail = false
+	if r, err = c.SendPasswordReset(ctx, "t", "usr_1"); err != nil || !r.EmailSent || r.Link != "" {
+		t.Fatalf("reset (older auth): %v %+v", err, r)
+	}
+	u, err := c.CreateUser(ctx, "t", CreateUser{Username: "a", Email: "a@x.org", SendInviteEmail: true})
+	if err != nil || u.InviteEmailSent || u.SetupLink != "https://app.example/reset#token=s" {
+		t.Fatalf("create: %v %+v", err, u)
 	}
 }

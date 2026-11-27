@@ -23,6 +23,15 @@
 		topicProblem
 	} from '$lib/channels';
 	import NetworkChannels from '$lib/components/NetworkChannels.svelte';
+	import EmailOff from '$lib/components/EmailOff.svelte';
+	import {
+		MAX_SIGNUP_MESSAGE,
+		NICKSERV_REGISTRATION_KEY,
+		NICKSERV_SIGNUP_MESSAGE_KEY,
+		loadAuthAccounts,
+		signupMessageProblem,
+		type AuthAccounts
+	} from '$lib/accounts';
 	import ChoiceGroup, { type Choice } from '$lib/components/ChoiceGroup.svelte';
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
@@ -181,6 +190,48 @@
 		return { set, unset };
 	});
 	let netChangeCount = $derived(Object.keys(netChanges.set).length + netChanges.unset.length);
+
+	// What auth's accounts can do: email set up? NickServ accounts?
+	let accounts = $state<AuthAccounts | null>(null);
+	let emailOff = $derived(accounts?.email_configured === false);
+	let nickserv = $derived(accounts?.account_backend === 'nickserv');
+	// NickServ sign-up (auth.nickserv.* in the stack config file). Not in the
+	// file: what auth does now (its env), read from /v1/config's sign-up.
+	let nsRegKey = $derived(cfg?.keys?.find((k) => k.key === NICKSERV_REGISTRATION_KEY));
+	let nsMsgKey = $derived(cfg?.keys?.find((k) => k.key === NICKSERV_SIGNUP_MESSAGE_KEY));
+	let nsEditable = $derived(!!nsRegKey?.editable && !!nsMsgKey?.editable);
+	let savedNsReg = $derived(
+		nsRegKey?.set ? nsRegKey.value !== false : saved?.registration === 'closed' || accounts?.signup !== false
+	);
+	let savedNsMsg = $derived(nsMsgKey?.set && typeof nsMsgKey.value === 'string' ? nsMsgKey.value : '');
+	let nsReg = $state(true);
+	let nsMsg = $state('');
+	let nsFilledFrom = '';
+	function resetNs() {
+		nsReg = savedNsReg;
+		nsMsg = savedNsMsg;
+	}
+	$effect(() => {
+		const tag = `${cfg?.etag ?? ''}|${savedNsReg}|${savedNsMsg}`;
+		if (cfg && accounts && tag !== nsFilledFrom) {
+			nsFilledFrom = tag;
+			resetNs();
+		}
+	});
+	let nsIssue = $derived(nickserv ? signupMessageProblem(nsMsg) : '');
+	let nsChanges = $derived.by(() => {
+		const set: Record<string, string | boolean> = {};
+		const unset: string[] = [];
+		if (!cfg || !nickserv || !nsEditable) return { set, unset };
+		if (nsReg !== savedNsReg) set[NICKSERV_REGISTRATION_KEY] = nsReg;
+		const m = nsMsg.trim();
+		if (m !== savedNsMsg) {
+			if (m) set[NICKSERV_SIGNUP_MESSAGE_KEY] = m;
+			else if (nsMsgKey?.set) unset.push(NICKSERV_SIGNUP_MESSAGE_KEY);
+		}
+		return { set, unset };
+	});
+	let nsChangeCount = $derived(Object.keys(nsChanges.set).length + nsChanges.unset.length);
 	const voice: Choice<VoiceCreators>[] = [
 		{
 			value: 'admins',
@@ -215,6 +266,7 @@
 	onMount(() => {
 		load();
 		stackConfig.load();
+		loadAuthAccounts().then((a) => (accounts = a));
 		// the roles a network channel can be kept to (Who can join)
 		if (!rolesState.loaded) rolesState.load();
 	});
@@ -238,11 +290,17 @@
 			out.channel_expiry_days = days;
 		return out;
 	});
-	let changeCount = $derived(Object.keys(changes).length + netChangeCount);
+	let changeCount = $derived(Object.keys(changes).length + netChangeCount + nsChangeCount);
 	// An invalid custom expiry is an unsaved edit too (Discard undoes it).
-	let dirty = $derived(changeCount > 0 || !!customError || !!netIssue);
+	let dirty = $derived(changeCount > 0 || !!customError || !!netIssue || !!nsIssue);
 	let blocker = $derived(
-		customError ? 'Fix the expiry to save' : netIssue ? 'Fix the network channels to save' : ''
+		customError
+			? 'Fix the expiry to save'
+			: netIssue
+				? 'Fix the network channels to save'
+				: nsIssue
+					? 'Fix the sign-up message to save'
+					: ''
 	);
 
 	async function save(e: Event) {
@@ -251,13 +309,19 @@
 		saving = true;
 		try {
 			// The network channels first: the If-Match is the file on screen.
-			if (netChangeCount) await stackConfig.save(netChanges);
+			const fileChanges = netChangeCount + nsChangeCount;
+			if (fileChanges)
+				await stackConfig.save({
+					set: { ...netChanges.set, ...nsChanges.set },
+					unset: [...netChanges.unset, ...nsChanges.unset]
+				});
+			if (nsChangeCount) loadAuthAccounts().then((a) => (accounts = a));
 			if (Object.keys(changes).length) {
 				const r = await api<{ settings: NetworkSettings; config?: FileInfo }>('PATCH', '/settings', changes);
 				saved = r.settings;
 				file = r.config ?? null;
 				reset(saved);
-				if (netChangeCount) await stackConfig.load();
+				if (fileChanges) await stackConfig.load();
 			}
 			toasts.push('Network settings saved.');
 		} catch (err) {
@@ -270,6 +334,7 @@
 	function discard() {
 		if (saved) reset(saved);
 		resetNet();
+		resetNs();
 	}
 </script>
 
@@ -342,10 +407,70 @@
 			<div class="toggle-row">
 				<Toggle
 					label="Require a verified email"
-					detail="New accounts must click the link in their verification email before they can sign in."
+					detail={nickserv
+						? 'New NickServ accounts must confirm the code the network emailed them before they can sign in.'
+						: 'New accounts must click the link in their verification email before they can sign in.'}
 					bind:checked={draft.require_email_verification}
 				/>
 			</div>
+			{#if emailOff && !nickserv}
+				<div class="email-off" data-testid="email-off">
+					<EmailOff backend="local" />
+					{#if draft.require_email_verification}
+						<p class="hint">
+							“Require a verified email” stays saved and applies once email is set up; until then sign-in
+							doesn’t ask for it.
+						</p>
+					{/if}
+				</div>
+			{/if}
+			{#if nickserv}
+				<div class="nickserv" data-testid="nickserv-signup">
+					<h3>NickServ accounts</h3>
+					<p class="hint">
+						Accounts on this network are NickServ accounts: people sign in to Boson with their NickServ
+						account name and password.
+					</p>
+					<div class="toggle-row">
+						<Toggle
+							label="Register NickServ accounts when people sign up on Boson"
+							detail="Sign-up in the Boson apps registers the NickServ account for them (Atheme services only). Off: sign-up shows the message below and people register on IRC."
+							disabled={!nsEditable || saving}
+							bind:checked={nsReg}
+						/>
+					</div>
+					{#if draft.registration === 'closed'}
+						<p class="hint">Registration is closed, so nobody signs up either way.</p>
+					{/if}
+					{#if !nsReg}
+						<label class="field ns-msg">
+							<span>Sign-up message</span>
+							<input
+								type="text"
+								bind:value={nsMsg}
+								maxlength={MAX_SIGNUP_MESSAGE + 20}
+								disabled={!nsEditable || saving}
+								aria-invalid={!!nsIssue}
+								placeholder={accounts?.signup_message ??
+									'Accounts on this network are NickServ accounts. Register on IRC with /msg NickServ REGISTER …'}
+							/>
+							<small
+								>{nsIssue ||
+									'Shown where sign-up would be, for example where to register on IRC or a web page that does. Empty: auth’s default, shown greyed out in the box.'}</small
+							>
+						</label>
+					{/if}
+					{#if netOff}
+						<Notice tone="info">
+							These live in the stack config file, which this panel isn’t set up to edit. Set
+							<code>NICKSERV_REGISTRATION</code> and <code>NICKSERV_SIGNUP_MESSAGE</code> in the auth service’s
+							environment instead.
+						</Notice>
+					{:else if cfg && !nsEditable}
+						<p class="hint">You can look but not change these: saving needs <code>settings.manage</code>.</p>
+					{/if}
+				</div>
+			{/if}
 			<div class="guest" class:off={guestSupported && !guestAccess}>
 				<div class="toggle-row">
 					<Toggle
@@ -577,6 +702,23 @@
 	.guest {
 		display: grid;
 		gap: var(--space-2);
+	}
+	.email-off,
+	.nickserv {
+		display: grid;
+		gap: var(--space-3);
+	}
+	.email-off {
+		margin-top: calc(var(--space-5) - var(--space-8));
+	}
+	.nickserv h3 {
+		font-size: var(--text-base);
+	}
+	.nickserv .hint {
+		margin-top: 0;
+	}
+	.ns-msg [aria-invalid='true'] {
+		border-color: var(--danger);
 	}
 	.toggle-row {
 		padding: var(--space-4);

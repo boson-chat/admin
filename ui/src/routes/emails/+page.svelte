@@ -7,6 +7,8 @@
 	import { stackConfig } from '$lib/stackconfig.svelte';
 	import type { ConfigChange, ConfigView } from '$lib/types';
 	import MjmlEditor from '$lib/components/MjmlEditor.svelte';
+	import EmailOff from '$lib/components/EmailOff.svelte';
+	import { loadAuthAccounts, type AuthAccounts } from '$lib/accounts';
 	import {
 		LAYOUT,
 		PLACEHOLDER_HELP,
@@ -331,9 +333,13 @@
 		fill();
 		loaded = true;
 	}
+	// Whether auth can send at all (no SMTP: nothing here is sent).
+	let accounts = $state<AuthAccounts | null>(null);
+	let emailOff = $derived(accounts?.email_configured === false);
 	onMount(() => {
 		if (window.innerWidth < 700) device = 'mobile';
 		load();
+		loadAuthAccounts().then((a) => (accounts = a));
 	});
 
 	async function saveChange(c: ConfigChange, msg: string, what: string) {
@@ -570,6 +576,12 @@
 		</p>
 	</div>
 </div>
+
+{#if emailOff}
+	<div class="email-off" data-testid="email-off">
+		<EmailOff backend={accounts?.account_backend} />
+	</div>
+{/if}
 
 {#if configOff}
 	<State kind="off" title="Email settings live in the stack config file">
@@ -1047,12 +1059,17 @@
 				</label>
 				<button
 					class="btn"
-					disabled={sending || !!previewOff || !editable || !emailOk(to)}
-					title={testDirty ? 'Sends the saved version' : undefined}
-					>{sending ? 'Sending…' : 'Send test'}</button
+					disabled={sending || !!previewOff || !editable || !emailOk(to) || emailOff}
+					title={emailOff
+						? 'Email isn’t set up, so there is nothing to send with'
+						: testDirty
+							? 'Sends the saved version'
+							: undefined}>{sending ? 'Sending…' : 'Send test'}</button
 				>
 			</form>
-			{#if testDirty}
+			{#if emailOff}
+				<p class="hint">Test emails need an SMTP server. You can still edit and preview every message.</p>
+			{:else if testDirty}
 				<p class="hint">The test uses what’s saved; save first to send your edits.</p>
 			{/if}
 		</section>
@@ -1060,6 +1077,10 @@
 {/if}
 
 <style>
+	.email-off {
+		margin-bottom: var(--space-5);
+		max-width: 72ch;
+	}
 	.card {
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
