@@ -211,6 +211,13 @@
 
 	const tagFor: Record<Level, string> = { ok: 'tag-ok', warn: 'tag-warn', bad: 'tag-bad' };
 	const statusWord = { up: 'Up', down: 'Down', stale: 'Stale' } as const;
+	// job node down: usually the host firewall (ufw) dropping the scrape
+	// from the stack network (the stack's installer adds this rule).
+	const NODE_DOCS_URL =
+		'https://github.com/boson-chat/stack/blob/main/docs/deploy-boson-chat.md#host-metrics-node-exporter';
+	const NODE_UFW_RULE =
+		"sudo ufw allow from 10.203.53.0/24 to 10.203.53.1 port 9100 proto tcp comment 'boson: metrics -> node-exporter'";
+	let nodeDown = $derived(!!data?.targets?.some((t) => t.job === 'node' && t.status !== 'up'));
 	let rangeLabel = $derived(
 		{ '1h': 'last hour', '6h': 'last 6 hours', '24h': 'last 24 hours', '7d': 'last 7 days' }[range]
 	);
@@ -413,6 +420,20 @@
 						</tbody>
 					</table>
 				</div>
+				{#if nodeDown}
+					<div class="node-hint">
+						<Notice tone="warn">
+							<span data-testid="node-down-hint"
+								>Job <code>node</code> (node-exporter, host metrics) isn’t answering. On a server with ufw,
+								the firewall drops the scrape from the stack network: allow it on the server (with your
+								<code>STACK_SUBNET</code> / <code>NODE_EXPORTER_ADDR</code> if you changed them), or re-run
+								the installer with <code>--firewall</code>.</span
+							>
+							<pre class="cmd">{NODE_UFW_RULE}</pre>
+							<a href={NODE_DOCS_URL} target="_blank" rel="noopener noreferrer">Host metrics in the docs</a>
+						</Notice>
+					</div>
+				{/if}
 			{/if}
 		</section>
 	{/if}
@@ -421,6 +442,16 @@
 {/if}
 
 <style>
+	.node-hint {
+		margin-top: var(--space-3);
+	}
+	.cmd {
+		margin: var(--space-2) 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
 	.summary {
 		font-size: var(--text-lg);
 		color: var(--fg);
