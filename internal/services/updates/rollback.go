@@ -173,10 +173,25 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 				}
 			}
 		}
+		// Volumes: by hand, every volume of the rolled-back components; by
+		// itself (migrations ran), only those of the components whose
+		// database migrated (their data goes back together). Only the
+		// services that use a volume stop for it, never everything a
+		// stack update recreated (that stopped Postgres before the
+		// database restore that needs it).
+		owners := s.volumeClients()
 		for _, it := range run.Items {
 			for _, v := range it.Volumes {
-				if have["vol-"+v+".tgz"] {
-					vols = append(vols, v)
+				if !have["vol-"+v+".tgz"] || slices.Contains(vols, v) {
+					continue
+				}
+				if autoData && !s.volumeOfMigrated(v, dbs) {
+					continue
+				}
+				vols = append(vols, v)
+				if o := owners[v]; len(o) > 0 {
+					stop = append(stop, o...)
+				} else if it.Stack == nil {
 					stop = append(stop, it.Services...)
 				}
 			}
@@ -186,8 +201,9 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 	_, presentSvc, _ := s.installedVersions(ctx)
 	// Everything that uses restored data stops first (the rolled-back
 	// services too: nothing may write to a database while it's replaced).
+	// Not Postgres: the databases are restored through it.
 	stop = slices.DeleteFunc(uniq(stop), func(x string) bool {
-		return x == "admin" || (presentSvc != nil && !presentSvc[x])
+		return x == "admin" || x == "postgres" || (presentSvc != nil && !presentSvc[x])
 	})
 	up := slices.DeleteFunc(slices.Clone(services), func(x string) bool { return slices.Contains(stop, x) })
 	renv := with(env, "SETS", strings.Join(sets, " "),
@@ -198,13 +214,25 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 	}
 	rout, err := s.job(ctx, run.ID, "rollback", scriptRollback, renv)
 	if err != nil {
+		// The script started the services again (on the restored files)
+		// before giving up: say whether that worked.
+		switch rec := recovered(rout); rec {
+		case "ok":
+			err = fmt.Errorf("%w; the stopped services were started again on the restored files", err)
+		case "failed":
+			err = fmt.Errorf("%w; starting the services again failed too (run docker compose up -d in the stack directory)", err)
+		}
 		fail("restore", err)
 		return
 	}
-	// Services the update added: removed again, nothing to wait for.
-	for _, f := range rout.Tagged("REMOVED") {
-		if len(f) == 1 {
-			up = slices.DeleteFunc(up, func(x string) bool { return x == f[0] })
+	// Services the update added: removed again, nothing to wait for; and
+	// those the restored files don't have, left as they are.
+	for _, tag := range []string{"REMOVED", "NOTSTOPPED"} {
+		for _, f := range rout.Tagged(tag) {
+			if len(f) == 1 {
+				up = slices.DeleteFunc(up, func(x string) bool { return x == f[0] })
+				stop = slices.DeleteFunc(stop, func(x string) bool { return x == f[0] })
+			}
 		}
 	}
 	d := "pinned " + strings.Join(sets, " ")
@@ -258,6 +286,48 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 		return
 	}
 	s.collectHandoff(ctx)
+}
+
+// recovered: "ok" or "failed" when the rollback script brought the
+// services back up after a failed step, "" when it didn't get to.
+func recovered(out *JobOutput) string {
+	if out == nil {
+		return ""
+	}
+	for _, f := range out.Tagged("RECOVER") {
+		if len(f) == 1 {
+			return f[0]
+		}
+	}
+	return ""
+}
+
+// volumeClients: each data volume → the services of the component that
+// owns it.
+func (s *Service) volumeClients() map[string][]string {
+	m := map[string][]string{}
+	for _, c := range s.o.Catalog {
+		for _, v := range c.Volumes {
+			m[v] = append(m[v], c.Services...)
+		}
+	}
+	return m
+}
+
+// volumeOfMigrated: v belongs to a component one of whose databases is
+// among dbs (restored).
+func (s *Service) volumeOfMigrated(v string, dbs []string) bool {
+	for _, c := range s.o.Catalog {
+		if !slices.Contains(c.Volumes, v) {
+			continue
+		}
+		for _, db := range c.Databases {
+			if slices.Contains(dbs, db) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func uniq(in []string) []string {

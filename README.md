@@ -671,9 +671,15 @@ logged with the admin's name and listed under History):
 
 **Rollback** (offered after a failure, and after a success): `.env` and
 `config/` from the backup, each component pinned to the exact previous
-`repo:tag@sha256:…`, and when the update migrated a database (or the admin
-asks) that database and the components' volumes restored from the backup
-with their services stopped; then the same health and checks run again.
+`repo:tag@sha256:…`, and when the update migrated a database that database
+(and the volumes of the component that owns it) restored from the backup
+with only the services that use them stopped; when the admin asks, every
+database and volume of the rolled-back components. Postgres is never
+stopped: it is started on the restored files and waited for before a
+database restore. If a rollback step fails, the services it stopped or was
+to recreate are started again on the files in place by then (the run says
+whether that worked), so a failed rollback doesn't leave the stack down.
+Then the same health and checks run again.
 
 ### Stack releases
 
@@ -713,7 +719,9 @@ directory) → stage → pull the changed images → `stack-apply` job (hashes
 before; the bundle's `stack-apply.sh files`; the image pins; `stack-apply.sh
 migrate`; hashes after) → recreate the changed services (`--force-recreate`
 for those whose config is the same but a mounted file changed) → health →
-checks (plus `VERSION` and each recreated service's image) → the panel.
+checks (plus `VERSION` and each recreated service's image: what the run
+wrote to `.env`, so a component updated in the same run, say auth, is
+expected on its own new version, not the release's default) → the panel.
 **A stack update that fails after it changed something rolls itself back**
 (stack directory, `.env`, `config/`, image digests; files it added removed;
 services it added removed).

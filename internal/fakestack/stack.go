@@ -316,3 +316,12 @@ func (s *Stack) restoreStack(x *stackSnap) {
 
 // AddService starts a service container (call inside Set).
 func (s *Stack) AddService(svc, image string) { s.add(svc, image) }
+
+// RunImage replaces a service's container with one running image (call
+// inside Set).
+func (s *Stack) RunImage(svc, image string) {
+	if c := s.svc(svc); c != nil {
+		delete(s.cts, c.ID)
+	}
+	s.add(svc, image)
+}

@@ -398,3 +398,183 @@ func newServer(t *testing.T, fs *fakestack.Stack) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// bosonChatHost is boson.chat before its first stack release (2026-11-27):
+// a pre-release install whose .env pins auth to the release's own default
+// (AUTH_IMAGE=auth:1.21.0, set by an earlier component update), auth's
+// newer 1.22.0 out, the push relay running (its database migrates when its
+// new image starts), and a release that recreates Postgres, the relay,
+// voice, Ergo and RoleServ along with Traefik.
+func bosonChatHost(t *testing.T) (*fakestack.Stack, *updates.Service) {
+	fs, srv := newStack(t)
+	fs.Set(func(s *fakestack.Stack) {
+		s.Env["AUTH_IMAGE"] = harbor + "auth:1.21.0"
+		s.RunImage("auth", harbor+"auth:1.21.0")
+		s.AddService("traefik", "traefik:v3.7.19")
+		s.AddService("roleserv", harbor+"stack-ergo:2.19.1")
+		s.AddService("pushrelay", harbor+"pushrelay:1.0.0")
+		s.Defaults = map[string]string{"ergo": harbor + "stack-ergo:2.19.1", "roleserv": harbor + "stack-ergo:2.19.1",
+			"traefik": "traefik:v3.7.19", "pushrelay": harbor + "pushrelay:1.0.0"}
+		s.Profiles = "irc,auth,api,web,voice,admin,updates,pushrelay"
+		s.Migrations["pushrelay public.schema_migrations"] = "p1"
+		s.Migrates[harbor+"pushrelay:1.1.0"] = "pushrelay"
+		s.Volumes = []string{"roleserv_data", "voice_data"}
+		m := map[string]updates.ManifestService{
+			"traefik":    {Compose: "compose.yaml", Image: "traefik:v3.7.20"},
+			"ergo":       {Compose: "compose.yaml", Image: harbor + "stack-ergo:1.1.0", Built: true, Profiles: []string{"irc"}, Mounts: []string{"config"}},
+			"roleserv":   {Compose: "compose.yaml", Image: harbor + "stack-ergo:1.1.0", Built: true, Profiles: []string{"irc"}},
+			"auth":       {Compose: "compose.yaml", Image: harbor + "auth:1.21.0", Env: "AUTH_IMAGE", Profiles: []string{"auth"}},
+			"api":        {Compose: "compose.yaml", Image: harbor + "backend:0.57.0", Env: "API_IMAGE"},
+			"web":        {Compose: "compose.yaml", Image: harbor + "web:0.100.0", Env: "WEB_IMAGE"},
+			"quicvoiced": {Compose: "compose.yaml", Image: harbor + "quicvoice:1.15.0", Env: "QUICVOICE_IMAGE"},
+			"pushrelay":  {Compose: "compose.yaml", Image: harbor + "pushrelay:1.1.0", Env: "PUSHRELAY_IMAGE", Profiles: []string{"pushrelay"}},
+			"admin":      {Compose: "compose.yaml", Image: harbor + "admin:1.26.0", Env: "ADMIN_IMAGE"},
+			"postgres":   {Compose: "compose.yaml", Image: "postgres:18-alpine", Profiles: []string{"auth"}},
+		}
+		s.StackReleases = []*fakestack.StackRelease{{
+			Version: "1.1.0", Body: "## 1.1.0", Manifest: manifest(t, "1.1.0", "1.26.0", m), Bundle: []byte("bundle 1.1.0"),
+			Files:      []string{"update compose.yaml", "add VERSION"},
+			Migrations: map[string]string{"0001-bridge-client-webirc.sh": "Bridge"},
+			Hashes: map[string]string{"traefik": "h1-traefik", "postgres": "h1-pg", "quicvoiced": "h1-voice",
+				"auth": "h1-auth", "pushrelay": "h1-push"},
+			Defaults: map[string]string{"ergo": harbor + "stack-ergo:1.1.0", "roleserv": harbor + "stack-ergo:1.1.0",
+				"traefik": "traefik:v3.7.20", "pushrelay": harbor + "pushrelay:1.1.0"},
+		}}
+		for _, tag := range []string{"boson/stack-ergo:1.1.0", "boson/stack-webircgateway:1.1.0", "boson/pushrelay:1.1.0", "traefik:v3.7.20"} {
+			s.Tags[tag] = true
+		}
+	})
+	return fs, newService(t, fs, srv, "1.26.0", t.TempDir())
+}
+
+// The stack release keeps AUTH_IMAGE (the pin is its default) while auth's
+// own update in the same run moves it to 1.22.0: the "auth image" check
+// must expect what the run wrote to .env, not the release's view of it
+// (boson.chat 2026-11-27: "checks failed: auth image — rolling back").
+func TestStackReleaseWithComponentUpdateChecksTheComponentsImage(t *testing.T) {
+	fs, svc := bosonChatHost(t)
+	ctx := context.Background()
+	st := svc.Check(ctx)
+	if c := component(st, "stack"); !c.Applyable {
+		t.Fatalf("stack: %+v (%s)", c, c.Why)
+	}
+	for _, p := range component(st, "stack").Stack.Pins {
+		if p.EnvVar == "AUTH_IMAGE" && p.Action != "keep" {
+			t.Fatalf("auth's pin is the release's default: kept, got %+v", p)
+		}
+	}
+	if _, err := svc.Apply(ctx, "admin", updates.ApplyRequest{Mode: "selected", Components: []string{"stack", "auth"}}, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	done := waitRun(t, svc, updates.StateSucceeded, updates.StateFailed, updates.StateRolledBack, updates.StateRollbackFailed)
+	if done.State != updates.StateSucceeded {
+		var failed []string
+		for _, c := range done.Checks {
+			if !c.OK && !c.Skipped {
+				failed = append(failed, c.Label+": "+c.Detail)
+			}
+		}
+		var errs []string
+		for _, h := range svc.Status(ctx).History {
+			errs = append(errs, h.Kind+": "+h.Error)
+		}
+		t.Fatalf("update: %s %s (%s)\nfailed checks %v\nhistory %v", done.Kind, done.State, done.Error, failed, errs)
+	}
+	if fs.Image("auth") != harbor+"auth:1.22.0" || fs.EnvValue("AUTH_IMAGE") != harbor+"auth:1.22.0" {
+		t.Fatalf("auth %s / %s", fs.Image("auth"), fs.EnvValue("AUTH_IMAGE"))
+	}
+	var auth *updates.Check
+	for i, c := range done.Checks {
+		if c.ID == "image-auth" {
+			auth = &done.Checks[i]
+		}
+	}
+	if auth == nil || !auth.OK || !strings.Contains(auth.Detail, "auth:1.22.0") {
+		t.Fatalf("image-auth: %+v (all %+v)", auth, done.Checks)
+	}
+	var stackIt *updates.StackItem
+	for _, it := range done.Items {
+		if it.Stack != nil {
+			stackIt = it.Stack
+		}
+	}
+	if stackIt == nil || stackIt.Images["auth"] != harbor+"auth:1.22.0" || stackIt.Images["ergo"] != harbor+"stack-ergo:1.1.0" {
+		t.Fatalf("the run's expected images: %+v", stackIt)
+	}
+}
+
+// boson.chat's failed rollback: the stack update recreated Postgres (and
+// everything else), the push relay's migrations ran, the update failed and
+// rolled itself back. The rollback stopped every recreated service,
+// Postgres included, then restored the pushrelay database through
+// Postgres ("service "postgres" is not running") and left all of it
+// stopped. Now only the relay stops, Postgres stays up, no volume of a
+// component without a migrated database is restored, and all of it runs
+// after.
+func TestStackRollbackRestoresDatabaseWithPostgresUp(t *testing.T) {
+	fs, svc := bosonChatHost(t)
+	ctx := context.Background()
+	fs.Set(func(s *fakestack.Stack) { s.Broken[harbor+"stack-ergo:1.1.0"] = true })
+	svc.Check(ctx)
+	if _, err := svc.Apply(ctx, "admin", updates.ApplyRequest{Mode: "selected", Components: []string{"stack"}}, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	done := waitRun(t, svc, updates.StateRolledBack, updates.StateRollbackFailed)
+	if done.State != updates.StateRolledBack {
+		t.Fatalf("rollback: %s\nsteps %+v\nlog %v", done.Error, done.Steps, done.Log)
+	}
+	if !slices.Equal(done.MigrationsRan, []string{"pushrelay"}) || !done.RestoreData {
+		t.Fatalf("the relay's migration is noticed: %v %v", done.MigrationsRan, done.RestoreData)
+	}
+	var rb fakestack.RollbackJob
+	fs.Set(func(s *fakestack.Stack) {
+		if len(s.Rollbacks) != 1 {
+			t.Fatalf("rollback jobs: %+v", s.Rollbacks)
+		}
+		rb = s.Rollbacks[0]
+	})
+	if !slices.Equal(rb.Stop, []string{"pushrelay"}) || slices.Contains(rb.Stop, "postgres") {
+		t.Fatalf("only the relay stops for its database, never Postgres: %+v", rb)
+	}
+	if !slices.Equal(rb.DBs, []string{"pushrelay"}) || len(rb.Volumes) != 0 {
+		t.Fatalf("only the migrated database is restored: %+v", rb)
+	}
+	if !slices.Equal(fs.Restored(), []string{"pushrelay"}) {
+		t.Fatalf("restored %v", fs.Restored())
+	}
+	for _, s := range []string{"postgres", "pushrelay", "auth", "ergo", "roleserv", "traefik", "quicvoiced", "api", "web"} {
+		if !fs.Running(s) {
+			t.Fatalf("%s isn't running after the rollback", s)
+		}
+	}
+	if fs.Image("ergo") != harbor+"stack-ergo:2.19.1" || fs.Image("pushrelay") != harbor+"pushrelay:1.0.0" {
+		t.Fatalf("ergo %s pushrelay %s", fs.Image("ergo"), fs.Image("pushrelay"))
+	}
+}
+
+// A rollback step that fails still leaves the services running (on the
+// restored files), and says so.
+func TestStackRollbackFailureStartsServicesAgain(t *testing.T) {
+	fs, svc := bosonChatHost(t)
+	ctx := context.Background()
+	fs.Set(func(s *fakestack.Stack) {
+		s.Broken[harbor+"stack-ergo:1.1.0"] = true
+		s.FailRestore = "pushrelay"
+	})
+	svc.Check(ctx)
+	if _, err := svc.Apply(ctx, "admin", updates.ApplyRequest{Mode: "selected", Components: []string{"stack"}}, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	done := waitRun(t, svc, updates.StateRolledBack, updates.StateRollbackFailed)
+	if done.State != updates.StateRollbackFailed || !strings.Contains(done.Error, "started again on the restored files") {
+		t.Fatalf("rollback: %s %s\nlog %v", done.State, done.Error, done.Log)
+	}
+	for _, s := range []string{"postgres", "pushrelay", "auth", "ergo", "roleserv", "traefik", "quicvoiced"} {
+		if !fs.Running(s) {
+			t.Fatalf("%s is left stopped after the failed rollback", s)
+		}
+	}
+	if fs.Image("ergo") != harbor+"stack-ergo:2.19.1" {
+		t.Fatalf("ergo runs the restored files' image: %s", fs.Image("ergo"))
+	}
+}

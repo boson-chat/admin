@@ -221,9 +221,13 @@ func (s *Service) stackAnalyze(ctx context.Context, cs *ComponentStatus, ss *Sta
 	ss.Pins = pins
 	ss.images = images
 	ss.mounts = map[string][]string{}
+	ss.envs = map[string]string{}
 	ss.oneshot = map[string]bool{}
 	for svc, ms := range m.Services {
 		ss.mounts[svc] = ms.Mounts
+		if ms.Env != "" {
+			ss.envs[svc] = ms.Env
+		}
 		if ms.Oneshot {
 			ss.oneshot[svc] = true
 		}
@@ -397,7 +401,7 @@ func (s *Service) stackItem(st ComponentStatus) (*Item, []Component) {
 	}
 	sort.Strings(oneshot)
 	it.Stack = &StackItem{Version: ss.Version, BundleURL: ss.bundleURL, BundleSHA256: ss.bundleSHA, Sets: slices.Clone(ss.sets),
-		Images: ss.images, Mounts: ss.mounts, Oneshot: oneshot, Never: s.neverRestart(), Planned: slices.Clone(ss.Restarts)}
+		Images: ss.images, Envs: ss.envs, Mounts: ss.mounts, Oneshot: oneshot, Never: s.neverRestart(), Planned: slices.Clone(ss.Restarts)}
 	for img := range pull {
 		it.Stack.Pull = append(it.Stack.Pull, img)
 	}
@@ -449,6 +453,40 @@ func mergeSets(lists ...[]string) []string {
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, k+"="+val[k])
+	}
+	return out
+}
+
+// imagesAfterSets: the stack's images (service → image after the update)
+// with the .env lines the run actually writes applied: a component update
+// in the same run (AUTH_IMAGE=…:1.31.1 next to a stack release whose pin
+// rule keeps AUTH_IMAGE) moves the image compose runs, so the checks must
+// expect it. envs is the manifest's service → variable; plain items add
+// their own services (a run journalled without envs).
+func imagesAfterSets(images, envs map[string]string, sets []string, plain []Item) map[string]string {
+	val := map[string]string{}
+	for _, kv := range sets {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			val[k] = v
+		}
+	}
+	out := make(map[string]string, len(images))
+	for svc, img := range images {
+		out[svc] = img
+		if v, ok := val[envs[svc]]; ok && envs[svc] != "" {
+			out[svc] = v
+		}
+	}
+	for _, it := range plain {
+		v, ok := val[it.EnvVar]
+		if !ok || it.EnvVar == "" {
+			continue
+		}
+		for _, svc := range it.Services {
+			if _, known := out[svc]; known {
+				out[svc] = v
+			}
+		}
 	}
 	return out
 }

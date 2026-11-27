@@ -111,6 +111,7 @@ type StackStatus struct {
 	sets                 []string
 	images               map[string]string // service → image it runs after the update
 	mounts               map[string][]string
+	envs                 map[string]string // service → its *_IMAGE variable
 	oneshot              map[string]bool
 	selfImage            string
 }

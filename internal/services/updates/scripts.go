@@ -191,7 +191,36 @@ echo "@@RESULT fingerprint {}"
 // scriptRollback: .env and config/ from the backup, the previous image
 // digests pinned, then (RESTORE_DBS / RESTORE_VOLUMES) the data put back
 // with its services (STOP) stopped, and SERVICES recreated.
+//
+// Postgres is never stopped here: the databases are restored through it.
+// Before a database restore it is started (on the restored files) and
+// waited for. If any step fails, the services this job stopped or was to
+// recreate are still brought up on whatever files are in place by then
+// (the restored ones once that step ran), so a failed rollback never
+// leaves the stack stopped; "@@RECOVER ok|failed" says how that went.
 const scriptRollback = prelude + `
+has_service() { case " $(dc config --services 2>/dev/null | tr '\n' ' ') " in *" $1 "*) return 0 ;; esac; return 1; }
+recover() {
+	rc=$?
+	trap - EXIT
+	[ "$rc" -ne 0 ] || exit 0
+	set +e
+	up=""
+	for s in $SERVICES $STOP; do
+		if has_service "$s"; then up="$up $s"; fi
+	done
+	if has_service postgres; then up="postgres $up"; fi
+	echo "@@STEP the rollback failed (exit $rc): starting$up again on the restored files"
+	if out=$(dc up -d --no-deps $up 2>&1); then
+		echo "@@RECOVER ok"
+	else
+		echo "$out" | sed 's/^/@@RECOVERLOG /'
+		echo "@@RECOVER failed"
+	fi
+	exit "$rc"
+}
+trap recover EXIT
+STOP=$(for s in $STOP; do [ "$s" = postgres ] || printf '%s ' "$s"; done)
 if [ "$STACK_RESTORE" = 1 ] && [ -f "$BACKUP_DIR/stack-dir.tgz" ]; then
 	step "restoring the stack files"
 	if [ -f "$BACKUP_DIR/stack-added.txt" ]; then
@@ -214,12 +243,26 @@ if [ "$STACK_RESTORE" = 1 ] && [ -f "$BACKUP_DIR/stack-dir.tgz" ]; then
 		esac
 	done
 	SERVICES=$keep
+	# Nothing to stop of what the restored files don't have (compose would
+	# refuse the whole stop); it is left as it is.
+	keep=""
+	for s in $STOP; do
+		case "$have" in
+		*" $s "*) keep="$keep $s" ;;
+		*) echo "@@NOTSTOPPED $s" ;;
+		esac
+	done
+	STOP=$keep
 fi
 step "restoring .env and config"
 cat "$BACKUP_DIR/env" > "$ENV_FILE"
 if [ -f "$BACKUP_DIR/config.tgz" ]; then tar xzf "$BACKUP_DIR/config.tgz" -C "$STACK_DIR"; fi
 [ -z "$SETS" ] || setenv $SETS
-if [ -n "$STOP" ]; then step "stopping $STOP"; dc stop $STOP; fi
+if [ -n "$(echo $STOP)" ]; then step "stopping $(echo $STOP)"; dc stop $STOP; fi
+if [ -n "$RESTORE_DBS" ]; then
+	step "starting postgres on the restored files"
+	dc up -d --no-deps --wait --wait-timeout 120 postgres
+fi
 for db in $RESTORE_DBS; do
 	step "restoring database $db"
 	owner=$(psql_q postgres "select pg_get_userbyid(datdba) from pg_database where datname = '$db'")
@@ -231,7 +274,9 @@ for v in $RESTORE_VOLUMES; do
 	step "restoring volume $v"
 	util -v "${COMPOSE_PROJECT_NAME}_$v:/v" -v "$BACKUP_DIR:/b:ro" "$UTIL_IMAGE" sh -c 'find /v -mindepth 1 -delete && tar xzf "/b/vol-$1.tgz" -C /v' sh "$v"
 done
-if [ -n "$SERVICES$STOP" ]; then step "recreating $SERVICES $STOP"; dc up -d --no-deps $SERVICES $STOP; fi
+up=$(echo $SERVICES $STOP)
+if [ -n "$up" ]; then step "recreating $up"; dc up -d --no-deps $up; fi
+trap - EXIT
 echo "@@RESULT rollback {}"
 `
 

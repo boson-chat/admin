@@ -88,6 +88,11 @@ type container struct {
 	network                  string
 }
 
+// RollbackJob is one rollback job's parameters.
+type RollbackJob struct {
+	Services, Stop, DBs, Volumes []string
+}
+
 type snapshot struct {
 	env        map[string]string
 	migrations map[string]string
@@ -121,6 +126,13 @@ type Stack struct {
 	// Migrations: "db table" → hash, as the fingerprint prints it.
 	Migrations map[string]string
 	FreeKB     int64
+	// Volumes the backup archives besides ergo_db (vol-<name>.tgz).
+	Volumes []string
+	// FailRestore: restoring this database fails (the rollback job exits 1
+	// after starting the services again, as the script does).
+	FailRestore string
+	// Rollbacks: what each rollback job was asked to do.
+	Rollbacks []RollbackJob
 	// RateLimited: GitHub answers 403 with the limit used up.
 	RateLimited bool
 	// HoldSelf: the self-update job keeps running until ReleaseSelf.
@@ -202,6 +214,14 @@ func (s *Stack) Image(svc string) string {
 		}
 	}
 	return ""
+}
+
+// Running: the service has a container and it runs.
+func (s *Stack) Running(svc string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.svc(svc)
+	return c != nil && c.State == "running"
 }
 
 // EnvValue reads the fake .env.
@@ -746,7 +766,20 @@ func (s *Stack) runJob(c *container) {
 		}
 		s.say(c, "@@STEP dumping the databases")
 		s.fingerprint(c)
-		for _, f := range []string{"env 812", "config.tgz 2048", "images.txt 400", "pg-globals.sql 900", "pg-auth.dump 81234", "pg-api.dump 40321", "vol-ergo_db.tgz 5120"} {
+		files := []string{"env 812", "config.tgz 2048", "images.txt 400", "pg-globals.sql 900"}
+		dbs := map[string]bool{}
+		for k := range s.Migrations {
+			db, _, _ := strings.Cut(k, " ")
+			dbs[db] = true
+		}
+		for _, db := range sortedKeys(dbs) {
+			files = append(files, "pg-"+db+".dump 40321")
+		}
+		files = append(files, "vol-ergo_db.tgz 5120")
+		for _, v := range s.Volumes {
+			files = append(files, "vol-"+v+".tgz 2048")
+		}
+		for _, f := range files {
 			s.say(c, "@@FILE %s", f)
 		}
 		snap := snapshot{env: cp(s.Env), migrations: cp(s.Migrations)}
@@ -797,11 +830,42 @@ func (s *Stack) runJob(c *container) {
 			s.say(c, "@@STEP restoring the stack files")
 			s.restoreStack(snap.stack)
 		}
+		s.Rollbacks = append(s.Rollbacks, RollbackJob{Services: services, Stop: strings.Fields(e["STOP"]),
+			DBs: strings.Fields(e["RESTORE_DBS"]), Volumes: strings.Fields(e["RESTORE_VOLUMES"])})
+		// As the script: Postgres is never stopped; a failed step still
+		// brings everything it stopped (or was to recreate) back up.
+		var stop []string
+		for _, svc := range strings.Fields(e["STOP"]) {
+			if svc != "postgres" {
+				stop = append(stop, svc)
+			}
+		}
+		recover := func(msg string) {
+			s.say(c, "%s", msg)
+			s.say(c, "@@STEP the rollback failed (exit 1): starting again on the restored files")
+			for _, svc := range append(append([]string{}, services...), stop...) {
+				s.up(svc)
+			}
+			s.say(c, "@@RECOVER ok")
+			c.State, c.Exit = "exited", 1
+		}
 		s.say(c, "@@STEP restoring .env and config")
 		s.Env = cp(snap.env)
 		s.setenv(c, e["SETS"])
+		if len(stop) > 0 {
+			s.say(c, "@@STEP stopping %s", strings.Join(stop, " "))
+			for _, svc := range stop {
+				if x := s.svc(svc); x != nil {
+					x.State = "exited"
+				}
+			}
+		}
 		for _, db := range strings.Fields(e["RESTORE_DBS"]) {
 			s.say(c, "@@STEP restoring database %s", db)
+			if db == s.FailRestore {
+				recover("pg_restore: error: could not execute query")
+				return
+			}
 			for k := range s.Migrations {
 				if strings.HasPrefix(k, db+" ") {
 					s.Migrations[k] = snap.migrations[k]
@@ -809,7 +873,10 @@ func (s *Stack) runJob(c *container) {
 			}
 			s.restored = append(s.restored, db)
 		}
-		for _, svc := range append(services, strings.Fields(e["STOP"])...) {
+		for _, v := range strings.Fields(e["RESTORE_VOLUMES"]) {
+			s.say(c, "@@STEP restoring volume %s", v)
+		}
+		for _, svc := range append(services, stop...) {
 			s.up(svc)
 		}
 		s.say(c, "@@RESULT rollback {}")
@@ -836,4 +903,13 @@ func (s *Stack) runJob(c *container) {
 func (s *Stack) Handler(base string) http.Handler {
 	s.Server = strings.TrimRight(base, "/")
 	return s
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
