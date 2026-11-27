@@ -11,6 +11,10 @@
 //                                          # remote users, boson.json on :18681
 //   FAKE_AUTH_ROLES=1 node e2e/fake-auth.mjs   # an auth with roles (admin is
 //                                          # Owner) and role channels
+//   POST <internal>/__accounts {"email": false, "backend": "nickserv"}
+//                                          # an auth without SMTP (resets and
+//                                          # set-password links come back as
+//                                          # links) and / or NickServ accounts
 //   POST <internal>/__mode {"mode":"old"}  # act like auth 1.10.x: ignore
 //                                          # "email", send no from, no
 //                                          # last sign-in / activity
@@ -77,6 +81,9 @@ const access = new Set();
 const refresh = new Set();
 let n = 0;
 let mode = 'new';
+// /v1/config's email.configured and accounts.backend (POST /__accounts).
+let emailConfigured = true;
+let backend = 'local';
 const ROLES = process.env.FAKE_AUTH_ROLES === '1';
 // FAKE_AUTH_FEDERATION=1: auth's federation admin API (auth docs/federation.md),
 // remote users, and this server's boson.json + JWKS on the internal port.
@@ -571,6 +578,29 @@ createServer(async (req, res) => {
 		}
 		return send(res, 404, { error: 'not_found', message: 'not found' });
 	}
+	// Resets and created users: links instead of email without SMTP.
+	if (req.method === 'POST' && /^\/v1\/admin\/users\/[^/]+\/password-reset$/.test(p)) {
+		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		if (!emailConfigured)
+			return send(res, 200, {
+				status: 'email is not configured: share this link with the user',
+				email_sent: false,
+				link: 'https://chat.example.org/reset#token=e2e-reset-token'
+			});
+		return send(res, 202, { status: 'a password reset link has been sent', email_sent: true });
+	}
+	if (req.method === 'POST' && p === '/v1/admin/users') {
+		if (!access.has(bearer(req))) return send(res, 401, { error: 'unauthorized' });
+		const b = await json(req);
+		const u = member('usr_' + b.username, b.username, b.username, new Date().toISOString());
+		if (b.send_invite_email && !emailConfigured)
+			return send(res, 201, {
+				user: u,
+				invite_email_sent: false,
+				setup_link: 'https://chat.example.org/reset#token=e2e-setup-token'
+			});
+		return send(res, 201, { user: u, invite_email_sent: !!b.send_invite_email });
+	}
 	// The user reads the Users pages need (uploads and users e2e). Newer auth
 	// reports last sign-in / activity and sorts by it; mode "old" doesn't.
 	if (req.method === 'GET' && p.startsWith('/v1/admin/')) {
@@ -593,7 +623,18 @@ createServer(async (req, res) => {
 		if (p === '/v1/admin/sso/providers') return send(res, 200, { providers: [] });
 	}
 	if (req.method === 'GET' && p === '/v1/config')
-		return send(res, 200, { registration: 'invite', require_email_verification: true, sso_providers: [] });
+		return send(res, 200, {
+			registration: 'invite',
+			require_email_verification: emailConfigured || backend === 'nickserv',
+			sso_providers: [],
+			email: { configured: emailConfigured },
+			accounts: {
+				backend,
+				signup: true,
+				signup_message: null,
+				password_reset: backend === 'local' && emailConfigured
+			}
+		});
 	send(res, 404, { error: 'not_found', message: 'not found' });
 }).listen(PUBLIC, '127.0.0.1');
 
@@ -637,6 +678,12 @@ createServer(async (req, res) => {
 	if (req.method === 'POST' && p === '/__home') {
 		homeState = (await json(req)).state === 'missing' ? 'missing' : 'published';
 		return send(res, 200, { state: homeState });
+	}
+	if (req.method === 'POST' && p === '/__accounts') {
+		const b = await json(req).catch(() => ({}));
+		emailConfigured = b?.email !== false;
+		backend = b?.backend === 'nickserv' ? 'nickserv' : 'local';
+		return send(res, 200, { email: emailConfigured, backend });
 	}
 	if (req.method === 'POST' && p === '/__mode') {
 		mode = (await json(req)).mode === 'old' ? 'old' : 'new';

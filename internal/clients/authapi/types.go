@@ -121,9 +121,49 @@ type SSOProvider struct {
 
 // PublicConfig is GET /v1/config.
 type PublicConfig struct {
-	Registration             string        `json:"registration"`
+	Registration string `json:"registration"`
+	// RequireEmailVerification is the effective value: false while auth
+	// can't send email (local accounts), whatever the setting says.
 	RequireEmailVerification bool          `json:"require_email_verification"`
 	SSOProviders             []SSOProvider `json:"sso_providers"`
+	// Email is nil from auth releases before it reported its mailer.
+	Email *PublicEmail `json:"email,omitempty"`
+	// Accounts is nil from auth releases before the NickServ backend.
+	Accounts *PublicAccounts `json:"accounts,omitempty"`
+}
+
+// PublicEmail is /v1/config's email: whether auth can send email (SMTP).
+type PublicEmail struct {
+	Configured bool `json:"configured"`
+}
+
+// PublicAccounts is /v1/config's accounts: where accounts live.
+type PublicAccounts struct {
+	// Backend is "local" (auth's own accounts) or "nickserv".
+	Backend       string  `json:"backend"`
+	Signup        bool    `json:"signup"`
+	SignupMessage *string `json:"signup_message"`
+	PasswordReset bool    `json:"password_reset"`
+}
+
+// Account backends.
+const (
+	AccountBackendLocal    = "local"
+	AccountBackendNickServ = "nickserv"
+)
+
+// EmailConfigured reports whether auth can send email; older releases
+// don't say and are assumed to.
+func (c *PublicConfig) EmailConfigured() bool {
+	return c == nil || c.Email == nil || c.Email.Configured
+}
+
+// AccountBackend is accounts.backend ("local" when auth doesn't say).
+func (c *PublicConfig) AccountBackend() string {
+	if c == nil || c.Accounts == nil || c.Accounts.Backend == "" {
+		return AccountBackendLocal
+	}
+	return c.Accounts.Backend
 }
 
 // UserList is GET /v1/admin/users.

@@ -41,7 +41,7 @@ func TestAgainstAuth(t *testing.T) {
 	if err != nil || u.InviteEmailSent {
 		t.Fatalf("create user: %v %+v", err, u)
 	}
-	if err := c.SendPasswordReset(ctx, at, u.User.ID); err == nil {
+	if _, err := c.SendPasswordReset(ctx, at, u.User.ID); err == nil {
 		t.Fatal("reset for an account without email")
 	} else if e, _ := apperr.As(err); e.Code != "no_email" {
 		t.Fatalf("no_email: %v", err)

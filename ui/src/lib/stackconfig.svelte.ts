@@ -159,6 +159,14 @@ export const keyLabels: Record<string, { label: string; detail?: string }> = {
 	'auth.smtp.port': { label: 'SMTP port' },
 	'auth.smtp.from': { label: 'From address', detail: 'Like Boson <hi@example.com>.' },
 	'auth.smtp.tls': { label: 'SMTP encryption' },
+	'auth.nickserv.registration': {
+		label: 'Register NickServ accounts on sign-up',
+		detail: 'Boson sign-up registers the NickServ account (Atheme services only).'
+	},
+	'auth.nickserv.signup_message': {
+		label: 'NickServ sign-up message',
+		detail: 'Shown when Boson sign-up doesn’t register accounts. Empty: register on IRC.'
+	},
 	'auth.cors_allowed_origins': {
 		label: 'Allowed browser origins',
 		detail: 'Sites that may sign people in through auth, like your directory’s website. One per line.'

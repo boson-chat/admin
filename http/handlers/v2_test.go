@@ -120,6 +120,13 @@ func TestUserEndpoints(t *testing.T) {
 	if w := h.do("POST", "/api/users/usr_bob/password-reset", nil, withCookie(c), withHeader(CSRFHeader, csrf)); w.Code != 204 {
 		t.Fatalf("reset: %d %s", w.Code, w.Body)
 	}
+	// Auth without SMTP: the reset link comes back for the admin to share.
+	h.fake.NoEmail = true
+	if w := h.do("POST", "/api/users/usr_bob/password-reset", nil, withCookie(c), withHeader(CSRFHeader, csrf)); w.Code != 200 ||
+		!strings.Contains(w.Body.String(), `"email_sent":false`) || !strings.Contains(w.Body.String(), `"link":"https://app.example.test/reset#token=tok_usr_bob"`) {
+		t.Fatalf("reset without email: %d %s", w.Code, w.Body)
+	}
+	h.fake.NoEmail = false
 	if w := h.do("GET", "/api/users/usr_bob/profile", nil, withCookie(c)); w.Code != 200 || !strings.Contains(w.Body.String(), `"configured":false`) {
 		t.Fatalf("profile off: %d %s", w.Code, w.Body)
 	}
@@ -317,5 +324,24 @@ func TestLocalDirectoryEndpoints(t *testing.T) {
 	}
 	if w := h.do("DELETE", "/api/directory/peers/peer_2", nil, withCookie(c), csrfH); w.Code != 200 {
 		t.Fatalf("remove: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestAuthAccounts(t *testing.T) {
+	h := newHarness(t)
+	c, _ := h.login()
+	w := h.do("GET", "/api/auth/accounts", nil, withCookie(c))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"email_configured":true`) || !strings.Contains(w.Body.String(), `"account_backend":"local"`) ||
+		!strings.Contains(w.Body.String(), `"password_reset":true`) {
+		t.Fatalf("with email: %d %s", w.Code, w.Body)
+	}
+	h.fake.NoEmail, h.fake.Backend = true, "nickserv"
+	w = h.do("GET", "/api/auth/accounts", nil, withCookie(c))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"email_configured":false`) || !strings.Contains(w.Body.String(), `"account_backend":"nickserv"`) ||
+		!strings.Contains(w.Body.String(), `"password_reset":false`) || !strings.Contains(w.Body.String(), `"require_email_verification":false`) {
+		t.Fatalf("without email, nickserv: %d %s", w.Code, w.Body)
+	}
+	if w := h.do("GET", "/api/auth/accounts", nil); w.Code != 401 {
+		t.Fatalf("signed out: %d", w.Code)
 	}
 }

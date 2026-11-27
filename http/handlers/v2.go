@@ -140,11 +140,17 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request, s *session
 }
 
 func (h *Handlers) sendPasswordReset(w http.ResponseWriter, r *http.Request, s *session.Session) {
-	if err := h.Admin.SendPasswordReset(r.Context(), s, r.PathValue("id")); err != nil {
+	out, err := h.Admin.SendPasswordReset(r.Context(), s, r.PathValue("id"))
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	if out.EmailSent {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// Auth can't send email: the admin shares the link themselves.
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handlers) resendVerification(w http.ResponseWriter, r *http.Request, s *session.Session) {

@@ -314,6 +314,32 @@ func TestRoleChannelKeys(t *testing.T) {
 	}
 }
 
+func TestNickServKeys(t *testing.T) {
+	r, ok := KeyByName(KeyNickServRegistration)
+	if !ok || r.Kind != KindBool || r.Perm != admin.PermSettingsManage || r.Restart || r.Env != "NICKSERV_REGISTRATION" ||
+		!slices.Equal(r.Services, []string{"auth"}) {
+		t.Fatalf("registration key: %+v", r)
+	}
+	if _, err := r.Clean("yes"); err == nil {
+		t.Error("registration took a string")
+	}
+	m, ok := KeyByName(KeyNickServSignupMessage)
+	if !ok || m.Kind != KindString || m.Restart || m.Env != "NICKSERV_SIGNUP_MESSAGE" {
+		t.Fatalf("signup message key: %+v", m)
+	}
+	if v, err := m.Clean("  Register at https://example.org/register  "); err != nil || v != "Register at https://example.org/register" {
+		t.Errorf("message: %v %v", v, err)
+	}
+	if v, err := m.Clean(""); err != nil || v != "" {
+		t.Errorf("empty message (auth's default): %v %v", v, err)
+	}
+	for name, bad := range map[string]any{"multi-line": "a\nb", "too long": strings.Repeat("x", 501), "not text": 5} {
+		if _, err := m.Clean(bad); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
 func TestVoiceBitrateCaps(t *testing.T) {
 	s, path := newSvc(t, "version: 1\nvoice:\n  rooms: [general, {id: music, name: Music, max_kbps: 128}]\n")
 	v, _ := s.FileValue("voice.rooms")

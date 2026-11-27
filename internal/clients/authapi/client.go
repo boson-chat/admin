@@ -52,7 +52,7 @@ type AuthClientImpl interface {
 	TestSSOProvider(ctx context.Context, accessToken, id string) (*SSOTestResult, error)
 
 	CreateUser(ctx context.Context, accessToken string, in CreateUser) (*CreatedUser, error)
-	SendPasswordReset(ctx context.Context, accessToken, id string) error
+	SendPasswordReset(ctx context.Context, accessToken, id string) (*PasswordReset, error)
 	ResendVerification(ctx context.Context, accessToken, id string) error
 
 	// Roles (auth >= 1.5.0).
