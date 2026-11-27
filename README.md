@@ -795,8 +795,10 @@ the receiver keeps) is the stack's `docs/telemetry.md` (schema 1);
   admin's token: while someone with `users.view` uses the panel, it reads them
   in the background at most every 12 h (and guest access with
   `settings.manage`). Without a recent read they are `null`.
-  `counts.channels` (registered channels) and `settings.guest_first` are
-  always `null`: nothing the panel can read reports them yet.
+  `settings.guest_first` is the file's `auth.guest_first`, else what auth
+  reported (`null` on an auth without the setting). `counts.channels`
+  (registered channels) is always `null`: nothing the panel can read
+  reports it yet.
 - **Off:** the Settings switch (`admin.telemetry: false` in
   `config/boson.yaml`, live), or `TELEMETRY=off` in the panel's env, which
   wins and locks the switch. Turning it off sends nothing to say so.

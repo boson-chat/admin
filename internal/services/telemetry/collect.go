@@ -71,6 +71,8 @@ type Known struct {
 	Active7d    *int64    `json:"active_7d,omitempty"`
 	Active30d   *int64    `json:"active_30d,omitempty"`
 	GuestAccess *bool     `json:"guest_access,omitempty"`
+	// GuestFirst is nil on an auth without the setting.
+	GuestFirst *bool `json:"guest_first,omitempty"`
 }
 
 // Input is what a report needs besides the sources.
@@ -249,6 +251,16 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *ircprobe.Res
 	} else if k := in.Known; k != nil && k.GuestAccess != nil && in.Now.Sub(k.At) <= c.maxAge() {
 		r.Settings.GuestAccess = *k.GuestAccess
 	}
+	// guest_first: the file's auth.guest_first, else what auth said (nil
+	// on an auth without the setting: null). It needs guest access.
+	fresh := in.Known != nil && in.Now.Sub(in.Known.At) <= c.maxAge()
+	if v, ok := cfg("auth.guest_first"); ok {
+		if b, ok := v.(bool); ok {
+			r.Settings.GuestFirst = ptrBool(b && r.Settings.GuestAccess)
+		}
+	} else if fresh && in.Known.GuestFirst != nil {
+		r.Settings.GuestFirst = ptrBool(*in.Known.GuestFirst && r.Settings.GuestAccess)
+	}
 	switch {
 	case pub != nil && pub.Email != nil:
 		r.Settings.SMTP = pub.Email.Configured
@@ -299,6 +311,8 @@ func bucketOf(n *int64) *string {
 	}
 	return bucketPtr(*n)
 }
+
+func ptrBool(b bool) *bool { return &b }
 
 func validRegistration(s string) bool { return s == "open" || s == "invite" || s == "closed" }
 

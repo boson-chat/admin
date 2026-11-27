@@ -129,6 +129,8 @@ func fullSources() Sources {
 			switch key {
 			case "auth.guest_access":
 				return false, true
+			case "auth.guest_first":
+				return true, true // but guest access is off
 			case "auth.federation.allow":
 				return []any{"a.example", "b.example", "c.example"}, true
 			}
@@ -221,7 +223,7 @@ func TestFullReport(t *testing.T) {
 		t.Errorf("features voice=%v video=%v files=%v push=%v (no quicvideod, no pushrelay: null)", f.VoiceMinutes24h, f.VideoMinutes24h, f.FilesUploaded, f.PushSent24h)
 	}
 	st := r.Settings
-	if st.Registration != "invite" || st.GuestAccess || st.GuestFirst != nil || !st.SMTP ||
+	if st.Registration != "invite" || st.GuestAccess || st.GuestFirst == nil || *st.GuestFirst || !st.SMTP ||
 		strings.Join(st.SSO, ",") != "oidc,saml" || st.FederationPeers != "2-10" || !st.DirectoryListed {
 		t.Errorf("settings %+v", st)
 	}
@@ -361,5 +363,24 @@ func TestReportHasNoSecretsOrNames(t *testing.T) {
 	}
 	if err := validate(t, compileSchema(t), b); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGuestFirst(t *testing.T) {
+	file := map[string]any{}
+	c := &Collector{S: Sources{Config: func(k string) (any, bool) { v, ok := file[k]; return v, ok }}}
+	build := func(k *Known) *bool {
+		_, r := buildJSON(t, c, Input{InstallID: testID, Reason: ReasonDaily, Now: now, Known: k})
+		return r.Settings.GuestFirst
+	}
+	if build(nil) != nil || build(&Known{At: now, GuestAccess: ptr(true)}) != nil {
+		t.Fatal("an auth without the setting: null")
+	}
+	if g := build(&Known{At: now, GuestAccess: ptr(true), GuestFirst: ptr(true)}); g == nil || !*g {
+		t.Fatal("from auth")
+	}
+	file["auth.guest_first"] = false
+	if g := build(&Known{At: now, GuestFirst: ptr(true)}); g == nil || *g {
+		t.Fatal("the file wins")
 	}
 }

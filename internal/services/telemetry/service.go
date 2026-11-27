@@ -652,7 +652,7 @@ func (s *Service) ObserveAdmin(ctx context.Context, usersView, settingsManage bo
 				k.Active7d, k.Active30d = old.Active7d, old.Active30d
 			}
 			if k.GuestAccess == nil {
-				k.GuestAccess = old.GuestAccess
+				k.GuestAccess, k.GuestFirst = old.GuestAccess, old.GuestFirst
 			}
 		}
 		s.st.Known = k
@@ -703,6 +703,10 @@ func (s *Service) readKnown(ctx context.Context, at string, usersView, settingsM
 		if n, err := s.o.Auth.GetSettings(ctx, at); err == nil && n.GuestAccess != nil {
 			g := *n.GuestAccess
 			k.GuestAccess = &g
+			if n.GuestFirst != nil {
+				f := *n.GuestFirst
+				k.GuestFirst = &f
+			}
 			got = true
 		}
 	}
