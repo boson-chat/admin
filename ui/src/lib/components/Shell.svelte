@@ -278,6 +278,11 @@
 		position: sticky;
 		top: 0;
 		height: 100vh;
+		height: 100dvh;
+		/* a short window: the rail scrolls rather than cutting off the
+		   account block (sign out, theme) at the bottom */
+		overflow-y: auto;
+		overscroll-behavior: contain;
 		display: flex;
 		flex-direction: column;
 		background: var(--surface);
@@ -323,7 +328,7 @@
 	nav {
 		display: flex;
 		flex-direction: column;
-		flex: 1;
+		flex: 1 0 auto;
 		margin-top: var(--space-6);
 	}
 	.group {
@@ -461,6 +466,7 @@
 		.rail {
 			position: sticky;
 			height: auto;
+			overflow-y: visible;
 			z-index: 20;
 			padding: var(--space-3) var(--space-4);
 			border-right: 0;
