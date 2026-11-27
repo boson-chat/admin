@@ -157,28 +157,30 @@
 			>
 		</div>
 		<nav id="nav" class:open={menuOpen} aria-label="Main">
-			{#each shown as g (g.group)}
-				<div class="group" id="nav-{g.group}">{g.group}</div>
-				<ul aria-labelledby="nav-{g.group}">
-					{#each g.items as item (item.href)}
-						<li>
-							<a href={item.href} aria-current={active(item.href) ? 'page' : undefined}>
-								{item.label}
-								{#if item.href === '/updates' && updates.status?.available}<span
-										class="count"
-										title="{updates.status.available} {updates.status.available === 1
-											? 'update'
-											: 'updates'} available"
-										>{updates.status.available}<span class="sr-only">
-											{updates.status.available === 1 ? 'update' : 'updates'} available</span
-										></span
-									>{/if}
-								{#if item.soon}<span class="soon">Soon</span>{/if}
-							</a>
-						</li>
-					{/each}
-				</ul>
-			{/each}
+			<div class="links">
+				{#each shown as g (g.group)}
+					<div class="group" id="nav-{g.group}">{g.group}</div>
+					<ul aria-labelledby="nav-{g.group}">
+						{#each g.items as item (item.href)}
+							<li>
+								<a href={item.href} aria-current={active(item.href) ? 'page' : undefined}>
+									{item.label}
+									{#if item.href === '/updates' && updates.status?.available}<span
+											class="count"
+											title="{updates.status.available} {updates.status.available === 1
+												? 'update'
+												: 'updates'} available"
+											>{updates.status.available}<span class="sr-only">
+												{updates.status.available === 1 ? 'update' : 'updates'} available</span
+											></span
+										>{/if}
+									{#if item.soon}<span class="soon">Soon</span>{/if}
+								</a>
+							</li>
+						{/each}
+					</ul>
+				{/each}
+			</div>
 			<div class="foot">
 				{#if session.info}
 					<div class="who">
@@ -279,10 +281,6 @@
 		top: 0;
 		height: 100vh;
 		height: 100dvh;
-		/* a short window: the rail scrolls rather than cutting off the
-		   account block (sign out, theme) at the bottom */
-		overflow-y: auto;
-		overscroll-behavior: contain;
 		display: flex;
 		flex-direction: column;
 		background: var(--surface);
@@ -328,7 +326,10 @@
 	nav {
 		display: flex;
 		flex-direction: column;
-		flex: 1 0 auto;
+		/* fills the rail; the links scroll in a short window while the
+		   account block (theme, sign out) stays pinned at the bottom */
+		flex: 1 1 auto;
+		min-height: 0;
 		margin-top: var(--space-6);
 	}
 	.group {
@@ -387,7 +388,17 @@
 		letter-spacing: var(--tracking-label);
 		text-transform: uppercase;
 	}
+	.links {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		/* room for the focus ring and the active item's edge */
+		margin: 0 calc(-1 * var(--space-2));
+		padding: 0 var(--space-2) var(--space-3);
+	}
 	.foot {
+		flex: none;
 		margin-top: auto;
 		display: grid;
 		gap: var(--space-3);
@@ -466,7 +477,6 @@
 		.rail {
 			position: sticky;
 			height: auto;
-			overflow-y: visible;
 			z-index: 20;
 			padding: var(--space-3) var(--space-4);
 			border-right: 0;
@@ -483,6 +493,8 @@
 		}
 		nav.open {
 			display: flex;
+			/* the open menu never runs past the screen: its links scroll */
+			max-height: calc(100dvh - 72px);
 		}
 		.foot {
 			margin-top: var(--space-4);
