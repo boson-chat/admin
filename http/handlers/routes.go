@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -105,6 +106,12 @@ func (h *Handlers) routes() []route {
 		{"POST /api/federation/blocked-domains", admin.PermSettingsManage, true, h.blockDomain},
 		{"DELETE /api/federation/blocked-domains/{domain}", admin.PermSettingsManage, true, h.unblockDomain},
 
+		// Usage & health stats: the switch is admin.telemetry (a config
+		// key), the preview is the next report as it would be sent.
+		{"GET /api/telemetry", admin.PermSettingsManage, false, h.telemetryStatus},
+		{"GET /api/telemetry/preview", admin.PermSettingsManage, false, h.telemetryPreview},
+		{"PUT /api/telemetry", admin.PermSettingsManage, true, h.telemetrySet},
+
 		{"GET /api/sso/providers", admin.PermSSOManage, false, h.listProviders},
 		{"POST /api/sso/providers", admin.PermSSOManage, false, h.createProvider},
 		{"GET /api/sso/providers/{id}", admin.PermSSOManage, false, h.getProvider},
@@ -182,6 +189,10 @@ func (h *Handlers) gate(perm string, fresh bool, next authedFunc) http.HandlerFu
 			writeError(w, r, admin.MissingPermission(perm))
 			return
 		}
+		// The usage & health stats' account counts need an admin's token:
+		// at most twice a day, read in the background.
+		h.Telemetry.ObserveAdmin(r.Context(), a.Can(admin.PermUsersView), a.Can(admin.PermSettingsManage),
+			func(ctx context.Context) (string, error) { return h.Admin.AccessToken(ctx, s) })
 		next(w, r, s)
 	})
 }

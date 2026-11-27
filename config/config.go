@@ -25,6 +25,24 @@ type Config struct {
 	TelemetryConfig TelemetryConfig
 	StackConfig     StackConfig
 	UpdatesConfig   UpdatesConfig
+	UsageStats      UsageStatsConfig
+}
+
+// UsageStatsConfig is the anonymous install report (usage & health stats,
+// the stack's docs/telemetry.md). On unless TELEMETRY=off or the config
+// file's admin.telemetry is false.
+type UsageStatsConfig struct {
+	// TELEMETRY=off (also false, 0, no) turns the report off; it wins
+	// over admin.telemetry and the panel's switch.
+	Telemetry string `env:"TELEMETRY"`
+	// The receiver's base URL; /v1/report is appended.
+	URL string `default:"https://telemetry.boson.chat" env:"TELEMETRY_URL"`
+	// Where the install ID (telemetry-id) and the send state are kept.
+	// Empty = UPDATES_STATE_DIR (the panel's /data volume); neither = in
+	// memory (a new ID every start).
+	Dir string `env:"TELEMETRY_DIR"`
+	// Overrides the 5–15 min before the first report (tests).
+	StartDelay time.Duration `env:"TELEMETRY_START_DELAY"`
 }
 
 // UpdatesConfig is the Updates page: release checks against GitHub and the
@@ -294,6 +312,11 @@ func (c *Config) ApplyDefaults() {
 	if up.BackupKeep < 1 {
 		up.BackupKeep = 1
 	}
+	t := &c.UsageStats
+	t.URL = trim(t.URL)
+	if strings.TrimSpace(t.Dir) == "" {
+		t.Dir = strings.TrimSpace(c.UpdatesConfig.StateDir)
+	}
 	b := &c.BosonConfig
 	b.APIURL, b.CDNURL, b.DirectoryURL = trim(b.APIURL), trim(b.CDNURL), trim(b.DirectoryURL)
 	b.APIInternalURL, b.APIInternalToken = trim(b.APIInternalURL), strings.TrimSpace(b.APIInternalToken)
@@ -383,7 +406,7 @@ func (c Config) Validate() error {
 		"DIRECTORY_LOCAL_URL": c.BosonConfig.DirectoryLocalURL, "BOSON_API_INTERNAL_URL": c.BosonConfig.APIInternalURL,
 		"BOSON_FILES_INTERNAL_URL": c.BosonConfig.FilesInternalURL,
 		"UPDATES_DOCKER_PROXY_URL": c.UpdatesConfig.DockerProxyURL, "UPDATES_GITHUB_API_URL": c.UpdatesConfig.GitHubURL,
-		"UPDATES_REGISTRY_URL": c.UpdatesConfig.RegistryURL} {
+		"UPDATES_REGISTRY_URL": c.UpdatesConfig.RegistryURL, "TELEMETRY_URL": c.UsageStats.URL} {
 		if v == "" {
 			continue
 		}

@@ -62,6 +62,10 @@ browser ──HTTPS──► Traefik ──► admin :8080  ── /api ──�
   changelogs (every version in between), who each update affects, breaking
   changes, and applying them with a backup, checks and rollback. See
   "Updates" below.
+- **Usage & health stats** (Network settings): the switch for the anonymous
+  daily install report, its last send and result, the next one, and **See
+  exactly what's sent** (the next report as JSON). See "Usage & health stats"
+  below.
 - **Network settings:** registration (open, invite only, closed), required
   email verification, and who may create text channels and voice rooms. With
   auth ≥ 1.7.0 also channel registration: register new channels to their
@@ -371,6 +375,9 @@ stack's `.env` and recreate the service.
 | `UPDATES_HEALTH_TIMEOUT` | `3m` | how long updated services get to become healthy |
 | `UPDATES_CHECK_TARGETS` | – | `id=url` overrides for the post-update checks |
 | `STACK_VERSION` | – | the stack's version, when the stack passes one |
+| `TELEMETRY` | – (on) | `off` (also `false`, `0`, `no`) turns the usage & health stats report off; wins over `admin.telemetry` and the Settings switch, which shows off and locked |
+| `TELEMETRY_URL` | `https://telemetry.boson.chat` | the receiver's base URL; `/v1/report` is appended |
+| `TELEMETRY_DIR` | `UPDATES_STATE_DIR` | where `telemetry-id` (the install ID) and `telemetry.json` (last send, counts) are kept, mode 0600. Neither set = in memory (a new ID every start) |
 | `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
 | `BOSON_API_INTERNAL_URL` | – | the api's internal listener (`http://api:3001`): the Nick registration page's status and Test connection. Empty = the page says the api isn't reachable (settings still save to the file) |
 | `BOSON_API_INTERNAL_TOKEN` | – | the api's `INTERNAL_API_TOKEN`, sent as `X-Internal-Token` |
@@ -430,7 +437,7 @@ databases. A value in the file wins over the env, which stays the default;
   (`412 config_changed` when the file moved on); the Stack config page sends it.
 - **Who may change what:** reading needs `admin.panel` (nothing secret is in
   the file); each key needs its own permission: `network.*`, `auth.*` and
-  `voice.*` → `settings.manage`; `directory.*`, `admin.directory_registration`
+  `voice.*` and `admin.telemetry` → `settings.manage`; `directory.*`, `admin.directory_registration`
   and `admin.directory_hostname` → `directory.manage`; `irc.*` and
   `admin.tls_check_hosts` → `services.manage` (certificates and IRC listeners
   are operations, like restarting a service). `irc.plaintext_port` is left to
@@ -757,6 +764,43 @@ database, the volume and the digest; the self-update helper and its
 fall-back). Browser: `./scripts/e2e-updates.sh` (fake host in
 `dev/fakestack`).
 
+## Usage & health stats
+
+We collect a small amount of anonymous usage and health data to make Boson
+better: to see which versions and features people use, and to catch failed
+updates, crashes and struggling servers so we can fix them, often before
+anyone has to report them. No names, emails, messages, channel names, IP
+addresses or hostnames, ever. The contract (every field, the buckets, what
+the receiver keeps) is the stack's `docs/telemetry.md` (schema 1);
+[boson.chat/telemetry](https://boson.chat/telemetry) explains it.
+
+- **What:** `POST {TELEMETRY_URL}/v1/report`, JSON, at most 16 KiB: the stack
+  release and each service's image version, the enabled profiles, install
+  mode (the stack's Ergo, or the bridge in front of another IRCd) and arch,
+  bucketed counts (accounts, active in 7 / 30 days, IRC peak in 24 h),
+  feature use in 24 h (voice and video minutes, files uploaded, pushes) from
+  VictoriaMetrics, a few settings as enums (registration, guest access,
+  SMTP configured, sign-in provider *kinds*, federation peers, listed in a
+  directory), and health: update attempts / failures / rollbacks with the
+  failed step's class, each service's Docker restart count and state, host
+  CPU / memory / disk / load from node-exporter, and the panel's healthy
+  verdict. Counts are ranges (`11-50`), never exact. The install ID is 128
+  random bits in `TELEMETRY_DIR/telemetry-id`; deleting it makes a new one.
+- **When:** 5–15 minutes after the panel first starts on a new install
+  (`setup`), then once a day at 24 h ± 1 h (a restart sends only when a day
+  has passed), and about 5 minutes after an update or a rollback finishes.
+  A failed send is never retried before the next scheduled one; it runs in
+  its own goroutine with a 10 s timeout and is logged at debug level only.
+- **Account counts** come from auth's admin API, which needs a signed-in
+  admin's token: while someone with `users.view` uses the panel, it reads them
+  in the background at most every 12 h (and guest access with
+  `settings.manage`). Without a recent read they are `null`.
+  `counts.channels` (registered channels) and `settings.guest_first` are
+  always `null`: nothing the panel can read reports them yet.
+- **Off:** the Settings switch (`admin.telemetry: false` in
+  `config/boson.yaml`, live), or `TELEMETRY=off` in the panel's env, which
+  wins and locks the switch. Turning it off sends nothing to say so.
+
 ## Directory
 
 The boson directory ([boson-chat/directory](https://github.com/boson-chat/directory),
@@ -1028,6 +1072,9 @@ the auth service's 4xx codes and messages pass through, 5xx details don't.
 | `GET /api/directory/peers/check?url=` | `{url, well_known: {name, api, …}}` (a bare host gets `https://`) |
 | `POST /api/directory/peers` `{url}` · `PATCH /api/directory/peers/{id}` `{enabled}` · `DELETE /api/directory/peers/{id}` | federation JSON (201 for add) |
 | `POST /api/directory/peers/{id}/sync` | `{federation, result: {created, updated, deleted, verified, error?}}` |
+| `GET /api/telemetry` | `{enabled, locked, file_on, config_file, endpoint, last_sent_at?, last?: {at, reason, ok, status?, error?}, next_at?, next_reason?}` (`settings.manage`); `error` is a class (`timeout`, `dns`, `refused`, `tls`, `network`, `too_large`, `build`), never a message |
+| `GET /api/telemetry/preview` | the next report exactly as it would be sent (schema 1) |
+| `PUT /api/telemetry` `{enabled}` | writes `admin.telemetry` to the config file; the status. 409 `telemetry_locked` turning it on with `TELEMETRY=off`; 503 `config_file_off` without `BOSON_CONFIG` |
 | `GET /api/users/{id}/networks` | always 200: `{configured, networks?, unsupported?, error?}` (the stack's own directory) |
 
 ### Metrics

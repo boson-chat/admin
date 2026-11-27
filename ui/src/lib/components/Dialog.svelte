@@ -1,8 +1,13 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 
-	/** A modal with a title and free content (forms). Call open()/close(). */
-	let { title, children, onclose }: { title: string; children: Snippet; onclose?: () => void } = $props();
+	/** A modal with a title and free content (forms). Call open()/close(). wide: room for code. */
+	let {
+		title,
+		children,
+		onclose,
+		wide = false
+	}: { title: string; children: Snippet; onclose?: () => void; wide?: boolean } = $props();
 	const uid = $props.id();
 	let dialog: HTMLDialogElement;
 
@@ -14,7 +19,7 @@
 	}
 </script>
 
-<dialog bind:this={dialog} aria-labelledby="dlg-{uid}" {onclose}>
+<dialog bind:this={dialog} class:wide aria-labelledby="dlg-{uid}" {onclose}>
 	<header>
 		<h2 id="dlg-{uid}">{title}</h2>
 		<button class="close" type="button" aria-label="Close" onclick={close}>×</button>
@@ -32,6 +37,9 @@
 		background: var(--surface);
 		color: var(--fg);
 		box-shadow: var(--shadow);
+	}
+	dialog.wide {
+		width: min(760px, calc(100vw - 32px));
 	}
 	dialog[open] {
 		animation: rise var(--motion-medium) var(--ease-in-out) both;

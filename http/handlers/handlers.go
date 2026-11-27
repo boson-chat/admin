@@ -26,6 +26,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
+	"github.com/boson-chat/admin/internal/services/telemetry"
 	"github.com/boson-chat/admin/internal/services/updates"
 	"github.com/boson-chat/admin/internal/session"
 )
@@ -95,8 +96,10 @@ type Handlers struct {
 	// Federation: the Federation page (never nil after Register).
 	Federation federation.ServiceImpl
 	// Updates: release checks and applying them (nil = off).
-	Updates  updates.ServiceImpl
-	Sessions *session.Codec
+	Updates updates.ServiceImpl
+	// Telemetry: the usage & health stats report (never nil after Register).
+	Telemetry *telemetry.Service
+	Sessions  *session.Codec
 	// Origin is PUBLIC_URL's origin; unsafe requests must come from it.
 	Origin   string
 	Features Features
@@ -131,6 +134,10 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	}
 	if h.HostMetrics == nil {
 		h.HostMetrics = hostmetrics.New(hostmetrics.Options{})
+	}
+	if h.Telemetry == nil {
+		// Not wired (tests): shown, never started, so nothing is sent.
+		h.Telemetry = telemetry.New(telemetry.Options{FileOn: func() bool { return h.Config.Admin().Telemetry }})
 	}
 	if h.Federation == nil {
 		// The auth client the admin service uses, when it has the

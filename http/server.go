@@ -11,6 +11,7 @@ import (
 	nethttp "net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/boson-chat/admin/config"
@@ -35,6 +36,7 @@ import (
 	"github.com/boson-chat/admin/internal/services/nickclaim"
 	"github.com/boson-chat/admin/internal/services/overview"
 	"github.com/boson-chat/admin/internal/services/stackconfig"
+	"github.com/boson-chat/admin/internal/services/telemetry"
 	"github.com/boson-chat/admin/internal/services/updates"
 	"github.com/boson-chat/admin/internal/session"
 	"github.com/boson-chat/admin/metrics"
@@ -261,9 +263,18 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		})
 		h.Features.DirectoryLocal = true
 	}
+	tel := buildTelemetry(cfg, h, stack, authClient, prom, irc, filesClient, upstream)
+	h.Telemetry = tel
+	if store != nil {
+		store.OnChange(func(*configfile.Snapshot) { tel.Kick() }) // admin.telemetry turned on
+	}
 	if uc := cfg.UpdatesConfig; uc.Enabled {
-		h.Updates = buildUpdates(ctx, cfg, irc, upstream)
+		h.Updates = buildUpdates(ctx, cfg, irc, upstream, tel.Notify)
 		h.Features.Updates = true
+	}
+	tel.Start(ctx)
+	if !tel.Enabled() {
+		logger.FromCtx(ctx).Info().Bool("env_off", tel.Locked()).Msg("usage & health stats are off")
 	}
 	mux := nethttp.NewServeMux()
 	h.Register(mux)
@@ -337,7 +348,7 @@ func Serve(ctx context.Context, app *App) error {
 // installed versions from the socket proxy, and (with the updates proxy)
 // helper jobs that apply them.
 func buildUpdates(ctx context.Context, cfg config.Config, irc *config.IRCTarget,
-	upstream func(string) func(string, int, error, time.Duration)) *updates.Service {
+	upstream func(string) func(string, int, error, time.Duration), onFinish func(string)) *updates.Service {
 	uc, up, dc := cfg.UpdatesConfig, cfg.UpstreamConfig, cfg.DockerConfig
 	reg := updates.NewOCIRegistry(10 * time.Second)
 	reg.Override = uc.RegistryURL
@@ -346,6 +357,7 @@ func buildUpdates(ctx context.Context, cfg config.Config, irc *config.IRCTarget,
 		Registry: reg, Project: dc.Project, SelfVersion: cfg.AppConfig.Version, StackVersion: uc.StackVersion,
 		Interval: uc.Interval, StateDir: uc.StateDir, BackupRoot: uc.BackupDir, Keep: uc.BackupKeep,
 		MinFree: uc.MinFreeMB << 20, UtilImage: uc.UtilImage, HealthTimeout: uc.HealthTimeout,
+		OnFinish: onFinish,
 	}
 	if dc.ProxyURL != "" {
 		o.Docker = dockerapi.NewDockerClient(dc.ProxyURL, dc.Timeout, upstream("docker"))
@@ -380,4 +392,66 @@ func buildUpdates(ctx context.Context, cfg config.Config, irc *config.IRCTarget,
 	svc := updates.New(o)
 	svc.Start(ctx)
 	return svc
+}
+
+// buildTelemetry wires the usage & health stats report (the stack's
+// docs/telemetry.md): where each value comes from. h.Updates and
+// h.Directory are read when a report is built.
+func buildTelemetry(cfg config.Config, h *handlers.Handlers, stack *stackconfig.Service, auth authapi.AuthClientImpl,
+	prom promql.PromClientImpl, irc *config.IRCTarget, files bosonapi.FilesClientImpl,
+	upstream func(string) func(string, int, error, time.Duration)) *telemetry.Service {
+	dc, us := cfg.DockerConfig, cfg.UsageStats
+	src := telemetry.Sources{
+		Project: dc.Project, SelfVersion: cfg.AppConfig.Version, GOARCH: runtime.GOARCH,
+		PublicConfig: auth.PublicConfig,
+		Config:       stack.FileValue,
+		StackVersion: func(ctx context.Context) string {
+			if h.Updates != nil {
+				for _, c := range h.Updates.Status(ctx).Components {
+					if c.ID == "stack" && c.Installed != "" {
+						return c.Installed
+					}
+				}
+			}
+			return cfg.UpdatesConfig.StackVersion
+		},
+		Runs: func(ctx context.Context) []updates.RunSummary {
+			if h.Updates == nil {
+				return nil
+			}
+			return h.Updates.Status(ctx).History
+		},
+		DirectoryListed: func(ctx context.Context) bool {
+			if h.Directory == nil {
+				return false
+			}
+			st := h.Directory.Status(ctx, "")
+			return st != nil && st.Public != nil
+		},
+	}
+	if dc.ProxyURL != "" {
+		src.Docker = dockerapi.NewDockerClient(dc.ProxyURL, min(dc.Timeout, 10*time.Second), upstream("docker"))
+	}
+	if prom != nil {
+		src.Prom = prom
+	}
+	if irc != nil {
+		p := &ircprobe.IRCProber{Timeout: 10 * time.Second}
+		t := *irc
+		src.IRC = func(ctx context.Context) *ircprobe.Result {
+			r := p.Counts(ctx, t.Address, t.ServerName, t.TLS)
+			return &r
+		}
+	}
+	if files != nil {
+		src.Files = files
+	}
+	return telemetry.New(telemetry.Options{
+		Dir: us.Dir, URL: telemetry.Endpoint(us.URL), EnvOff: telemetry.Off(us.Telemetry),
+		FileOn:     func() bool { return stack.Admin().Telemetry },
+		Collector:  &telemetry.Collector{S: src},
+		Auth:       auth,
+		HTTP:       &nethttp.Client{Timeout: telemetry.SendTimeout},
+		StartDelay: us.StartDelay,
+	})
 }

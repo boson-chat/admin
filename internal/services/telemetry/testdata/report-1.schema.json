@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://boson.chat/schemas/telemetry/report-1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "install_id", "reason", "stack", "services", "profiles",
+               "install", "counts", "features", "settings", "health"],
+  "$defs": {
+    "bucket": { "enum": ["0", "1", "2-10", "11-50", "51-100", "101-500", "501-1k", "1k-5k", "5k+"] },
+    "nbucket": { "oneOf": [{ "$ref": "#/$defs/bucket" }, { "type": "null" }] },
+    "version": { "type": "string", "maxLength": 64,
+                 "pattern": "^(unknown|v?[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,6}(-[0-9A-Za-z.]{1,32})?)$" },
+    "service": { "enum": ["traefik", "certsync", "ergo", "roleserv", "evrd", "evrd-links", "postgres",
+                          "auth", "quicvoiced", "quicvideod", "victoriametrics", "node-exporter", "admin",
+                          "docker-proxy", "docker-proxy-updates", "api", "directory", "files", "pushrelay",
+                          "minio", "webroot", "wellknown", "web", "webircgateway", "telemetry",
+                          "victoriametrics-telemetry"] },
+    "pct": { "oneOf": [{ "type": "number", "minimum": 0, "maximum": 100 }, { "type": "null" }] },
+    "small": { "type": "integer", "minimum": 0, "maximum": 100 }
+  },
+  "properties": {
+    "schema": { "const": 1 },
+    "install_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "reason": { "enum": ["daily", "setup", "update", "rollback"] },
+    "stack": { "type": "object", "additionalProperties": false, "required": ["version"],
+               "properties": { "version": { "$ref": "#/$defs/version" } } },
+    "services": { "type": "object", "maxProperties": 26,
+                  "propertyNames": { "$ref": "#/$defs/service" },
+                  "additionalProperties": { "$ref": "#/$defs/version" } },
+    "profiles": { "type": "array", "uniqueItems": true, "maxItems": 17,
+                  "items": { "enum": ["irc", "voice", "video", "auth", "api", "directory", "files", "minio",
+                                      "metrics", "admin", "updates", "webroot", "wellknown", "web", "bridge",
+                                      "pushrelay", "telemetry"] } },
+    "install": { "type": "object", "additionalProperties": false, "required": ["mode", "ircd", "arch"],
+                 "properties": {
+                   "mode": { "enum": ["fresh", "addon", "unknown"] },
+                   "ircd": { "enum": ["ergo", "unrealircd", "inspircd", "ngircd", "solanum", "charybdis",
+                                      "hybrid", "other", "unknown"] },
+                   "arch": { "enum": ["amd64", "arm64", "other"] } } },
+    "counts": { "type": "object", "additionalProperties": false,
+                "required": ["accounts", "active_7d", "active_30d", "irc_peak_24h", "channels"],
+                "properties": {
+                  "accounts": { "$ref": "#/$defs/nbucket" }, "active_7d": { "$ref": "#/$defs/nbucket" },
+                  "active_30d": { "$ref": "#/$defs/nbucket" }, "irc_peak_24h": { "$ref": "#/$defs/nbucket" },
+                  "channels": { "$ref": "#/$defs/nbucket" } } },
+    "features": { "type": "object", "additionalProperties": false,
+                  "required": ["voice_minutes_24h", "video_minutes_24h", "files_uploaded_24h", "push_sent_24h"],
+                  "properties": {
+                    "voice_minutes_24h": { "$ref": "#/$defs/nbucket" }, "video_minutes_24h": { "$ref": "#/$defs/nbucket" },
+                    "files_uploaded_24h": { "$ref": "#/$defs/nbucket" }, "push_sent_24h": { "$ref": "#/$defs/nbucket" } } },
+    "settings": { "type": "object", "additionalProperties": false,
+                  "required": ["registration", "guest_access", "guest_first", "smtp", "sso",
+                               "federation_peers", "directory_listed"],
+                  "properties": {
+                    "registration": { "enum": ["open", "invite", "closed"] },
+                    "guest_access": { "type": "boolean" },
+                    "guest_first": { "type": ["boolean", "null"] },
+                    "smtp": { "type": "boolean" },
+                    "sso": { "type": "array", "uniqueItems": true, "maxItems": 4,
+                             "items": { "enum": ["oidc", "saml", "oauth2", "other"] } },
+                    "federation_peers": { "$ref": "#/$defs/bucket" },
+                    "directory_listed": { "type": "boolean" } } },
+    "health": { "type": "object", "additionalProperties": false,
+                "required": ["updates", "services", "host", "healthy"],
+                "properties": {
+                  "updates": { "type": "object", "additionalProperties": false,
+                               "required": ["attempts", "failures", "rollbacks", "errors"],
+                               "properties": {
+                                 "attempts": { "$ref": "#/$defs/small" }, "failures": { "$ref": "#/$defs/small" },
+                                 "rollbacks": { "$ref": "#/$defs/small" },
+                                 "errors": { "type": "array", "maxItems": 10,
+                                             "items": { "enum": ["preflight", "backup", "pull", "migrate", "recreate",
+                                                                 "health", "checks", "self_update", "rollback",
+                                                                 "timeout", "other"] } } } },
+                  "services": { "type": "object", "maxProperties": 26,
+                                "propertyNames": { "$ref": "#/$defs/service" },
+                                "additionalProperties": {
+                                  "type": "object", "additionalProperties": false, "required": ["restarts", "state"],
+                                  "properties": {
+                                    "restarts": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                                    "state": { "enum": ["running", "restarting", "unhealthy", "exited", "created"] } } } },
+                  "host": { "oneOf": [{ "type": "null" }, {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["cpu_p95", "cpu_max", "mem_p95", "disk_used", "load_per_cpu"],
+                    "properties": {
+                      "cpu_p95": { "$ref": "#/$defs/pct" }, "cpu_max": { "$ref": "#/$defs/pct" },
+                      "mem_p95": { "$ref": "#/$defs/pct" }, "disk_used": { "$ref": "#/$defs/pct" },
+                      "load_per_cpu": { "$ref": "#/$defs/pct" } } }] },
+                  "healthy": { "type": "boolean" } } },
+    "uptime_days": { "type": ["integer", "null"], "minimum": 0, "maximum": 3650 }
+  }
+}
