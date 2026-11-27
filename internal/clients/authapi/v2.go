@@ -66,7 +66,10 @@ const (
 //
 // ChannelAutoRegister and ChannelExpiryDays arrive with auth 1.7.0,
 // GuestAccess (IRC lets people connect without an account) with 1.8.0,
-// GuestVoice (guests may also join voice and video) with 1.18.0; they stay nil (and are left out of the panel's own JSON) on older releases.
+// GuestVoice (guests may also join voice and video) with 1.18.0,
+// GuestFirst and GuestFirstChannel (web clients open straight into chat as
+// a guest, landing on that channel; "" = the first auto-join channel) with
+// the auth release after 1.19; they stay nil (and are left out of the panel's own JSON) on older releases.
 type NetworkSettings struct {
 	Registration             string     `json:"registration"`
 	RequireEmailVerification bool       `json:"require_email_verification"`
@@ -76,6 +79,8 @@ type NetworkSettings struct {
 	ChannelExpiryDays        *int       `json:"channel_expiry_days,omitempty"`
 	GuestAccess              *bool      `json:"guest_access,omitempty"`
 	GuestVoice               *bool      `json:"guest_voice,omitempty"`
+	GuestFirst               *bool      `json:"guest_first,omitempty"`
+	GuestFirstChannel        *string    `json:"guest_first_channel,omitempty"`
 	UpdatedAt                *time.Time `json:"updated_at,omitempty"`
 	UpdatedBy                *string    `json:"updated_by,omitempty"`
 	// EmailConfigured: auth can send email (nil: older auth, assumed yes).
@@ -95,6 +100,9 @@ type SettingsPatch struct {
 	ChannelExpiryDays        *int    `json:"channel_expiry_days,omitempty"`
 	GuestAccess              *bool   `json:"guest_access,omitempty"`
 	GuestVoice               *bool   `json:"guest_voice,omitempty"`
+	GuestFirst               *bool   `json:"guest_first,omitempty"`
+	// GuestFirstChannel: "" = back to the default (first auto-join channel).
+	GuestFirstChannel *string `json:"guest_first_channel,omitempty"`
 }
 
 // settingsEnvelope accepts both {"registration":…} and {"settings":{…}}.

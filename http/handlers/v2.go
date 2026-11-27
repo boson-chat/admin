@@ -43,6 +43,10 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request, s *ses
 			writeError(w, r, apperr.Invalid("nothing to update"))
 			return
 		}
+		if err := h.checkGuestFirstFile(p); err != nil {
+			writeError(w, r, err)
+			return
+		}
 		if _, err := h.Config.Update(r.Context(), s.Snapshot().Username, r.Header.Get("If-Match"), settingsChange(p), h.can(r, s)); err != nil {
 			writeError(w, r, configErr(err))
 			return
@@ -56,6 +60,39 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request, s *ses
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": st})
+}
+
+// checkGuestFirstFile refuses a file change auth would refuse: guest_first
+// on with guest_access off, or landing on a channel kept to roles. Values
+// not in the patch come from the file (guest_access defaults to on).
+func (h *Handlers) checkGuestFirstFile(p authapi.SettingsPatch) error {
+	if p.GuestFirst == nil && p.GuestAccess == nil && p.GuestFirstChannel == nil {
+		return nil
+	}
+	fileBool := func(key string, def bool, v *bool) bool {
+		if v != nil {
+			return *v
+		}
+		if x, ok := h.Config.FileValue(key); ok {
+			if b, ok := x.(bool); ok {
+				return b
+			}
+		}
+		return def
+	}
+	access := fileBool(stackconfig.KeyGuestAccess, true, p.GuestAccess)
+	first := fileBool(stackconfig.KeyGuestFirst, false, p.GuestFirst)
+	channel := ""
+	if p.GuestFirstChannel != nil {
+		channel = *p.GuestFirstChannel
+	} else if x, ok := h.Config.FileValue(stackconfig.KeyGuestFirstChannel); ok {
+		channel, _ = x.(string)
+	}
+	chans, _ := h.Config.NetworkChannels()
+	if err := stackconfig.CheckGuestFirst(access, first, channel, chans); err != nil {
+		return apperr.Invalid(err.Error())
+	}
+	return nil
 }
 
 // ---- SSO providers ----

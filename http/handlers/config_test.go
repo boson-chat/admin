@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,6 +168,43 @@ func TestNetworkSettingsGuestVoiceInFile(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &out)
 	if out.Settings["guest_voice"] != true || out.Config.Sources["guest_voice"] != "file" || out.Config.Sources["guest_access"] != "default" {
 		t.Fatalf("response: %s", w.Body)
+	}
+}
+
+// guest_first / guest_first_channel go to the file; the panel refuses what
+// auth would refuse (guest_first without guest_access, a landing channel
+// kept to roles) before writing it.
+func TestNetworkSettingsGuestFirstInFile(t *testing.T) {
+	h := newHarness(t)
+	path := h.withConfigFile("version: 1\nirc:\n  channels:\n    - {name: \"#staff\", roles: [Admin]}\n    - {name: \"#IRCForever\", autojoin: true}\n")
+	c, csrf := h.login()
+	patch := func(body map[string]any) *httptest.ResponseRecorder {
+		return h.do("PATCH", "/api/settings", body, withCookie(c), withHeader(CSRFHeader, csrf))
+	}
+	if w := patch(map[string]any{"guest_first": true, "guest_first_channel": "#IRCForever"}); w.Code != 200 {
+		t.Fatalf("patch: %d %s", w.Code, w.Body)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "guest_first: true") || !strings.Contains(string(b), "guest_first_channel: '#IRCForever'") &&
+		!strings.Contains(string(b), `guest_first_channel: "#IRCForever"`) {
+		t.Fatalf("file:\n%s", b)
+	}
+	for body, msg := range map[string]map[string]any{
+		"needs guest access":   {"guest_access": false},
+		"kept to some roles":   {"guest_first_channel": "#STAFF"},
+		"must be # and then 1": {"guest_first_channel": "lobby"},
+	} {
+		w := patch(msg)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), body) {
+			t.Errorf("%v: %d %s", msg, w.Code, w.Body)
+		}
+	}
+	// Both off together is fine; the default channel is "".
+	if w := patch(map[string]any{"guest_access": false, "guest_first": false, "guest_first_channel": ""}); w.Code != 200 {
+		t.Fatalf("both off: %d %s", w.Code, w.Body)
+	}
+	if w := patch(map[string]any{"guest_first": true}); w.Code != 400 {
+		t.Fatalf("guest_first with guest access off in the file: %d %s", w.Code, w.Body)
 	}
 }
 

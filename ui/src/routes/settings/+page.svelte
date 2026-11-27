@@ -19,6 +19,7 @@
 		NETWORK_CHANNELS_KEY,
 		cleanNetworkChannels,
 		founderProblem,
+		networkChannelProblem,
 		networkChannelsChanged,
 		topicProblem
 	} from '$lib/channels';
@@ -64,6 +65,8 @@
 		require_email_verification: 'Verified email',
 		guest_access: 'Guest access',
 		guest_voice: 'Guest voice & video',
+		guest_first: 'Guests first',
+		guest_first_channel: 'Guests first channel',
 		channel_creation: 'Who can create channels',
 		voice_channel_creation: 'Voice room creation',
 		channel_auto_register: 'Automatic channel registration',
@@ -104,11 +107,23 @@
 	let guestVoice = $state(false);
 	let guestVoiceSupported = $derived(typeof saved?.guest_voice === 'boolean');
 	let guestsAllowed = $derived(!guestSupported || guestAccess);
+	// Guests first (newer auth, default off): the web client opens straight
+	// into chat as a guest. auth refuses it without guest access, so turning
+	// guest access off turns it off too.
+	let guestFirst = $state(false);
+	let guestFirstChannel = $state('');
+	let guestFirstSupported = $derived(typeof saved?.guest_first === 'boolean');
+	let guestFirstOn = $derived(guestFirst && guestsAllowed);
+	let guestFirstChannelIssue = $derived(
+		guestFirstSupported && guestFirstChannel.trim() ? networkChannelProblem(guestFirstChannel) : ''
+	);
 
 	function reset(s: NetworkSettings) {
 		draft = { ...s };
 		guestAccess = s.guest_access ?? true;
 		guestVoice = s.guest_voice ?? false;
+		guestFirst = s.guest_first ?? false;
+		guestFirstChannel = s.guest_first_channel ?? '';
 		autoRegister = s.channel_auto_register ?? true;
 		const days = s.channel_expiry_days ?? 0;
 		expiry = expiryChoice(days);
@@ -190,6 +205,18 @@
 		if (autojoinGuests !== savedGuests) set[AUTOJOIN_GUESTS_KEY] = autojoinGuests;
 		return { set, unset };
 	});
+	// The channels guests-first visitors can land on: network channels
+	// everyone may join; empty = the first auto-join one.
+	let firstAutojoin = $derived(netChannels.find((c) => c.autojoin && !c.roles?.length)?.name ?? '');
+	let guestFirstOptions = $derived(
+		netChannels
+			.filter((c) => !c.roles?.length && c.name.trim())
+			.map((c) => ({
+				value: c.name,
+				label: c.name,
+				description: c.autojoin ? 'Auto-join' : undefined
+			}))
+	);
 	let netChangeCount = $derived(Object.keys(netChanges.set).length + netChanges.unset.length);
 
 	// What auth's accounts can do: email set up? NickServ accounts?
@@ -286,6 +313,11 @@
 			out.channel_auto_register = autoRegister;
 		if (guestSupported && guestAccess !== saved.guest_access) out.guest_access = guestAccess;
 		if (guestVoiceSupported && guestVoice !== saved.guest_voice) out.guest_voice = guestVoice;
+		if (guestFirstSupported) {
+			if (guestFirstOn !== saved.guest_first) out.guest_first = guestFirstOn;
+			const ch = guestFirstChannel.trim();
+			if (ch !== (saved.guest_first_channel ?? '')) out.guest_first_channel = ch;
+		}
 		const days = expiryDays(expiry, customDays);
 		if (expirySupported && days !== null && days !== saved.channel_expiry_days)
 			out.channel_expiry_days = days;
@@ -293,15 +325,19 @@
 	});
 	let changeCount = $derived(Object.keys(changes).length + netChangeCount + nsChangeCount);
 	// An invalid custom expiry is an unsaved edit too (Discard undoes it).
-	let dirty = $derived(changeCount > 0 || !!customError || !!netIssue || !!nsIssue);
+	let dirty = $derived(
+		changeCount > 0 || !!customError || !!netIssue || !!nsIssue || !!guestFirstChannelIssue
+	);
 	let blocker = $derived(
 		customError
 			? 'Fix the expiry to save'
-			: netIssue
-				? 'Fix the network channels to save'
-				: nsIssue
-					? 'Fix the sign-up message to save'
-					: ''
+			: guestFirstChannelIssue
+				? 'Fix the guests first channel to save'
+				: netIssue
+					? 'Fix the network channels to save'
+					: nsIssue
+						? 'Fix the sign-up message to save'
+						: ''
 	);
 
 	async function save(e: Event) {
@@ -518,6 +554,47 @@
 					</p>
 				{/if}
 			</div>
+			<div class="guest" data-testid="guest-first">
+				<div class="toggle-row">
+					<Toggle
+						label="Guests first: open the web client straight into chat with a nick, sign-in and sign-up later"
+						detail="Visitors to the Boson web client get a ready-made nickname they can change and a Join chat button, and land in the channel below with the conversation and member list. Signing in and creating an account stay one click away. Links can add ?nick=, ?channel= and ?join=1 (join without the click)."
+						disabled={!guestFirstSupported || !guestsAllowed}
+						bind:checked={guestFirst}
+					/>
+				</div>
+				{#if !guestFirstSupported}
+					<Notice tone="info">
+						Requires a newer auth service. Until then the web client opens on the sign-in screen.
+					</Notice>
+				{:else if !guestsAllowed}
+					<p class="hint" aria-live="polite">
+						Needs guest access.
+						{#if saved?.guest_first}Saving with guest access off turns guests first off too.{/if}
+					</p>
+				{:else if guestFirst}
+					<div class="field gf-channel">
+						<span id="gf-channel-label">Land on</span>
+						<Dropdown
+							free
+							options={guestFirstOptions}
+							bind:value={guestFirstChannel}
+							labelledby="gf-channel-label"
+							describedby="gf-channel-hint"
+							placeholder={firstAutojoin
+								? `${firstAutojoin} (the first auto-join channel)`
+								: 'The first auto-join channel'}
+							disabled={saving}
+						/>
+						<small id="gf-channel-hint" class:err={!!guestFirstChannelIssue}
+							>{guestFirstChannelIssue ||
+								(firstAutojoin
+									? `Empty: ${firstAutojoin}, the first auto-join network channel. Guests also join every auto-join channel.`
+									: 'Empty: the first auto-join network channel. There is none yet, so add one below or name a channel here.')}</small
+						>
+					</div>
+				{/if}
+			</div>
 		</section>
 
 		<section aria-labelledby="ch-h">
@@ -719,6 +796,17 @@
 	}
 	.nickserv .hint {
 		margin-top: 0;
+	}
+	.gf-channel {
+		max-width: 28rem;
+		padding-left: var(--space-4);
+	}
+	.gf-channel small {
+		color: var(--fg-quiet);
+		font-size: var(--text-sm);
+	}
+	.gf-channel small.err {
+		color: var(--danger-text);
 	}
 	.ns-msg [aria-invalid='true'] {
 		border-color: var(--danger);
