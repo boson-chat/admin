@@ -330,6 +330,9 @@ var Keys = append([]Key{
 	{Key: KeyDirectoryRegistration, Kind: KindBool, Perm: admin.PermDirectoryManage, Services: []string{self}, Env: "DIRECTORY_REGISTRATION"},
 	{Key: KeyDirectoryHostname, Kind: KindString, Perm: admin.PermDirectoryManage, Services: []string{self}, Env: "DIRECTORY_HOSTNAME", item: Hostname},
 	{Key: KeyTLSCheckHosts, Kind: KindList, MaxItems: 20, Perm: admin.PermServicesManage, Services: []string{self}, Env: "TLS_CHECK_HOSTS", item: TLSHost},
+	// Usage & health stats (docs/telemetry.md in the stack): the daily
+	// anonymous install report. TELEMETRY=off in the env wins over it.
+	{Key: KeyTelemetry, Kind: KindBool, Perm: admin.PermSettingsManage, Services: []string{self}, Env: "TELEMETRY"},
 
 	// Nick registration (the api's nick claims, docs/nick-claim.md). The
 	// mailbox password stays in .env (NICK_CLAIM_POP3_PASSWORD).
@@ -586,6 +589,7 @@ const (
 	KeyDirectoryRegistration = "admin.directory_registration"
 	KeyDirectoryHostname     = "admin.directory_hostname"
 	KeyTLSCheckHosts         = "admin.tls_check_hosts"
+	KeyTelemetry             = "admin.telemetry"
 )
 
 // KeyByName finds a key of the schema.

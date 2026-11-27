@@ -162,6 +162,9 @@ type RunSummary struct {
 	Items      []Item     `json:"items"`
 	Error      string     `json:"error,omitempty"`
 	BackupDir  string     `json:"backup_dir,omitempty"`
+	// FailedStep is the id of the step the run failed at (preflight,
+	// backup, pull, …), for the usage & health stats' error class.
+	FailedStep string `json:"failed_step,omitempty"`
 }
 
 func (r *Run) clone() *Run {
@@ -176,6 +179,12 @@ func (r *Run) summary() RunSummary {
 		FinishedAt: r.FinishedAt, Items: r.Items, Error: r.Error}
 	if r.Backup != nil {
 		s.BackupDir = r.Backup.Dir
+	}
+	for _, st := range r.Steps {
+		if st.State == StepFailed {
+			s.FailedStep = st.ID
+			break
+		}
 	}
 	return s
 }

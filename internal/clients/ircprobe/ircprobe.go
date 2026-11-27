@@ -29,6 +29,11 @@ type Result struct {
 	// Detail is the error when the probe failed, or a note when it passed
 	// without a version.
 	Detail string
+	// Users is the number of users on the network from LUSERS (266, else
+	// 251), the probe itself not counted; Channels the channels formed
+	// (254). Only from Counts; nil when the server didn't say.
+	Users    *int
+	Channels *int
 }
 
 type IRCProberImpl interface {
@@ -36,6 +41,12 @@ type IRCProberImpl interface {
 	// as SNI; the certificate is not verified here (TLS_CHECK_HOSTS reports
 	// on certificates), so an expired cert doesn't read as "IRC down".
 	Probe(ctx context.Context, address, serverName string, useTLS bool) Result
+}
+
+// CounterImpl also reads the LUSERS numbers the server sends after
+// registration (the usage & health stats' IRC users).
+type CounterImpl interface {
+	Counts(ctx context.Context, address, serverName string, useTLS bool) Result
 }
 
 type IRCProber struct {
@@ -50,6 +61,16 @@ func NewIRCProber(timeout time.Duration) IRCProberImpl {
 const maxLine = 8 << 10
 
 func (p *IRCProber) Probe(ctx context.Context, address, serverName string, useTLS bool) Result {
+	return p.probe(ctx, address, serverName, useTLS, false)
+}
+
+// Counts is Probe that stays registered until the end of the MOTD to read
+// LUSERS (251 users, 254 channels, 266 global users).
+func (p *IRCProber) Counts(ctx context.Context, address, serverName string, useTLS bool) Result {
+	return p.probe(ctx, address, serverName, useTLS, true)
+}
+
+func (p *IRCProber) probe(ctx context.Context, address, serverName string, useTLS, counts bool) Result {
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 	start := time.Now()
@@ -130,8 +151,37 @@ func (p *IRCProber) Probe(ctx context.Context, address, serverName string, useTL
 			if len(m.params) >= 3 {
 				res.Version = clean(m.params[2])
 			}
-			quit(conn, r, send)
-			return res
+			if !counts {
+				quit(conn, r, send)
+				return res
+			}
+		case "251": // RPL_LUSERCLIENT :There are <u> users and <i> invisible on <s> servers
+			if counts && res.Users == nil {
+				if n, ok := luserClient(m.trailing()); ok {
+					res.Users = &n
+				}
+			}
+		case "254": // RPL_LUSERCHANNELS <nick> <channels> :channels formed
+			if counts && len(m.params) >= 2 {
+				if n, ok := atoi(m.params[1]); ok {
+					res.Channels = &n
+				}
+			}
+		case "266": // RPL_GLOBALUSERS <nick> [<current> <max>] :Current global users …
+			if counts {
+				if n, ok := globalUsers(m.params); ok {
+					res.Users = &n
+				}
+			}
+		case "376", "422": // end of MOTD / no MOTD: LUSERS came before
+			if counts {
+				if res.Users != nil {
+					n := max(*res.Users-1, 0) // the probe itself
+					res.Users = &n
+				}
+				quit(conn, r, send)
+				return res
+			}
 		case "FAIL":
 			// Ergo with guests off (accounts.require-sasl): the probe has no
 			// account, so it can't register. The server is up all the same.
@@ -214,6 +264,58 @@ func parse(s string) message {
 		m.params = append(m.params, trailing)
 	}
 	return m
+}
+
+func atoi(s string) (int, bool) {
+	n := 0
+	if s == "" || len(s) > 9 {
+		return 0, false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
+}
+
+// luserClient reads "There are 5 users and 3 invisible on 1 servers".
+func luserClient(s string) (int, bool) {
+	f := strings.Fields(s)
+	total, found := 0, false
+	for i := 1; i < len(f); i++ {
+		if w := strings.ToLower(f[i]); w == "users" || w == "invisible" {
+			if n, ok := atoi(f[i-1]); ok {
+				total += n
+				found = true
+			}
+		}
+	}
+	return total, found
+}
+
+// globalUsers reads 266: "<nick> 7 9 :Current global users 7, max 9" or
+// "<nick> :Current global users: 7  Max: 9".
+func globalUsers(params []string) (int, bool) {
+	if len(params) >= 3 {
+		if n, ok := atoi(params[1]); ok {
+			return n, true
+		}
+	}
+	if len(params) == 0 {
+		return 0, false
+	}
+	t := params[len(params)-1]
+	i := strings.Index(strings.ToLower(t), "users")
+	if i < 0 {
+		return 0, false
+	}
+	f := strings.Fields(strings.NewReplacer(":", " ", ",", " ").Replace(t[i+len("users"):]))
+	if len(f) == 0 {
+		return 0, false
+	}
+	return atoi(f[0])
 }
 
 func randHex(n int) string {

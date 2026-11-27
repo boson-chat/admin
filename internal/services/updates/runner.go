@@ -329,6 +329,9 @@ func (s *Service) finish(state, errText string) {
 	delete(s.tokens, r.ID)
 	s.busy = false
 	_ = s.journal.save()
+	if f := s.o.OnFinish; f != nil {
+		go f(r.Kind)
+	}
 	if auto {
 		id := r.ID
 		go func() {

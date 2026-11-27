@@ -36,6 +36,7 @@
 	import Dropdown from '$lib/components/Dropdown.svelte';
 	import Notice from '$lib/components/Notice.svelte';
 	import Toggle from '$lib/components/Toggle.svelte';
+	import UsageStats from '$lib/components/UsageStats.svelte';
 	import State from '$lib/components/State.svelte';
 	import Time from '$lib/components/Time.svelte';
 	import {
@@ -665,6 +666,8 @@
 		</div>
 	</form>
 {/if}
+
+<UsageStats />
 
 <style>
 	.file-note {

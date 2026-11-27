@@ -43,6 +43,9 @@ type AdminValues struct {
 	DirectoryHostname     string
 	TLSCheckHosts         []string
 	TLSTargets            []config.TLSTarget
+	// Telemetry: admin.telemetry (default on; TELEMETRY=off in the env
+	// turns the report off whatever the file says).
+	Telemetry bool
 }
 
 type Options struct {
@@ -102,7 +105,7 @@ func (s *Service) defaults() AdminValues {
 	d := s.o.Defaults
 	t, _ := config.ParseTLSTargets(d.TLSCheckHosts)
 	return AdminValues{DirectoryRegistration: d.DirectoryRegistration, DirectoryHostname: d.DirectoryHostname,
-		TLSCheckHosts: slices.Clone(d.TLSCheckHosts), TLSTargets: t}
+		TLSCheckHosts: slices.Clone(d.TLSCheckHosts), TLSTargets: t, Telemetry: true}
 }
 
 // Enabled: BOSON_CONFIG is set.
@@ -123,7 +126,7 @@ func (s *Service) apply(snap *configfile.Snapshot) {
 	next, def := s.admin, s.defaults()
 	var issues []Issue
 	root := snap.Root()
-	for _, name := range []string{KeyDirectoryRegistration, KeyDirectoryHostname, KeyTLSCheckHosts} {
+	for _, name := range []string{KeyDirectoryRegistration, KeyDirectoryHostname, KeyTLSCheckHosts, KeyTelemetry} {
 		k, _ := KeyByName(name)
 		_, n := configfile.Lookup(root, configfile.Split(name))
 		var v any
@@ -150,6 +153,11 @@ func (s *Service) apply(snap *configfile.Snapshot) {
 			if v != nil {
 				next.TLSCheckHosts = v.([]string)
 				next.TLSTargets, _ = config.ParseTLSTargets(next.TLSCheckHosts)
+			}
+		case KeyTelemetry:
+			next.Telemetry = def.Telemetry
+			if v != nil {
+				next.Telemetry = v.(bool)
 			}
 		}
 	}
@@ -206,6 +214,8 @@ func (s *Service) adminDefault(name string) any {
 			return []string{}
 		}
 		return d.TLSCheckHosts
+	case KeyTelemetry:
+		return true
 	}
 	return nil
 }

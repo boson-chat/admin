@@ -215,3 +215,52 @@ func TestParse(t *testing.T) {
 		}
 	}
 }
+
+func TestCountsReadsLusers(t *testing.T) {
+	addr, _ := fakeIRC(t, false, func(r *bufio.Reader, w net.Conn) {
+		write := func(s string) { _, _ = w.Write([]byte(s + "\r\n")) }
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch f := strings.Fields(line); f[0] {
+			case "CAP":
+				if len(f) > 1 && f[1] == "LS" {
+					write(":irc.test CAP * LS :sasl")
+				}
+			case "USER":
+				write(":irc.test 001 x :Welcome")
+				write(":irc.test 004 x irc.test ergo-2.19.1 BERTZios CEIMRUabefhiklmnoqstuv")
+				write(":irc.test 251 x :There are 3 users and 5 invisible on 1 server(s)")
+				write(":irc.test 254 x 12 :channels formed")
+				write(":irc.test 266 x 9 11 :Current global users 9, max 11")
+				write(":irc.test 376 x :End of MOTD command")
+			case "QUIT":
+				write("ERROR :Quit")
+				return
+			}
+		}
+	})
+	p := NewIRCProber(2 * time.Second).(*IRCProber)
+	r := p.Counts(context.Background(), addr, "", false)
+	if !r.OK || r.Version != "ergo-2.19.1" || r.Users == nil || *r.Users != 8 || r.Channels == nil || *r.Channels != 12 {
+		t.Fatalf("got %+v users=%v channels=%v", r, r.Users, r.Channels)
+	}
+	// Probe alone stops at 004 and never reads them.
+	if r := p.Probe(context.Background(), addr, "", false); r.Users != nil {
+		t.Fatalf("Probe read users: %+v", r)
+	}
+}
+
+func TestLuserParsers(t *testing.T) {
+	if n, ok := luserClient("There are 3 users and 5 invisible on 1 servers"); !ok || n != 8 {
+		t.Fatalf("251: %d %v", n, ok)
+	}
+	if n, ok := globalUsers([]string{"x", ":Current global users: 7  Max: 9"}); !ok || n != 7 {
+		t.Fatalf("266 text: %d %v", n, ok)
+	}
+	if _, ok := globalUsers([]string{"x"}); ok {
+		t.Fatal("266 without numbers")
+	}
+}

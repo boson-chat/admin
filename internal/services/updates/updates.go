@@ -64,6 +64,10 @@ type Options struct {
 	VerifyTimeout time.Duration
 	Catalog       []Component
 	Now           func() time.Time
+	// OnFinish is called (in its own goroutine) when an update or a
+	// rollback finishes, failed or not, with the run's kind ("update" or
+	// "rollback"): the usage & health stats send a report soon after.
+	OnFinish func(kind string)
 }
 
 // ServiceImpl is what the HTTP layer uses.
