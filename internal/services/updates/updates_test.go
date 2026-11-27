@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -264,5 +265,78 @@ func TestValidEnv(t *testing.T) {
 		if err := validEnv(bad); err == nil {
 			t.Errorf("%s=%q should be refused", k, v)
 		}
+	}
+}
+
+func TestResolveComposeFiles(t *testing.T) {
+	const dir = "/opt/boson-stack"
+	p := func(n string) string { return dir + "/" + n }
+	on := func(files ...string) func(string) bool {
+		return func(f string) bool { return slices.Contains(files, f) }
+	}
+	for _, tc := range []struct {
+		name             string
+		labelled, exists []string
+		want, missing    []string
+		err              string
+	}{
+		{name: "override deleted after the containers were created",
+			labelled: []string{p("compose.yaml"), p("compose.override.yaml")}, exists: []string{p("compose.yaml")},
+			want: []string{p("compose.yaml")}, missing: []string{p("compose.override.yaml")}},
+		{name: "default set as it is",
+			labelled: []string{p("compose.yaml"), p("compose.override.yaml")}, exists: []string{p("compose.yaml"), p("compose.override.yaml")},
+			want: []string{p("compose.yaml"), p("compose.override.yaml")}},
+		{name: "override added after the containers were created",
+			labelled: []string{p("compose.yaml")}, exists: []string{p("compose.yaml"), p("compose.override.yaml")},
+			want: []string{p("compose.yaml"), p("compose.override.yaml")}},
+		{name: "override renamed to .yml",
+			labelled: []string{p("compose.yaml"), p("compose.override.yaml")}, exists: []string{p("compose.yaml"), p("compose.override.yml")},
+			want: []string{p("compose.yaml"), p("compose.override.yml")}, missing: []string{p("compose.override.yaml")}},
+		{name: "no label: compose.yaml",
+			exists: []string{p("compose.yaml")}, want: []string{p("compose.yaml")}},
+		{name: "custom set kept in order, nothing added",
+			labelled: []string{p("compose.yaml"), p("compose.auth-src.yaml")},
+			exists:   []string{p("compose.yaml"), p("compose.auth-src.yaml"), p("compose.override.yaml")},
+			want:     []string{p("compose.yaml"), p("compose.auth-src.yaml")}},
+		{name: "custom set with a deleted file",
+			labelled: []string{p("compose.yaml"), p("compose.auth-src.yaml"), p("compose.override.yaml"), "/etc/boson/extra.yaml"},
+			exists:   []string{p("compose.yaml"), p("compose.auth-src.yaml"), "/etc/boson/extra.yaml"},
+			want:     []string{p("compose.yaml"), p("compose.auth-src.yaml"), "/etc/boson/extra.yaml"}, missing: []string{p("compose.override.yaml")}},
+		{name: "compose.yaml missing",
+			labelled: []string{p("compose.yaml"), p("compose.override.yaml")}, exists: []string{p("compose.override.yaml")},
+			err: "compose file /opt/boson-stack/compose.yaml is missing"},
+		{name: "nothing left",
+			labelled: []string{p("compose.yaml")}, err: "is missing"},
+		{name: "custom main file missing",
+			labelled: []string{p("compose.prod.yaml"), p("compose.auth-src.yaml")}, exists: []string{p("compose.auth-src.yaml"), p("compose.yaml")},
+			err: "compose file /opt/boson-stack/compose.prod.yaml is missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, missing, err := resolveComposeFiles(dir, tc.labelled, on(tc.exists...))
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("err = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tc.want) || !slices.Equal(missing, tc.missing) {
+				t.Fatalf("files %v missing %v, want %v missing %v", got, missing, tc.want, tc.missing)
+			}
+		})
+	}
+}
+
+func TestComposeCandidates(t *testing.T) {
+	const dir = "/srv/boson"
+	got := composeCandidates(dir, []string{dir + "/compose.yaml"})
+	if !slices.Contains(got, dir+"/compose.override.yaml") || got[0] != dir+"/compose.yaml" {
+		t.Fatalf("a default set probes the override names: %v", got)
+	}
+	custom := []string{dir + "/compose.yaml", dir + "/compose.auth-src.yaml"}
+	if got := composeCandidates(dir, custom); !slices.Equal(got, custom) {
+		t.Fatalf("a custom set probes only its own files: %v", got)
 	}
 }

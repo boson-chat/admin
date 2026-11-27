@@ -428,3 +428,72 @@ func TestUnpublishedImageIsPending(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 }
+
+// The containers were created with a compose.override.yaml that has since
+// been deleted: their labels still name it. The update must leave it out
+// (compose refuses a COMPOSE_FILE naming a missing file) and say so; the
+// recreated containers then carry the files that exist.
+func TestDeletedOverrideFileIsLeftOut(t *testing.T) {
+	fs, srv := newStack(t)
+	ctx := context.Background()
+	fs.SetConfigFiles("/srv/boson/compose.yaml,/srv/boson/compose.override.yaml")
+	svc := newService(t, fs, srv, "1.26.0", t.TempDir())
+	svc.Check(ctx)
+	if _, err := svc.Apply(ctx, "alice", updates.ApplyRequest{Mode: "selected", Components: []string{"auth"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	r := waitRun(t, svc, updates.StateSucceeded, updates.StateFailed)
+	if r.State != updates.StateSucceeded {
+		t.Fatalf("run failed: %s\nsteps: %+v", r.Error, r.Steps)
+	}
+	if !slices.Equal(r.Location.ComposeFiles, []string{"/srv/boson/compose.yaml"}) ||
+		!slices.Equal(r.Location.MissingFiles, []string{"/srv/boson/compose.override.yaml"}) {
+		t.Fatalf("location: %+v", r.Location)
+	}
+	if d := r.Steps[0].Detail; r.Steps[0].ID != "preflight" || !strings.Contains(d, "left out compose.override.yaml") {
+		t.Fatalf("preflight detail should name the missing file: %+v", r.Steps[0])
+	}
+	if got := fs.Labels("auth")["com.docker.compose.project.config_files"]; got != "/srv/boson/compose.yaml" {
+		t.Fatalf("recreated auth labelled %q", got)
+	}
+	if j := fs.Jobs(); len(j) != 0 {
+		t.Fatalf("helper containers left behind: %v", j)
+	}
+}
+
+// An override added after the containers were created is picked up, as a
+// plain `docker compose up` would.
+func TestNewOverrideFileIsPickedUp(t *testing.T) {
+	fs, srv := newStack(t)
+	ctx := context.Background()
+	fs.Set(func(s *fakestack.Stack) { s.Files["/srv/boson/compose.override.yaml"] = true })
+	svc := newService(t, fs, srv, "1.26.0", t.TempDir())
+	svc.Check(ctx)
+	if _, err := svc.Apply(ctx, "alice", updates.ApplyRequest{Mode: "selected", Components: []string{"auth"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	r := waitRun(t, svc, updates.StateSucceeded, updates.StateFailed)
+	if r.State != updates.StateSucceeded || !slices.Equal(r.Location.ComposeFiles, []string{"/srv/boson/compose.yaml", "/srv/boson/compose.override.yaml"}) {
+		t.Fatalf("%s %+v", r.State, r.Location)
+	}
+}
+
+// compose.yaml itself is gone: the update fails at preflight, clearly, with
+// nothing changed.
+func TestMissingComposeFileFailsPreflight(t *testing.T) {
+	fs, srv := newStack(t)
+	ctx := context.Background()
+	fs.Set(func(s *fakestack.Stack) { delete(s.Files, "/srv/boson/compose.yaml") })
+	svc := newService(t, fs, srv, "1.26.0", t.TempDir())
+	svc.Check(ctx)
+	if _, err := svc.Apply(ctx, "alice", updates.ApplyRequest{Mode: "selected", Components: []string{"auth"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	r := waitRun(t, svc, updates.StateSucceeded, updates.StateFailed)
+	if r.State != updates.StateFailed || r.Changed || !strings.Contains(r.Error, "compose file /srv/boson/compose.yaml is missing") {
+		t.Fatalf("%s %q", r.State, r.Error)
+	}
+	if fs.Image("auth") != harbor+"auth:1.20.0" {
+		t.Fatal("nothing may change")
+	}
+}
