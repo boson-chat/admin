@@ -69,6 +69,32 @@ describe('Metrics page', () => {
 		expect(screen.getByText(/quicvideod is not answering/)).toBeTruthy();
 	});
 
+	it('hints at the ufw rule when job node is down', async () => {
+		serve({
+			targets: [...base.targets, { job: 'node', instance: 'host', status: 'down', availability: 0 }]
+		});
+		render(Page);
+		const hint = await screen.findByTestId('node-down-hint');
+		const notice = hint.closest('.notice') ?? hint.parentElement!;
+		expect(notice.textContent).toContain(
+			"sudo ufw allow from 10.203.53.0/24 to 10.203.53.1 port 9100 proto tcp comment 'boson: metrics -> node-exporter'"
+		);
+		expect(
+			within(notice as HTMLElement)
+				.getByRole('link', { name: 'Host metrics in the docs' })
+				.getAttribute('href')
+		).toContain('deploy-boson-chat.md#host-metrics-node-exporter');
+	});
+
+	it('no ufw hint while job node is up', async () => {
+		serve({
+			targets: [...base.targets, { job: 'node', instance: 'host', status: 'up', availability: 100 }]
+		});
+		render(Page);
+		await screen.findAllByText('node');
+		expect(screen.queryByTestId('node-down-hint')).toBeNull();
+	});
+
 	it('says when metrics are off', async () => {
 		api.mockResolvedValue({ ...base, configured: false, node_exporter: false, targets: [] });
 		render(Page);
