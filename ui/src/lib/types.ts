@@ -231,6 +231,8 @@ export interface SSOProvider {
 	enabled: boolean;
 	allow_signup: boolean;
 	trust_email: boolean;
+	/** auth 1.33+: create accounts even while registration is closed or invite-only. */
+	signup_when_closed?: boolean;
 	config: { oidc?: OIDCConfig; saml?: SAMLConfig };
 	has_client_secret: boolean;
 	start_url?: string;

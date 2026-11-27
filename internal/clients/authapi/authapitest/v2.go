@@ -137,6 +137,9 @@ func apply(p *authapi.SSOProviderConfig, in authapi.SSOProviderInput) {
 	if in.TrustEmail != nil {
 		p.TrustEmail = *in.TrustEmail
 	}
+	if in.SignupWhenClosed != nil {
+		p.SignupWhenClosed = *in.SignupWhenClosed
+	}
 	if in.Config != nil {
 		if o := in.Config.OIDC; o != nil {
 			c := *o

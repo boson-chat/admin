@@ -94,6 +94,7 @@
 					<div class="meta">
 						<code>{p.slug}</code>
 						<span>{p.allow_signup ? 'Creates accounts' : 'Existing accounts only'}</span>
+						{#if p.allow_signup && p.signup_when_closed}<span>Even when sign-ups are closed</span>{/if}
 						{#if p.trust_email}<span>Trusts email</span>{/if}
 						{#if p.updated_at || p.created_at}<span>Changed <Time at={p.updated_at ?? p.created_at} /></span
 							>{/if}

@@ -30,6 +30,7 @@
 	let slugTouched = $state(false);
 	let allowSignup = $state(p0?.allow_signup ?? true);
 	let trustEmail = $state(p0?.trust_email ?? false);
+	let signupWhenClosed = $state(p0?.signup_when_closed ?? false);
 
 	const o = p0?.config.oidc;
 	let issuer = $state(o?.issuer ?? presets[0].issuer ?? '');
@@ -107,6 +108,7 @@
 			display_name: displayName.trim(),
 			allow_signup: allowSignup,
 			trust_email: trustEmail,
+			signup_when_closed: allowSignup && signupWhenClosed,
 			config,
 			...(editing ? {} : { slug: slug.trim(), kind, enabled: false })
 		};
@@ -369,9 +371,16 @@
 	<section class="block toggles" aria-label="Accounts">
 		<Toggle
 			label="Create accounts on first sign-in"
-			detail="Someone without a boson account gets one the first time they sign in here. Off: only people who already have an account (linked by an admin or by email) can use it. Closed registration blocks new accounts either way."
+			detail="Someone without a boson account gets one the first time they sign in here. Off: only people who already have an account (linked by an admin or by email) can use it. Closed or invite-only registration blocks new accounts unless the switch below is on."
 			bind:checked={allowSignup}
 		/>
+		{#if allowSignup}
+			<Toggle
+				label="Also when sign-ups are closed"
+				detail="Create accounts through this provider even while registration is closed or invite-only: having an account there is the invitation. Only for a provider whose members you want here, like your community’s own login; not for Google or other public accounts."
+				bind:checked={signupWhenClosed}
+			/>
+		{/if}
 		<Toggle
 			label="Trust the provider’s email addresses"
 			detail="Treat the email address it sends as verified. Only for providers that verify emails themselves: where people can type any address, they could claim someone else’s."

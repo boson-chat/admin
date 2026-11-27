@@ -174,15 +174,18 @@ type ProviderSettings struct {
 
 // SSOProviderConfig is an SSO provider as the admin API returns it.
 type SSOProviderConfig struct {
-	ID              string           `json:"id"`
-	Slug            string           `json:"slug"`
-	Kind            string           `json:"kind"`
-	DisplayName     string           `json:"display_name"`
-	Enabled         bool             `json:"enabled"`
-	AllowSignup     bool             `json:"allow_signup"`
-	TrustEmail      bool             `json:"trust_email"`
-	Config          ProviderSettings `json:"config"`
-	HasClientSecret bool             `json:"has_client_secret"`
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	Kind        string `json:"kind"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
+	AllowSignup bool   `json:"allow_signup"`
+	TrustEmail  bool   `json:"trust_email"`
+	// SignupWhenClosed (auth 1.33+): AllowSignup also while registration is
+	// closed or invite-only.
+	SignupWhenClosed bool             `json:"signup_when_closed"`
+	Config           ProviderSettings `json:"config"`
+	HasClientSecret  bool             `json:"has_client_secret"`
 	// URLs set by the auth service. StartURL begins a sign-in; RedirectURI
 	// (OIDC) and the ACS / SP metadata / entity ID / certificate (SAML) go
 	// to the identity provider.
@@ -226,24 +229,26 @@ func (w *wireProvider) decode() (*SSOProviderConfig, error) {
 
 // SSOProviderInput creates (all of it) or patches (non-nil fields) a provider.
 type SSOProviderInput struct {
-	Slug        *string           `json:"slug,omitempty"`
-	Kind        *string           `json:"kind,omitempty"`
-	DisplayName *string           `json:"display_name,omitempty"`
-	Enabled     *bool             `json:"enabled,omitempty"`
-	AllowSignup *bool             `json:"allow_signup,omitempty"`
-	TrustEmail  *bool             `json:"trust_email,omitempty"`
-	Config      *ProviderSettings `json:"config,omitempty"`
+	Slug             *string           `json:"slug,omitempty"`
+	Kind             *string           `json:"kind,omitempty"`
+	DisplayName      *string           `json:"display_name,omitempty"`
+	Enabled          *bool             `json:"enabled,omitempty"`
+	AllowSignup      *bool             `json:"allow_signup,omitempty"`
+	TrustEmail       *bool             `json:"trust_email,omitempty"`
+	SignupWhenClosed *bool             `json:"signup_when_closed,omitempty"`
+	Config           *ProviderSettings `json:"config,omitempty"`
 }
 
 // wireInput is SSOProviderInput as the auth service takes it.
 type wireInput struct {
-	Slug        *string        `json:"slug,omitempty"`
-	Kind        *string        `json:"kind,omitempty"`
-	DisplayName *string        `json:"display_name,omitempty"`
-	Enabled     *bool          `json:"enabled,omitempty"`
-	AllowSignup *bool          `json:"allow_signup,omitempty"`
-	TrustEmail  *bool          `json:"trust_email,omitempty"`
-	Config      map[string]any `json:"config,omitempty"`
+	Slug             *string        `json:"slug,omitempty"`
+	Kind             *string        `json:"kind,omitempty"`
+	DisplayName      *string        `json:"display_name,omitempty"`
+	Enabled          *bool          `json:"enabled,omitempty"`
+	AllowSignup      *bool          `json:"allow_signup,omitempty"`
+	TrustEmail       *bool          `json:"trust_email,omitempty"`
+	SignupWhenClosed *bool          `json:"signup_when_closed,omitempty"`
+	Config           map[string]any `json:"config,omitempty"`
 }
 
 // wireConfig flattens the kind-specific config. The auth service merges a
@@ -290,7 +295,7 @@ func wireConfig(c *ProviderSettings, update bool) map[string]any {
 
 func (in SSOProviderInput) wire(update bool) wireInput {
 	return wireInput{Slug: in.Slug, Kind: in.Kind, DisplayName: in.DisplayName, Enabled: in.Enabled,
-		AllowSignup: in.AllowSignup, TrustEmail: in.TrustEmail, Config: wireConfig(in.Config, update)}
+		AllowSignup: in.AllowSignup, TrustEmail: in.TrustEmail, SignupWhenClosed: in.SignupWhenClosed, Config: wireConfig(in.Config, update)}
 }
 
 // SSOTestResult is POST /v1/admin/sso/providers/{id}/test.
