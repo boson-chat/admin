@@ -3,7 +3,11 @@ import {
 	checkError,
 	checkPending,
 	checkPhase,
+	diffClass,
 	impactWord,
+	localEdits,
+	shortImage,
+	type StackStatus,
 	renderMarkdown,
 	withoutTitle,
 	updatesByService,
@@ -141,5 +145,34 @@ describe('checkPhase', () => {
 		expect(checkError(gh)).toBe('github: timeout');
 		const partial = { ...gh, components: [...gh.components, { ...comp, id: 'web', present: true }] };
 		expect(checkPhase(partial)).toBe('done');
+	});
+});
+
+describe('stack release helpers', () => {
+	it('shortens image references', () => {
+		expect(shortImage('harbor.floret.dev/boson/stack-ergo:1.2.0')).toBe('stack-ergo:1.2.0');
+		expect(shortImage('harbor.floret.dev/boson/auth:1.20.0@sha256:abc')).toBe('auth:1.20.0');
+		expect(shortImage('postgres:18-alpine')).toBe('postgres:18-alpine');
+		expect(shortImage(undefined)).toBe('—');
+	});
+	it('colours diff lines', () => {
+		expect(diffClass('--- a/compose.yaml')).toBe('dh');
+		expect(diffClass('+++ b/compose.yaml')).toBe('dh');
+		expect(diffClass('@@ -1,3 +1,3 @@')).toBe('dhunk');
+		expect(diffClass('+    image: traefik:v3.7.20')).toBe('dadd');
+		expect(diffClass('-    image: traefik:v3.7.19')).toBe('ddel');
+		expect(diffClass('  context')).toBe('');
+	});
+	it('lists the files edited on this server', () => {
+		const s = {
+			files: [
+				{ path: 'compose.yaml', action: 'update' },
+				{ path: 'traefik/dynamic/stack.yml', action: 'local' },
+				{ path: 'docs/old.md', action: 'keep' },
+				{ path: 'README.md', action: 'unknown' }
+			]
+		} as StackStatus;
+		expect(localEdits(s).map((f) => f.path)).toEqual(['traefik/dynamic/stack.yml', 'docs/old.md']);
+		expect(localEdits(undefined)).toEqual([]);
 	});
 });

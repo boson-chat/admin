@@ -93,12 +93,31 @@ func (s *Service) Plan(req ApplyRequest) (items []Item, comps []Component, skipp
 	for _, id := range req.Components {
 		want[id] = true
 	}
+	var stackSelf *Item
 	for _, c := range s.o.Catalog {
 		st, ok := s.componentStatus(c.ID)
 		if !ok || !st.Update || !st.Applyable {
 			continue
 		}
 		if req.Mode == "selected" && !want[c.ID] {
+			continue
+		}
+		if c.ID == "stack" {
+			it, sc := s.stackItem(st)
+			if it == nil {
+				continue
+			}
+			if req.Mode == "quiet" && st.Stack.Impact.Disruptive {
+				skipped = append(skipped, c.ID)
+				continue
+			}
+			items = append(items, *it)
+			comps = append(comps, sc...)
+			if len(sc) == 0 {
+				comps = append(comps, Component{ID: "stack", Name: c.Name, Impact: Impact{Who: st.Stack.Impact.Who}})
+			}
+			stackSelf = s.stackSelfItem(st)
+			breaking = breaking || st.Breaking
 			continue
 		}
 		if req.Mode == "quiet" && c.Impact.Disruptive {
@@ -112,6 +131,14 @@ func (s *Service) Plan(req ApplyRequest) (items []Item, comps []Component, skipp
 			Databases: c.Databases, Volumes: c.Volumes})
 		comps = append(comps, c)
 		breaking = breaking || st.Breaking
+	}
+	// A stack update that moves the panel too: its hand-off, last (unless
+	// the panel's own newer release is in the plan already).
+	if stackSelf != nil && !slices.ContainsFunc(items, func(i Item) bool { return i.Self }) {
+		items = append(items, *stackSelf)
+		if c, ok := s.catalog("admin"); ok {
+			comps = append(comps, c)
+		}
 	}
 	if len(items) == 0 {
 		return nil, nil, skipped, false, errNoUpdates
@@ -128,16 +155,26 @@ func (s *Service) installedImage(id string) (string, bool) {
 	return i.image, ok
 }
 
-func updateSteps(self bool) []Step {
+func updateSteps(self, stack bool) []Step {
 	st := []Step{
 		{ID: "preflight", Label: "Check the stack and free disk space"},
 		{ID: "backup", Label: "Back up .env, config, image digests, databases and data"},
-		{ID: "pull", Label: "Pull the new images"},
-		{ID: "configure", Label: "Set the new versions in .env"},
-		{ID: "recreate", Label: "Recreate the changed services"},
-		{ID: "health", Label: "Wait for the services to be healthy"},
-		{ID: "verify", Label: "Check that everything works"},
 	}
+	if stack {
+		st[1].Label = "Back up the stack directory, .env, config, image digests, databases and data"
+		st = append(st, Step{ID: "stage", Label: "Download the stack release and check its SHA-256"})
+	}
+	st = append(st, Step{ID: "pull", Label: "Pull the new images"})
+	if stack {
+		st = append(st, Step{ID: "configure", Label: "Write the stack files, set the versions, run the migrations"})
+	} else {
+		st = append(st, Step{ID: "configure", Label: "Set the new versions in .env"})
+	}
+	st = append(st,
+		Step{ID: "recreate", Label: "Recreate the changed services"},
+		Step{ID: "health", Label: "Wait for the services to be healthy"},
+		Step{ID: "verify", Label: "Check that everything works"},
+	)
 	if self {
 		st = append(st, Step{ID: "self", Label: "Update the admin panel (it reloads)"})
 	}
@@ -171,9 +208,10 @@ func (s *Service) Apply(ctx context.Context, actor string, req ApplyRequest, tok
 		return nil, errBusy
 	}
 	self := slices.ContainsFunc(items, func(i Item) bool { return i.Self })
+	stack := slices.ContainsFunc(items, func(i Item) bool { return i.Stack != nil })
 	run := &Run{ID: s.o.Now().UTC().Format("20060102T150405Z") + "-" + newID(), Kind: "update", Actor: actor,
 		State: StateRunning, StartedAt: s.o.Now().UTC(), Items: items, Skipped: skipped, Summary: Summary(comps),
-		Steps: updateSteps(self), Checks: []Check{}, Log: []string{}}
+		Steps: updateSteps(self, stack), Checks: []Check{}, Log: []string{}}
 	s.journal.Current = run
 	s.busy = true
 	s.tokens[run.ID] = token
@@ -280,10 +318,27 @@ func (s *Service) finish(state, errText string) {
 			}
 		}
 	}
+	// A stack update that failed after changing the stack puts itself back.
+	auto := state == StateFailed && r.Kind == "update" && r.CanRollback &&
+		slices.ContainsFunc(r.Items, func(i Item) bool { return i.Stack != nil })
+	token := s.tokens[r.ID]
+	if auto {
+		r.Error += " — rolling back automatically"
+	}
 	s.journal.finish(r)
 	delete(s.tokens, r.ID)
 	s.busy = false
 	_ = s.journal.save()
+	if auto {
+		id := r.ID
+		go func() {
+			ctx := context.Background()
+			if _, err := s.Rollback(ctx, "automatic rollback", RollbackRequest{RunID: id}, token); err != nil {
+				logger.FromCtx(ctx).Error().Err(err).Str("run", id).Msg("automatic rollback of a stack update didn't start")
+			}
+		}()
+		return
+	}
 	// What's installed changed: check again (GitHub answers come from the cache).
 	go s.Check(context.Background())
 }
@@ -301,8 +356,9 @@ func (s *Service) env(loc *Location, run *Run) map[string]string {
 		"COMPOSE_PROJECT_NAME": loc.Project, "COMPOSE_FILE": strings.Join(loc.ComposeFiles, ":"),
 		"STACK_DIR": loc.Dir, "ENV_FILE": loc.EnvFile, "BACKUP_ROOT": root, "BACKUP_DIR": bdir,
 		"UTIL_IMAGE": s.o.UtilImage,
-		"SERVICES":   "", "PRE": "", "STOP": "", "VOLUMES": "", "RESTORE_DBS": "", "RESTORE_VOLUMES": "",
+		"SERVICES":   "", "PRE": "", "STOP": "", "VOLUMES": "", "RESTORE_DBS": "", "RESTORE_VOLUMES": "", "FORCE": "",
 		"SETS": "", "TARGET_SETS": "", "FALLBACK_SETS": "", "IMAGES": "", "KEEP": fmt.Sprint(s.o.Keep),
+		"STACK_FILES": "", "STACK_RESTORE": "",
 	}
 }
 
@@ -401,9 +457,13 @@ func (s *Service) execUpdate(ctx context.Context, runID string) {
 	s.setStep("preflight", StepOK, detail)
 
 	// 2. Backup.
+	stackAt := slices.IndexFunc(run.Items, func(i Item) bool { return i.Stack != nil })
 	s.setStep("backup", StepRunning, "")
-	out, err = s.job(ctx, run.ID, "backup", scriptBackup, with(env, "SERVICES", strings.Join(s.allServices(), " "),
-		"VOLUMES", strings.Join(s.allVolumes(), " ")))
+	benv := with(env, "SERVICES", strings.Join(s.allServices(), " "), "VOLUMES", strings.Join(s.allVolumes(), " "))
+	if stackAt >= 0 {
+		benv["STACK_FILES"] = "1"
+	}
+	out, err = s.job(ctx, run.ID, "backup", scriptBackup, benv)
 	if err != nil {
 		fail("backup", fmt.Errorf("backup failed, nothing was changed: %w", err))
 		return
@@ -422,62 +482,141 @@ func (s *Service) execUpdate(ctx context.Context, runID string) {
 	})
 	s.setStep("backup", StepOK, fmt.Sprintf("%s in %s (%d files)", bytesText(b.Bytes), b.Dir, len(b.Files)))
 	run = s.current()
+	env = s.env(loc, run)
 
 	var plain, selfItems []Item
 	for _, it := range run.Items {
-		if it.Self {
+		switch {
+		case it.Self:
 			selfItems = append(selfItems, it)
-		} else {
+		case it.Stack != nil:
+		default:
 			plain = append(plain, it)
 		}
 	}
 	var images, sets, services, pre []string
 	for _, it := range run.Items {
-		images = append(images, it.ToImage)
+		if it.Stack != nil {
+			images = append(images, it.Stack.Pull...)
+		} else {
+			images = append(images, it.ToImage)
+		}
 	}
+	images = uniq(images)
 	for _, it := range plain {
 		sets = append(sets, it.EnvVar+"="+it.ToImage)
 		services = append(services, it.Services...)
 		pre = append(pre, it.Pre...)
 	}
 
+	// 2b. The stack release, downloaded and checked (nothing changes yet).
+	var stackIt *StackItem
+	stage := ""
+	if stackAt >= 0 {
+		stackIt = run.Items[stackAt].Stack
+		stage = stageDir(loc, stackIt.Version)
+		s.setStep("stage", StepRunning, "")
+		if _, err := s.job(ctx, run.ID, jobStage, scriptStage, with(env, "STACK_VERSION", stackIt.Version,
+			"BUNDLE_URL", stackIt.BundleURL, "BUNDLE_SHA256", stackIt.BundleSHA256)); err != nil {
+			fail("stage", fmt.Errorf("getting the stack release failed, nothing was changed: %w", err))
+			return
+		}
+		s.setStep("stage", StepOK, fmt.Sprintf("%s in %s (SHA-256 %s…)", stackIt.Version, stage, stackIt.BundleSHA256[:12]))
+	}
+
 	// 3. Pull (before anything changes).
 	s.setStep("pull", StepRunning, "")
-	if _, err := s.job(ctx, run.ID, "pull", scriptPull, with(env, "IMAGES", strings.Join(images, " "))); err != nil {
+	if len(images) == 0 {
+		s.setStep("pull", StepSkipped, "no image changes")
+	} else if _, err := s.job(ctx, run.ID, "pull", scriptPull, with(env, "IMAGES", strings.Join(images, " "))); err != nil {
 		fail("pull", fmt.Errorf("pulling failed, nothing was changed: %w", err))
 		return
+	} else {
+		s.setStep("pull", StepOK, strings.Join(images, ", "))
 	}
-	s.setStep("pull", StepOK, strings.Join(images, ", "))
 
-	if len(plain) > 0 {
-		// 4. .env.
+	if len(plain) > 0 || stackIt != nil {
+		// 4. .env (and, for the stack, its files and migrations).
 		s.setStep("configure", StepRunning, "")
 		s.mutate(func(r *Run) { r.Changed = true })
-		if _, err := s.job(ctx, run.ID, "configure", scriptConfigure, with(env, "SETS", strings.Join(sets, " "))); err != nil {
-			fail("configure", err)
-			return
-		}
-		s.setStep("configure", StepOK, strings.Join(sets, " "))
-		// 5. Recreate.
-		s.setStep("recreate", StepRunning, "")
-		if _, err := s.job(ctx, run.ID, "recreate", scriptRecreate, with(env, "SERVICES", strings.Join(services, " "), "PRE", strings.Join(pre, " "))); err != nil {
-			fail("recreate", err)
-			return
-		}
-		s.setStep("recreate", StepOK, strings.Join(services, ", "))
-		// 6. Health.
-		s.setStep("health", StepRunning, "")
-		if detail, err := s.waitHealthy(ctx, services); err != nil {
-			fail("health", err)
-			return
+		var health, force []string
+		if stackIt != nil {
+			allSets := mergeSets(stackIt.Sets, sets)
+			out, err := s.job(ctx, run.ID, "stack-apply", scriptStackApply, with(env, "STAGE_DIR", stage,
+				"STACK_VERSION", stackIt.Version, "SETS", strings.Join(allSets, " ")))
+			if err != nil {
+				fail("configure", err)
+				return
+			}
+			res := stackApplied(stackIt, parseStackPlan(out))
+			services = uniq(append(services, res.recreate...))
+			force = res.force
+			pre = uniq(append(append(res.oneshots, pre...), s.preFor(res.recreate)...))
+			s.mutate(func(r *Run) {
+				x := r.Items[stackAt].Stack
+				x.Recreated, x.Ran, x.Kept, x.Files, x.Migrations = res.recreate, res.oneshots, res.kept, res.files, res.migrations
+				r.Items[stackAt].Services = res.recreate
+			})
+			if res.self && len(selfItems) == 0 {
+				// The panel's compose configuration changed: it goes last, on its image.
+				if it := s.selfRecreateItem(); it != nil {
+					selfItems = append(selfItems, *it)
+					s.mutate(func(r *Run) {
+						r.Items = append(r.Items, *it)
+						r.Steps = append(r.Steps, Step{ID: "self", Label: "Update the admin panel (it reloads)", State: StepPending})
+					})
+				}
+			}
+			d := fmt.Sprintf("stack %s: %d files changed, %d migrations run", stackIt.Version, len(res.files), len(res.migrations))
+			if len(allSets) > 0 {
+				d += "; " + strings.Join(allSets, " ")
+			}
+			if len(res.kept) > 0 {
+				d += "; never restarted: " + strings.Join(res.kept, ", ")
+			}
+			s.setStep("configure", StepOK, d)
 		} else {
-			s.setStep("health", StepOK, detail)
+			if _, err := s.job(ctx, run.ID, "configure", scriptConfigure, with(env, "SETS", strings.Join(sets, " "))); err != nil {
+				fail("configure", err)
+				return
+			}
+			s.setStep("configure", StepOK, strings.Join(sets, " "))
+		}
+		for _, svc := range services {
+			if !slices.Contains(pre, svc) {
+				health = append(health, svc)
+			}
+		}
+		services = health
+		force = slices.DeleteFunc(force, func(x string) bool { return !slices.Contains(services, x) })
+		plainSvc := slices.DeleteFunc(slices.Clone(services), func(x string) bool { return slices.Contains(force, x) })
+		// 5. Recreate.
+		if len(services)+len(pre) == 0 {
+			s.setStep("recreate", StepSkipped, "no service's configuration changed")
+			s.setStep("health", StepSkipped, "")
+		} else {
+			s.setStep("recreate", StepRunning, "")
+			if _, err := s.job(ctx, run.ID, "recreate", scriptRecreate, with(env, "SERVICES", strings.Join(plainSvc, " "),
+				"FORCE", strings.Join(force, " "), "PRE", strings.Join(pre, " "))); err != nil {
+				fail("recreate", err)
+				return
+			}
+			s.setStep("recreate", StepOK, strings.Join(append(slices.Clone(pre), services...), ", "))
+			// 6. Health.
+			s.setStep("health", StepRunning, "")
+			if detail, err := s.waitHealthy(ctx, services); err != nil {
+				fail("health", err)
+				return
+			} else {
+				s.setStep("health", StepOK, detail)
+			}
 		}
 	} else {
 		for _, id := range []string{"configure", "recreate", "health"} {
 			s.setStep(id, StepSkipped, "only the panel itself is updated")
 		}
 	}
+	run = s.current()
 	// 7. Verify.
 	if !s.verifyStep(ctx, run, plain, false) {
 		return
@@ -654,6 +793,9 @@ func (s *Service) verifyStep(ctx context.Context, run *Run, items []Item, rollba
 	s.setStep("verify", StepRunning, "")
 	expect := map[string]string{}
 	for _, it := range items {
+		if it.Stack != nil {
+			continue // stackChecks: VERSION and the images
+		}
 		if rollback {
 			expect[it.Component] = it.From
 		} else {
@@ -661,6 +803,9 @@ func (s *Service) verifyStep(ctx context.Context, run *Run, items []Item, rollba
 		}
 	}
 	checks := s.verify(ctx, run.ID, expect)
+	if slices.ContainsFunc(run.Items, func(i Item) bool { return i.Stack != nil }) && s.o.Jobs != nil {
+		checks = append(checks, s.stackChecks(ctx, s.current(), rollback)...)
+	}
 	s.mutate(func(r *Run) { r.Checks = checks })
 	if !rollback && run.Location != nil && run.Backup != nil {
 		env := s.env(run.Location, run)
@@ -812,6 +957,9 @@ func (s *Service) collectHandoff(ctx context.Context) {
 				v := it.To
 				if r.Kind == "rollback" {
 					v = it.From
+				}
+				if it.Stack != nil {
+					continue
 				}
 				if it.Self {
 					want = v

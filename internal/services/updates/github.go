@@ -89,6 +89,10 @@ type ghRelease struct {
 	Draft       bool      `json:"draft"`
 	Prerelease  bool      `json:"prerelease"`
 	PublishedAt time.Time `json:"published_at"`
+	Assets      []struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	} `json:"assets"`
 }
 
 // Releases returns the newest 100 releases (drafts left out), newest first.
@@ -166,7 +170,14 @@ func (g *GitHub) Releases(ctx context.Context, repo string) ([]Release, error) {
 		if r.Draft {
 			continue
 		}
-		rs = append(rs, Release{Tag: r.TagName, Name: r.Name, Body: r.Body, URL: r.HTMLURL, PublishedAt: r.PublishedAt})
+		rel := Release{Tag: r.TagName, Name: r.Name, Body: r.Body, URL: r.HTMLURL, PublishedAt: r.PublishedAt}
+		for _, a := range r.Assets {
+			if rel.Assets == nil {
+				rel.Assets = map[string]string{}
+			}
+			rel.Assets[a.Name] = a.URL
+		}
+		rs = append(rs, rel)
 	}
 	rs = SortReleases(rs)
 	g.store(repo, &ghEntry{etag: resp.Header.Get("ETag"), releases: rs, at: time.Now()})
@@ -199,4 +210,37 @@ func (g *GitHub) noteLimit(h http.Header) {
 	g.mu.Lock()
 	g.limit = l
 	g.mu.Unlock()
+}
+
+// AssetSource downloads a release asset (the stack's manifest.json and
+// bundle checksum).
+type AssetSource interface {
+	Asset(ctx context.Context, url string, max int64) ([]byte, error)
+}
+
+// Asset downloads a release asset (browser_download_url; GitHub redirects
+// to its storage), at most max bytes.
+func (g *GitHub) Asset(ctx context.Context, url string, max int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "boson-admin-updates")
+	req.Header.Set("Accept", "application/octet-stream")
+	resp, err := g.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("downloading %s: %s", url, resp.Status)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, fmt.Errorf("downloading %s: %w", url, err)
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("downloading %s: larger than %d bytes", url, max)
+	}
+	return b, nil
 }

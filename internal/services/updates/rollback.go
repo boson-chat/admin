@@ -182,6 +182,7 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 			}
 		}
 	}
+	stack := slices.ContainsFunc(run.Items, func(i Item) bool { return i.Stack != nil })
 	_, presentSvc, _ := s.installedVersions(ctx)
 	// Everything that uses restored data stops first (the rolled-back
 	// services too: nothing may write to a database while it's replaced).
@@ -189,13 +190,30 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 		return x == "admin" || (presentSvc != nil && !presentSvc[x])
 	})
 	up := slices.DeleteFunc(slices.Clone(services), func(x string) bool { return slices.Contains(stop, x) })
-	if _, err := s.job(ctx, run.ID, "rollback", scriptRollback, with(env, "SETS", strings.Join(sets, " "),
+	renv := with(env, "SETS", strings.Join(sets, " "),
 		"SERVICES", strings.Join(up, " "), "STOP", strings.Join(stop, " "),
-		"RESTORE_DBS", strings.Join(dbs, " "), "RESTORE_VOLUMES", strings.Join(vols, " "))); err != nil {
+		"RESTORE_DBS", strings.Join(dbs, " "), "RESTORE_VOLUMES", strings.Join(vols, " "))
+	if stack {
+		renv["STACK_RESTORE"] = "1"
+	}
+	rout, err := s.job(ctx, run.ID, "rollback", scriptRollback, renv)
+	if err != nil {
 		fail("restore", err)
 		return
 	}
+	// Services the update added: removed again, nothing to wait for.
+	for _, f := range rout.Tagged("REMOVED") {
+		if len(f) == 1 {
+			up = slices.DeleteFunc(up, func(x string) bool { return x == f[0] })
+		}
+	}
 	d := "pinned " + strings.Join(sets, " ")
+	if stack {
+		d = "stack files, .env and config from the backup"
+		if len(sets) > 0 {
+			d += "; pinned " + strings.Join(sets, " ")
+		}
+	}
 	if len(dbs) > 0 {
 		d += "; restored databases " + strings.Join(dbs, ", ")
 	}
@@ -205,7 +223,7 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 	s.setStep("restore", StepOK, d)
 
 	// 3. Health and 4. the same checks as after the update.
-	all := append(up, stop...)
+	all := append(slices.Clone(up), stop...)
 	if len(all) > 0 {
 		s.setStep("health", StepRunning, "")
 		if detail, err := s.waitHealthy(ctx, all); err != nil {

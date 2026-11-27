@@ -7,6 +7,7 @@
 	import Notice from '$lib/components/Notice.svelte';
 	import State from '$lib/components/State.svelte';
 	import Dialog from '$lib/components/Dialog.svelte';
+	import StackChanges from '$lib/components/StackChanges.svelte';
 	import { updates } from '$lib/updates.svelte';
 	import {
 		behind,
@@ -15,6 +16,7 @@
 		checkPending,
 		checkPhase,
 		impactWord,
+		localEdits,
 		renderInline,
 		renderMarkdown,
 		running,
@@ -192,6 +194,7 @@
 		failed: '✕',
 		skipped: '–'
 	};
+	let stackStatus = $derived(st?.components.find((c) => c.id === 'stack')?.stack);
 	function compName(id: string) {
 		return st?.components.find((c) => c.id === id)?.name ?? id;
 	}
@@ -267,6 +270,11 @@
 						<span class="mono"
 							>{run.kind === 'rollback' ? it.to : it.from} → {run.kind === 'rollback' ? it.from : it.to}</span
 						>
+						{#if it.stack?.recreated?.length}<span class="muted"
+								>recreated {it.stack.recreated.join(', ')}{#if it.stack.migrations?.length}; migrations {it.stack.migrations.join(
+										', '
+									)}{/if}</span
+							>{/if}
 					</li>
 				{/each}
 			</ul>
@@ -400,7 +408,8 @@
 									<span class="about">{c.about}</span>
 								</h3>
 								<p class="ver mono">
-									{c.installed} <span aria-hidden="true">→</span><span class="sr-only">to</span>
+									{c.installed || (c.stack?.pre_release ? 'pre-release' : '')}
+									<span aria-hidden="true">→</span><span class="sr-only">to</span>
 									<strong>{c.latest}</strong>
 									<span class="muted">· {behind(c)}</span>
 								</p>
@@ -413,9 +422,10 @@
 						<p class="who">
 							<strong>Who is affected:</strong>
 							{c.impact.who}
-							{#if c.impact.restart}Restarts {c.services.join(', ')}.{/if}
+							{#if c.impact.restart && !c.stack}Restarts {c.services.join(', ')}.{/if}
 							{#if c.never_restart?.length}Never touches {c.never_restart.join(', ')}.{/if}
 						</p>
+						{#if c.stack}<StackChanges s={c.stack} />{/if}
 						{#if c.breaking}
 							<Notice tone="bad">
 								<strong>Needs attention before updating:</strong>
@@ -430,7 +440,7 @@
 								{/if}
 							</Notice>
 						{/if}
-						{#if !c.applyable && c.why}<p class="muted why">{c.why}</p>{/if}
+						{#if !c.applyable && c.why && c.why !== c.stack?.error}<p class="muted why">{c.why}</p>{/if}
 						{#if c.pending?.length}<p class="muted why">
 								{c.pending.join(', ')} released, image not published yet.
 							</p>{/if}
@@ -540,9 +550,19 @@
 		<ul class="plan">
 			{#each preview.items as it (it.component)}
 				{@const im = preview.impacts.find((x) => x.component === it.component)}
+				{@const sc = it.component === 'stack' ? stackStatus : undefined}
 				<li>
 					<div><strong>{it.name}</strong> <span class="mono">{it.from} → {it.to}</span></div>
 					{#if im}<div class="muted">{im.impact.who}</div>{/if}
+					{#if sc}
+						<div class="muted">{sc.impact.who}</div>
+						{#if sc.kept?.length}<div class="muted">Never restarted: {sc.kept.join(', ')}.</div>{/if}
+						{#if localEdits(sc).length}<div class="warn-line">
+								Replaces {localEdits(sc)
+									.map((f) => f.path)
+									.join(', ')} (changed on this server; kept as .local).
+							</div>{/if}
+					{/if}
 				</li>
 			{/each}
 		</ul>
@@ -570,10 +590,19 @@
 				>
 			</Notice>
 		{/if}
-		<p class="muted small">
-			First a backup (.env, config, image digests, every database, data volumes); then the new versions are
-			pulled and only these services are recreated. If a check fails you can roll back.
-		</p>
+		{#if preview.items.some((i) => i.component === 'stack')}
+			<p class="muted small">
+				First a backup (the stack directory, .env, config, image digests, every database, data volumes); the
+				release is downloaded and its SHA-256 checked; then its files, the version pins and the migrations,
+				and only the services whose configuration or image changed are recreated. If anything fails after
+				that, the update rolls itself back.
+			</p>
+		{:else}
+			<p class="muted small">
+				First a backup (.env, config, image digests, every database, data volumes); then the new versions are
+				pulled and only these services are recreated. If a check fails you can roll back.
+			</p>
+		{/if}
 		<div class="dlg-actions">
 			<button class="btn" onclick={() => dialog?.close()}>Cancel</button>
 			<button class="btn btn-primary" disabled={busy || (preview.breaking && !ack)} onclick={apply}
@@ -749,6 +778,9 @@
 		display: grid;
 		gap: var(--space-3);
 	}
+	.list > * {
+		min-width: 0;
+	}
 	.comp.breaking {
 		border-color: color-mix(in oklab, var(--danger), var(--border) 55%);
 	}
@@ -859,6 +891,9 @@
 	}
 	.bk {
 		margin-top: var(--space-2);
+	}
+	.warn-line {
+		color: var(--warn-text);
 	}
 	.ack {
 		display: flex;

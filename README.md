@@ -604,8 +604,8 @@ published yet".
 
 | Component | Releases | Image (`.env` variable) | Applied by |
 |---|---|---|---|
-| Stack | boson-chat/stack | – | git pull on the server |
-| Ergo (+ RoleServ) | ergochat/ergo | `stack-ergo` (pinned in compose.yaml) | a stack update |
+| Stack | boson-chat/stack | the release bundle (compose files, migrations, …) | the panel ("Stack releases" below) |
+| Ergo (+ RoleServ) | boson-chat/stack | `stack-ergo:<stack version>` | a stack update (no row of its own) |
 | Auth | boson-chat/auth | `auth` (`AUTH_IMAGE`) | the panel |
 | API | boson-chat/backend | `backend` (`API_IMAGE`; runs `api-migrate` first) | the panel |
 | Web client | boson-chat/boson | `web` (`WEB_IMAGE`) | the panel |
@@ -613,8 +613,8 @@ published yet".
 | Video | boson-chat/quicvideo | `quicvideo` (`QUICVIDEO_IMAGE`) | the panel |
 | Files | boson-chat/files | `files` (`FILES_IMAGE`) | the panel |
 | Directory | boson-chat/directory | `directory` (`DIRECTORY_IMAGE`) | the panel |
-| Web IRC gateway | boson-chat/webircgateway | `stack-webircgateway` (compose.yaml) | a stack update |
-| evrd (add-on, shown when an `evrd` service runs) | 4evrd/evrd | `ghcr.io/4evrd/evrd` (`EVRD_IMAGE`); `evrd-links` (same image, `EVRD_LINKS_IMAGE`) is never touched, and `bridge-sync` comes with a stack update | the panel |
+| Web IRC gateway (+ certsync) | boson-chat/stack | `stack-webircgateway:<stack version>` | a stack update (no row of its own) |
+| evrd (add-on, shown when an `evrd` service runs) | 4evrd/evrd | `ghcr.io/4evrd/evrd` (`EVRD_IMAGE`); `evrd-links` (same image, `EVRD_LINKS_IMAGE`) is never touched | the panel |
 | Admin panel | boson-chat/admin | `admin` (`ADMIN_IMAGE`) | the panel, last |
 
 **Who is affected** is one table in code
@@ -674,6 +674,49 @@ logged with the admin's name and listed under History):
 `repo:tag@sha256:…`, and when the update migrated a database (or the admin
 asks) that database and the components' volumes restored from the backup
 with their services stopped; then the same health and checks run again.
+
+### Stack releases
+
+The stack (boson-chat/stack) is a versioned release on every merge to its
+main; each GitHub release has a bundle (`boson-stack-X.Y.Z.tar.gz`, its
+`.sha256` and `manifest.json`; the stack's `docs/updates.md`). The installed
+release is the stack directory's `VERSION`, read by a helper job (an install
+from before releases has none: "pre-release", and it can update). Ergo,
+RoleServ, the web IRC gateway and certsync are built by the stack and tagged
+with its version, so they are listed under the stack row as **included**.
+
+When a newer release exists the check works out, on the host and before
+anything is applied (`internal/services/updates/stack.go`,
+`stack_service.go`):
+
+- `manifest.json` (downloaded by the panel): the default image of every
+  service, the stack's own images (each must be on the registry, else
+  "not published yet"), `min_admin` (an older panel can't apply it and says
+  so);
+- a `stage` job (the only helper job with a network) downloads the bundle into
+  `.boson/staging/<version>` and checks its SHA-256;
+- a `stack-plan` job runs the bundle's `scripts/stack-apply.sh plan --diff`
+  (every file that changes, with its diff; files edited on the server since
+  they were installed; the migrations to run) and `docker compose config
+  --hash` with the installed and the release's compose files;
+- `.env` pins against the release's defaults: an older pin of the same image
+  is **raised** to the default, a newer one (a part updated on its own) or
+  another image is **kept**, `EVRD_LINKS_IMAGE` is never moved (pinned to
+  what runs when unset);
+- **what restarts**: services whose config hash or image changes, that
+  bind-mount a changed file, or that a migration asks for; `evrd-links`
+  never; the panel itself last through its hand-off; one-shot services run
+  once. The impact (Ergo restarting disconnects IRC) follows from that.
+
+Applying: preflight → backup (plus `stack-dir.tgz`, the whole stack
+directory) → stage → pull the changed images → `stack-apply` job (hashes
+before; the bundle's `stack-apply.sh files`; the image pins; `stack-apply.sh
+migrate`; hashes after) → recreate the changed services (`--force-recreate`
+for those whose config is the same but a mounted file changed) → health →
+checks (plus `VERSION` and each recreated service's image) → the panel.
+**A stack update that fails after it changed something rolls itself back**
+(stack directory, `.env`, `config/`, image digests; files it added removed;
+services it added removed).
 
 Host work runs in a short-lived `docker:cli` helper container (labelled
 `chat.boson.updates`, removed after each step) that the panel creates through

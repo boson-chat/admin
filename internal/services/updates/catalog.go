@@ -12,9 +12,11 @@ const (
 	// ModeImage: its image is a *_IMAGE variable in the stack's .env; the
 	// panel sets it, pulls and recreates the service.
 	ModeImage Mode = "image"
-	// ModeStack: the version is pinned in the stack's compose.yaml (or the
-	// stack itself): it arrives with a stack update (git pull), which the
-	// panel shows but doesn't apply.
+	// ModeStack: the stack itself (a versioned release of boson-chat/stack:
+	// compose files, migrations, the images the stack builds), applied from
+	// the release's bundle (stack.go). Components with PartOf "stack" (Ergo,
+	// the web IRC gateway) are built and versioned by the stack: they come
+	// with its update and have no row of their own.
 	ModeStack Mode = "stack"
 )
 
@@ -68,19 +70,23 @@ type Component struct {
 	AddOn bool
 	// Self: this admin panel (updated last, through a hand-off).
 	Self bool
+	// PartOf: the component is part of another one's update ("stack"): no
+	// row, no releases of its own; still known for impacts, volumes and
+	// versions.
+	PartOf string
 }
 
 // Catalog is every part of a Boson install the panel knows. Order is the
 // order updates apply in (the panel itself last).
 var Catalog = []Component{
 	{
-		ID: "stack", Name: "Stack", About: "compose files, Traefik, config layout",
+		ID: "stack", Name: "Stack", About: "compose files, Ergo, the web IRC gateway, Traefik, migrations",
 		Repo: "boson-chat/stack", Mode: ModeStack,
-		Impact: Impact{Restart: false, Who: "Applied on the server with git pull and docker compose up; what restarts depends on what changed."},
+		Impact: Impact{Restart: true, Downtime: 10 * time.Second, Who: "Only the services whose configuration or image changes restart; the update lists them."},
 	},
 	{
-		ID: "ergo", Name: "Ergo", About: "IRC server (and RoleServ)",
-		Repo: "ergochat/ergo", Image: "harbor.floret.dev/boson/stack-ergo",
+		ID: "ergo", Name: "Ergo", About: "IRC server (and RoleServ)", PartOf: "stack",
+		Repo: "boson-chat/stack", Image: "harbor.floret.dev/boson/stack-ergo",
 		Services: []string{"ergo", "roleserv"}, Mode: ModeStack, Volumes: []string{"ergo_db", "roleserv_data"},
 		Impact: Impact{Restart: true, Disruptive: true, ChatDisconnect: true, Downtime: 10 * time.Second,
 			Who: "Everyone on IRC is disconnected briefly; clients reconnect automatically."},
@@ -135,8 +141,8 @@ var Catalog = []Component{
 			Who: "The directory website and API are unavailable for a few seconds; chat is not affected."},
 	},
 	{
-		ID: "webircgateway", Name: "Web IRC gateway", About: "WebSocket gateway for the web client",
-		Repo: "boson-chat/webircgateway", Image: "harbor.floret.dev/boson/stack-webircgateway",
+		ID: "webircgateway", Name: "Web IRC gateway", About: "WebSocket gateway for the web client", PartOf: "stack",
+		Repo: "boson-chat/stack", Image: "harbor.floret.dev/boson/stack-webircgateway",
 		Services: []string{"webircgateway"}, Mode: ModeStack,
 		Impact: Impact{Restart: true, Disruptive: true, Downtime: 5 * time.Second,
 			Who: "Web client users are disconnected from IRC briefly and reconnect automatically."},
@@ -147,9 +153,8 @@ var Catalog = []Component{
 		// evrd and its links holder run ghcr.io/4evrd/evrd, set separately
 		// (EVRD_IMAGE / EVRD_LINKS_IMAGE): the links holder keeps every IRC
 		// connection open across evrd restarts, so an update only moves
-		// EVRD_IMAGE and never recreates evrd-links. bridge-sync is built in
-		// the stack repo and pinned in compose.yaml: it comes with a stack
-		// update.
+		// EVRD_IMAGE and never recreates evrd-links (a stack update never
+		// does either).
 		ID: "evrd", Name: "evrd", About: "IRC bridge (add-on)",
 		Repo: "4evrd/evrd", Image: "ghcr.io/4evrd/evrd", EnvVar: "EVRD_IMAGE",
 		Services: []string{"evrd"}, NeverRestart: []string{"evrd-links"}, Mode: ModeImage, AddOn: true,
