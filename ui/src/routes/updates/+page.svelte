@@ -11,6 +11,9 @@
 	import {
 		behind,
 		bytes,
+		checkError,
+		checkPending,
+		checkPhase,
 		impactWord,
 		renderInline,
 		renderMarkdown,
@@ -46,6 +49,9 @@
 	let avail = $derived(selectable(st));
 	let withUpdate = $derived((st?.components ?? []).filter((c) => c.update));
 	let current = $derived((st?.components ?? []).filter((c) => !c.update));
+	// Nothing about "up to date" until a check has finished.
+	let phase = $derived(checkPhase(st, checking));
+	let checkErr = $derived(checkError(st));
 	let quietCount = $derived(avail.filter((c) => !c.impact.disruptive).length);
 	let pickedIds = $derived(avail.filter((c) => picked[c.id]).map((c) => c.id));
 
@@ -78,7 +84,8 @@
 		const tick = setInterval(() => (now = Date.now()), 5000);
 		let t: ReturnType<typeof setTimeout>;
 		const poll = async () => {
-			if (running(updates.status?.run) || restarting) {
+			const runPoll = running(updates.status?.run) || restarting;
+			if (runPoll) {
 				try {
 					const was = updates.status?.run?.state;
 					const s = await api<import('$lib/updates').UpdatesStatus>('GET', '/updates');
@@ -95,8 +102,19 @@
 					// The panel is down while it restarts: say so and keep trying.
 					if (!(e instanceof ApiError) || e.status === 0 || e.status >= 500) lost = true;
 				}
+			} else if (checkPending(updates.status) && !checking) {
+				// A check is running (or due: the panel checks a few seconds
+				// after it starts): show its result as soon as it's in.
+				try {
+					updates.set(await api<import('$lib/updates').UpdatesStatus>('GET', '/updates'));
+					error = '';
+					lost = false;
+				} catch (e) {
+					if (!(e instanceof ApiError) || e.status === 0 || e.status >= 500) lost = true;
+					else error = errorText(e);
+				}
 			}
-			t = setTimeout(poll, lost ? 2000 : 1000);
+			t = setTimeout(poll, lost ? 2000 : runPoll ? 1000 : 1500);
 		};
 		t = setTimeout(poll, 1000);
 		return () => {
@@ -188,7 +206,8 @@
 			{#if !st}Checking…{:else if active}An update is running.{:else if st.available}
 				{st.available}
 				{st.available === 1 ? 'part of this install has' : 'parts of this install have'} a newer release.
-			{:else if st.checked_at}Everything is up to date.{:else}Not checked yet.{/if}
+			{:else if phase === 'failed'}The last check didn’t finish.{:else if phase === 'done'}Everything is up to
+				date.{:else if phase === 'checking'}Checking for updates…{:else}Not checked yet.{/if}
 		</p>
 	</div>
 	<div class="actions">
@@ -207,7 +226,7 @@
 </div>
 
 {#if error}<Notice>{error}</Notice>{/if}
-{#if st?.error}<div class="gap"><Notice tone="warn">{st.error}</Notice></div>{/if}
+{#if st?.error && phase !== 'failed'}<div class="gap"><Notice tone="warn">{st.error}</Notice></div>{/if}
 {#if st?.rate_limit && st.rate_limit.remaining === 0}
 	<div class="gap">
 		<Notice tone="warn">
@@ -340,7 +359,24 @@
 				</p>
 			{/if}
 		</div>
-		{#if !withUpdate.length}
+		{#if phase === 'checking' || phase === 'waiting'}
+			<State
+				kind="loading"
+				title={phase === 'checking' ? 'Checking for updates…' : 'Waiting for the first check…'}
+				>{phase === 'checking'
+					? 'Asking GitHub and the image registry for the newest releases.'
+					: 'The panel checks a few seconds after it starts.'} The results show here when it finishes.</State
+			>
+		{:else if phase === 'failed'}
+			<State kind="error" title="Couldn’t check for updates">
+				<p>{checkErr}</p>
+				{#snippet action()}
+					<button class="btn btn-small" onclick={checkNow} disabled={checking || st.checking}
+						>{checking || st.checking ? 'Checking…' : 'Try again'}</button
+					>
+				{/snippet}
+			</State>
+		{:else if !withUpdate.length}
 			<State kind="empty" title="Nothing to update">Every part of this install runs its newest release.</State
 			>
 		{:else}
@@ -441,28 +477,30 @@
 		{/if}
 	</section>
 
-	<section class="section" aria-labelledby="cur-h">
-		<div class="section-head"><h2 id="cur-h">Up to date</h2></div>
-		<div class="table-wrap uptodate">
-			<table>
-				<thead>
-					<tr><th>Part</th><th>Installed</th><th>Newest</th><th>Note</th></tr>
-				</thead>
-				<tbody>
-					{#each current as c (c.id)}
-						<tr>
-							<td>{c.name} <span class="muted about-cell">{c.about}</span></td>
-							<td class="mono">{c.present ? c.installed || '—' : 'not installed'}</td>
-							<td class="mono">{c.latest || '—'}</td>
-							<td class="muted"
-								>{c.error ?? (c.pending?.length ? `${c.pending.join(', ')} not published yet` : '')}</td
-							>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	</section>
+	{#if phase !== 'checking' && phase !== 'waiting' && current.length}
+		<section class="section" aria-labelledby="cur-h">
+			<div class="section-head"><h2 id="cur-h">Up to date</h2></div>
+			<div class="table-wrap uptodate">
+				<table>
+					<thead>
+						<tr><th>Part</th><th>Installed</th><th>Newest</th><th>Note</th></tr>
+					</thead>
+					<tbody>
+						{#each current as c (c.id)}
+							<tr>
+								<td>{c.name} <span class="muted about-cell">{c.about}</span></td>
+								<td class="mono">{c.present ? c.installed || '—' : 'not installed'}</td>
+								<td class="mono">{c.latest || '—'}</td>
+								<td class="muted"
+									>{c.error ?? (c.pending?.length ? `${c.pending.join(', ')} not published yet` : '')}</td
+								>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	{/if}
 
 	{#if st.history.length}
 		<section class="section" aria-labelledby="hist-h">
