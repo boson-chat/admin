@@ -163,6 +163,16 @@ var Catalog = []Component{
 			Who: "The bridge restarts; its IRC connections survive because the links holder (evrd-links) is never restarted."},
 	},
 	{
+		// The push relay (pushrelay profile): only boson.chat, or whoever
+		// ships their own build of the app, runs it, so it is shown only
+		// where the stack runs a pushrelay service.
+		ID: "pushrelay", Name: "Push relay", About: "phone push notifications (APNs/FCM)",
+		Repo: "boson-chat/pushrelay", Image: "harbor.floret.dev/boson/pushrelay", EnvVar: "PUSHRELAY_IMAGE",
+		Services: []string{"pushrelay"}, Mode: ModeImage, Databases: []string{"pushrelay"}, AddOn: true,
+		Impact: Impact{Restart: true, Downtime: 5 * time.Second,
+			Who: "Phone notifications sent during the few seconds it restarts are lost; chat is not affected."},
+	},
+	{
 		ID: "admin", Name: "Admin panel", About: "this panel",
 		Repo: "boson-chat/admin", Image: "harbor.floret.dev/boson/admin", EnvVar: "ADMIN_IMAGE",
 		Services: []string{"admin"}, Mode: ModeImage, Self: true,

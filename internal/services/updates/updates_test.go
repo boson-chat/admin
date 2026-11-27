@@ -207,7 +207,7 @@ func TestCatalogImpactTable(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{"stack", "ergo", "auth", "api", "web", "voice", "video", "files", "directory", "webircgateway", "admin", "evrd"} {
+	for _, id := range []string{"stack", "ergo", "auth", "api", "web", "voice", "video", "files", "directory", "webircgateway", "admin", "evrd", "pushrelay"} {
 		if !seen[id] {
 			t.Errorf("catalog misses %s", id)
 		}
@@ -217,6 +217,9 @@ func TestCatalogImpactTable(t *testing.T) {
 	}
 	if e, _ := ByID("evrd"); !e.AddOn || len(e.NeverRestart) == 0 {
 		t.Error("evrd is an add-on whose links holder is never restarted")
+	}
+	if e, _ := ByID("pushrelay"); !e.AddOn || e.Mode != ModeImage || e.EnvVar != "PUSHRELAY_IMAGE" || e.Impact.ChatDisconnect {
+		t.Error("the push relay is an image add-on shown only where it runs, and chat stays up")
 	}
 	if e, _ := ByID("ergo"); !e.Impact.ChatDisconnect || e.Impact.Downtime != 10*time.Second {
 		t.Error("ergo disconnects everyone")
