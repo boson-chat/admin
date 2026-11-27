@@ -41,6 +41,57 @@ export interface ComponentStatus {
 	applyable: boolean;
 	why?: string;
 	error?: string;
+	stack?: StackStatus;
+}
+
+/** A bundle file a stack update writes or removes. */
+export interface StackFile {
+	path: string;
+	action: 'add' | 'update' | 'local' | 'unknown' | 'remove' | 'keep';
+	diff?: string[];
+	truncated?: boolean;
+	services?: string[];
+}
+
+export interface ImageChange {
+	service: string;
+	name: string;
+	from?: string;
+	to: string;
+	changed: boolean;
+}
+
+export interface PinChange {
+	env_var: string;
+	pin?: string;
+	default: string;
+	action: 'raise' | 'keep' | 'pin' | 'follow';
+	to: string;
+	note: string;
+}
+
+/** What the newest stack release changes on this install (the stack row). */
+export interface StackStatus {
+	version: string;
+	pre_release?: boolean;
+	baseline: boolean;
+	min_admin?: string;
+	admin_too_old?: boolean;
+	files: StackFile[];
+	unchanged: number;
+	migrations: { name: string; about?: string; state: 'pending' | 'done' }[];
+	images: ImageChange[];
+	pins: PinChange[];
+	included: ImageChange[];
+	restarts: string[];
+	oneshots?: string[];
+	kept?: string[];
+	removed?: string[];
+	self?: boolean;
+	impacts: { component: string; name: string; impact: Impact }[];
+	impact: Impact;
+	error?: string;
+	analyzed_at: string;
 }
 
 export interface Step {
@@ -70,6 +121,15 @@ export interface Item {
 	services: string[];
 	self?: boolean;
 	pinned_image?: string;
+	stack?: {
+		version: string;
+		recreated?: string[];
+		ran?: string[];
+		kept?: string[];
+		files?: StackFile[];
+		migrations?: string[];
+		planned?: string[];
+	};
 }
 
 export interface Backup {
@@ -361,4 +421,35 @@ export function checkError(st: UpdatesStatus | null | undefined): string {
 /** A check is due or running: the page polls until its result is in. */
 export function checkPending(st: UpdatesStatus | null | undefined): boolean {
 	return !!st && (st.checking || !st.checked_at);
+}
+
+/** A stack file's action, in words, and how loud to say it. */
+export const fileAction: Record<StackFile['action'], { text: string; tone: string }> = {
+	add: { text: 'new', tone: 'tag-ok' },
+	update: { text: 'updated', tone: '' },
+	unknown: { text: 'differs (no record: replaced)', tone: 'tag-warn' },
+	local: { text: 'edited here: replaced, kept as .local', tone: 'tag-bad' },
+	remove: { text: 'removed', tone: '' },
+	keep: { text: 'dropped by the release, edited here: kept', tone: 'tag-warn' }
+};
+
+/** The short form of an image reference: the part after the last slash. */
+export function shortImage(ref: string | undefined): string {
+	if (!ref) return '—';
+	const noDigest = ref.split('@')[0];
+	return noDigest.slice(noDigest.lastIndexOf('/') + 1);
+}
+
+/** Files a stack update replaces that were changed on this server (or may have been). */
+export function localEdits(s: StackStatus | undefined): StackFile[] {
+	return (s?.files ?? []).filter((f) => f.action === 'local' || f.action === 'keep');
+}
+
+/** The class of one unified-diff line. */
+export function diffClass(line: string): string {
+	if (line.startsWith('+++') || line.startsWith('---')) return 'dh';
+	if (line.startsWith('@@')) return 'dhunk';
+	if (line.startsWith('+')) return 'dadd';
+	if (line.startsWith('-')) return 'ddel';
+	return '';
 }

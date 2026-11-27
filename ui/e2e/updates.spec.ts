@@ -54,13 +54,13 @@ test('the first check still running → checking state → results without a rel
 	await expect.poll(() => gets, { timeout: 10_000 }).toBeGreaterThan(2);
 	// …and shows the answer once it's in.
 	held = false;
-	await expect(page.getByText('3 parts of this install have a newer release.')).toBeVisible({
+	await expect(page.getByText('4 parts of this install have a newer release.')).toBeVisible({
 		timeout: 10_000
 	});
 	await expect(page.getByRole('article', { name: /Auth/ })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Up to date' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Check now' })).toBeEnabled();
-	await page.unroute('**/api/updates');
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 // A check that finished with an error says so instead of "Nothing to update".
@@ -85,18 +85,18 @@ test('a failed check → error state → try again', async ({ page }, info) => {
 	await shot(page, 'check-failed', info.project.name);
 	failing = false;
 	await err.getByRole('button', { name: 'Try again' }).click();
-	await expect(page.getByText('3 parts of this install have a newer release.')).toBeVisible();
-	await page.unroute('**/api/updates{,/check}');
+	await expect(page.getByText('4 parts of this install have a newer release.')).toBeVisible();
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('update available → changelog across versions → apply → checks pass', async ({ page }, info) => {
 	await fresh(page);
 	await expect(page.getByRole('heading', { name: 'Updates', level: 1 })).toBeVisible();
-	await expect(page.getByText('3 parts of this install have a newer release.')).toBeVisible();
+	await expect(page.getByText('4 parts of this install have a newer release.')).toBeVisible();
 	// The nav badge (behind the menu on a phone).
 	const menu = page.getByRole('button', { name: 'Menu' });
 	if (await menu.isVisible()) await menu.click();
-	await expect(page.getByRole('link', { name: /Updates\s*3/ })).toBeVisible();
+	await expect(page.getByRole('link', { name: /Updates\s*4/ })).toBeVisible();
 	if (await page.getByRole('button', { name: 'Close' }).isVisible())
 		await page.getByRole('button', { name: 'Close' }).click();
 
@@ -133,8 +133,8 @@ test('update available → changelog across versions → apply → checks pass',
 	await expect(run.locator('.backup')).toContainText('/root/backups/boson/');
 	await expect(page.locator('.checks li.bad')).toHaveCount(0);
 	await shot(page, 'done', info.project.name);
-	// Now only the api is left.
-	await expect(page.getByText('1 part of this install has a newer release.')).toBeVisible();
+	// Now the api and the stack are left.
+	await expect(page.getByText('2 parts of this install have a newer release.')).toBeVisible();
 });
 
 test('a breaking update that fails after migrating → rollback restores the data → healthy', async ({
@@ -172,4 +172,65 @@ test('a breaking update that fails after migrating → rollback restores the dat
 	await shot(page, 'rolled-back', info.project.name);
 	// The history says who did what.
 	await expect(page.getByRole('region', { name: 'History' }).getByText('Rolled back').first()).toBeVisible();
+});
+
+// The stack: what release 1.1.0 changes on this install (files with their
+// diffs, a local edit, Ergo included on the stack's version, auth's pin
+// raised, a migration, what restarts and who notices), then apply → done,
+// Ergo and Traefik on their new images, and the stack on 1.1.0.
+test('stack release → what changes (files, images, pins, migrations) → apply → done', async ({
+	page
+}, info) => {
+	await fresh(page);
+	const stack = page.getByRole('article', { name: /Stack/ });
+	await expect(stack.getByText('pre-release')).toBeVisible();
+	await expect(stack.locator('.ver strong')).toHaveText('1.1.0');
+	await expect(stack.getByText('disconnects chat')).toBeVisible();
+	await expect(stack.getByText(/Everyone on IRC is disconnected briefly \(Ergo restarts\)/)).toBeVisible();
+	await expect(stack.getByText(/from before stack releases/)).toBeVisible();
+	await expect(stack.getByText(/traefik\/dynamic\/stack\.yml\. The update replaces it/)).toBeVisible();
+	await expect(stack.locator('.facts')).toContainText('auth, ergo, roleserv, traefik');
+	await expect(stack.getByText('stack-ergo:2.19.1 → stack-ergo:1.1.0').first()).toBeVisible();
+	await expect(stack.getByText('auth:1.20.0 → auth:1.21.0').first()).toBeVisible();
+	await expect(stack.getByText(/newer than the release’s default: kept/)).toBeVisible();
+	await expect(stack.locator('ul.rows li', { hasText: '0001-bridge-client-webirc.sh' })).toContainText(
+		'WEBIRC'
+	);
+	await stack.getByText(/^Files: 5 changed/).click();
+	await stack.locator('.file summary', { hasText: 'compose.yaml' }).click();
+	await expect(stack.locator('.diff .dadd', { hasText: 'traefik:v3.7.20' })).toBeVisible();
+	await expect(stack.locator('.file', { hasText: 'traefik/dynamic/stack.yml' }).locator('.tag')).toHaveText(
+		'edited here: replaced, kept as .local'
+	);
+	// Long diff lines scroll in their box; the page never scrolls sideways.
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+	await shot(page, 'stack-review', info.project.name);
+
+	await page.getByRole('checkbox', { name: 'Select Stack' }).check();
+	await page.getByRole('button', { name: 'Update selected (1)' }).click();
+	const dlg = page.getByRole('dialog');
+	await expect(dlg.getByText(/disconnect all chat users/).first()).toBeVisible();
+	await expect(dlg.getByText('pre-release → 1.1.0')).toBeVisible();
+	await expect(dlg.getByText(/Replaces traefik\/dynamic\/stack\.yml/)).toBeVisible();
+	await expect(dlg.getByText(/rolls itself back/)).toBeVisible();
+	// 1.0.0 → 1.1.0 isn't a major version; the pre-release jump isn't either.
+	await expect(dlg.getByText('Breaking changes.')).toHaveCount(0);
+	await shot(page, 'stack-confirm', info.project.name);
+	await dlg.getByRole('button', { name: 'Back up and update' }).click();
+
+	await expect(page.locator('.run .tag', { hasText: 'Done' })).toBeVisible({ timeout: 20_000 });
+	const run = page.locator('.run');
+	await expect(run.locator('.step', { hasText: 'Download the stack release' })).toContainText('SHA-256');
+	await expect(run.locator('.step', { hasText: 'Write the stack files' })).toContainText('1 migrations run');
+	await expect(run.locator('.checks li', { hasText: 'Stack release' })).toContainText('VERSION 1.1.0');
+	await expect(run.locator('.checks li', { hasText: 'ergo image' })).toContainText('stack-ergo:1.1.0');
+	await expect(page.locator('.checks li.bad')).toHaveCount(0);
+	await expect(run.getByText(/recreated auth, ergo, roleserv, traefik/)).toBeVisible();
+	const state = await (await page.request.get(`${fake}/__state`)).json();
+	expect(state.images.ergo).toBe('harbor.floret.dev/boson/stack-ergo:1.1.0');
+	expect(state.images.traefik).toBe('traefik:v3.7.20');
+	expect(state.images.quicvoiced).toBe('harbor.floret.dev/boson/quicvoice:1.15.0');
+	expect(state.env.AUTH_IMAGE).toBe('harbor.floret.dev/boson/auth:1.21.0');
+	await shot(page, 'stack-done', info.project.name);
+	await expect(page.locator('.uptodate tr', { hasText: 'compose files, Ergo' })).toContainText('1.1.0');
 });

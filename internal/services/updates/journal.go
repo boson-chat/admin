@@ -53,6 +53,34 @@ type Item struct {
 	PinnedImage string   `json:"pinned_image,omitempty"`
 	Databases   []string `json:"databases,omitempty"`
 	Volumes     []string `json:"volumes,omitempty"`
+	// Stack: a stack release update (component "stack").
+	Stack *StackItem `json:"stack,omitempty"`
+}
+
+// StackItem is what a stack update needs to apply (and roll back) itself.
+type StackItem struct {
+	Version      string `json:"version"`
+	BundleURL    string `json:"bundle_url"`
+	BundleSHA256 string `json:"bundle_sha256"`
+	// Sets: .env's image pins it raises (precedence).
+	Sets []string `json:"sets,omitempty"`
+	// Images: each service's image after the update; Pull those that change.
+	Images map[string]string `json:"images,omitempty"`
+	Pull   []string          `json:"pull,omitempty"`
+	// From the manifest: bind mounts and one-shot services.
+	Mounts  map[string][]string `json:"mounts,omitempty"`
+	Oneshot []string            `json:"oneshot,omitempty"`
+	// Never: services an update never recreates (evrd-links).
+	Never []string `json:"never,omitempty"`
+	// Planned are the services the review said would restart.
+	Planned []string `json:"planned,omitempty"`
+	// After the apply: what it recreated, ran once, wrote and migrated.
+	Recreated  []string    `json:"recreated,omitempty"`
+	Ran        []string    `json:"ran,omitempty"`
+	Kept       []string    `json:"kept,omitempty"`
+	Files      []StackFile `json:"files,omitempty"`
+	Migrations []string    `json:"migrations,omitempty"`
+	AutoRolled bool        `json:"auto_rolled_back,omitempty"`
 }
 
 // BackupFile is one file of a backup.

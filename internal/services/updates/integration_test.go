@@ -130,8 +130,11 @@ func TestUpdateAvailableChangelogApplyHealthy(t *testing.T) {
 	if v := component(st, "voice"); v.Update || v.Installed != "1.15.0" {
 		t.Fatalf("voice: %+v", v)
 	}
-	if e := component(st, "ergo"); e.Mode != updates.ModeStack || e.Applyable {
-		t.Fatalf("ergo is applied with the stack: %+v", e)
+	if e := component(st, "ergo"); e.ID != "" {
+		t.Fatalf("ergo comes with the stack, no row of its own: %+v", e)
+	}
+	if w := component(st, "webircgateway"); w.ID != "" {
+		t.Fatalf("the web IRC gateway comes with the stack: %+v", w)
 	}
 	if c := component(st, "evrd"); c.ID != "" {
 		t.Fatal("evrd isn't installed: not listed")

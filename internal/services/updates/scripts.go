@@ -101,6 +101,14 @@ if [ -d "$STACK_DIR/config" ]; then tar czf "$BACKUP_DIR/config.tgz" -C "$STACK_
 echo "$COMPOSE_FILE" | tr ':' '\n' | while read -r f; do
 	if [ -n "$f" ] && [ -f "$f" ]; then cp -p "$f" "$BACKUP_DIR/compose-$(basename "$f")"; fi
 done
+if [ "$STACK_FILES" = 1 ]; then
+	# A stack update: the whole stack directory (files, .boson state,
+	# bridge/, secrets/), not the backups or the staged bundles.
+	step "saving the stack directory"
+	ex=""
+	case "$BACKUP_ROOT/" in "$STACK_DIR"/*) ex="./${BACKUP_ROOT#"$STACK_DIR"/}" ;; esac
+	tar czf "$BACKUP_DIR/stack-dir.tgz" -C "$STACK_DIR" --exclude=./.boson/staging --exclude=./backups ${ex:+--exclude="$ex"} .
+fi
 step "recording image digests"
 : > "$BACKUP_DIR/images.txt"
 for s in $SERVICES; do
@@ -155,12 +163,22 @@ setenv $SETS
 echo "@@RESULT configure {}"
 `
 
-// scriptRecreate: one-off PRE services run to completion (migrations), then
-// SERVICES recreated without their dependencies.
+// scriptRecreate: one-off PRE services run to completion (migrations, a
+// stack update's one-shot services), then SERVICES recreated without their
+// dependencies (none: nothing is recreated), and FORCE recreated even
+// though their compose configuration is the same (a file they bind-mount
+// changed).
 const scriptRecreate = prelude + `
 for s in $PRE; do step "running $s"; dc run --rm --no-deps "$s"; done
-step "recreating $SERVICES"
-dc up -d --no-deps $SERVICES
+if [ -n "$SERVICES" ]; then
+	step "recreating $SERVICES"
+	dc up -d --no-deps $SERVICES
+fi
+if [ -n "$FORCE" ]; then
+	# Their compose config is the same, but a file they read changed.
+	step "restarting $FORCE (a file they read changed)"
+	dc up -d --no-deps --force-recreate $FORCE
+fi
 echo "@@RESULT recreate {}"
 `
 
@@ -174,6 +192,29 @@ echo "@@RESULT fingerprint {}"
 // digests pinned, then (RESTORE_DBS / RESTORE_VOLUMES) the data put back
 // with its services (STOP) stopped, and SERVICES recreated.
 const scriptRollback = prelude + `
+if [ "$STACK_RESTORE" = 1 ] && [ -f "$BACKUP_DIR/stack-dir.tgz" ]; then
+	step "restoring the stack files"
+	if [ -f "$BACKUP_DIR/stack-added.txt" ]; then
+		while read -r p; do
+			case "$p" in ''|/*|*..*) continue ;; esac
+			rm -f "$STACK_DIR/$p"
+		done < "$BACKUP_DIR/stack-added.txt"
+	fi
+	tar xzf "$BACKUP_DIR/stack-dir.tgz" -C "$STACK_DIR"
+	# Services the update added are gone from the compose files again.
+	have=" $(dc config --services 2>/dev/null | tr '\n' ' ') "
+	keep=""
+	for s in $SERVICES; do
+		case "$have" in
+		*" $s "*) keep="$keep $s" ;;
+		*)
+			echo "@@REMOVED $s"
+			docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter "label=com.docker.compose.service=$s" | xargs -r docker rm -f > /dev/null
+			;;
+		esac
+	done
+	SERVICES=$keep
+fi
 step "restoring .env and config"
 cat "$BACKUP_DIR/env" > "$ENV_FILE"
 if [ -f "$BACKUP_DIR/config.tgz" ]; then tar xzf "$BACKUP_DIR/config.tgz" -C "$STACK_DIR"; fi
@@ -192,6 +233,100 @@ for v in $RESTORE_VOLUMES; do
 done
 if [ -n "$SERVICES$STOP" ]; then step "recreating $SERVICES $STOP"; dc up -d --no-deps $SERVICES $STOP; fi
 echo "@@RESULT rollback {}"
+`
+
+// scriptStackState: the installed stack release (VERSION), whether its
+// files are recorded, the migrations it ran, .env's *_IMAGE pins and
+// COMPOSE_PROFILES. Nothing else of .env is printed (it has secrets).
+const scriptStackState = `set -eu
+v=""
+[ ! -f "$STACK_DIR/VERSION" ] || v=$(head -n 1 "$STACK_DIR/VERSION" | tr -dc '0-9A-Za-z.+-')
+echo "@@STACKVERSION ${v:-none}"
+if [ -f "$STACK_DIR/.boson/stack-files.sha256" ]; then echo "@@BASELINE yes"; else echo "@@BASELINE no"; fi
+[ ! -f "$STACK_DIR/.boson/migrations.applied" ] || awk 'NF { print "@@APPLIED " $1 }' "$STACK_DIR/.boson/migrations.applied"
+grep -E '^[A-Z][A-Z0-9_]*_IMAGE=' "$ENV_FILE" | tr -d '\r' | sed 's/^/@@ENVIMG /' || true
+p=$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -dc 'A-Za-z0-9,_-')
+echo "@@PROFILES $p"
+echo "@@RESULT stack-state {}"
+`
+
+// scriptStage: the release bundle into STACK_DIR/.boson/staging/
+// STACK_VERSION: downloaded from BUNDLE_URL unless a copy with the right
+// checksum is there already, checked against BUNDLE_SHA256, unpacked.
+// The only job with a network (to GitHub). Older staged releases go.
+const scriptStage = `set -eu
+step() { echo "@@STEP $*"; }
+d="$STACK_DIR/.boson/staging"
+tgz="$d/boson-stack-$STACK_VERSION.tar.gz"
+out="$d/$STACK_VERSION"
+mkdir -p "$d"
+chmod 700 "$d"
+good() { [ -f "$tgz" ] && echo "$BUNDLE_SHA256  $tgz" | sha256sum -c - > /dev/null 2>&1; }
+if ! good; then
+	step "downloading the stack release $STACK_VERSION"
+	rm -f "$tgz" "$tgz.part"
+	if command -v wget > /dev/null 2>&1; then wget -q -O "$tgz.part" "$BUNDLE_URL"; else curl -fsSL -o "$tgz.part" "$BUNDLE_URL"; fi
+	mv -f "$tgz.part" "$tgz"
+	if ! good; then
+		rm -f "$tgz"
+		echo "the downloaded bundle doesn't match its SHA-256 ($BUNDLE_SHA256)"
+		exit 1
+	fi
+fi
+step "unpacking (SHA-256 $BUNDLE_SHA256 checked)"
+rm -rf "$out"
+mkdir -p "$out"
+tar xzf "$tgz" -C "$out"
+for f in .bundle/manifest.json .bundle/files.sha256 scripts/stack-apply.sh VERSION; do
+	[ -f "$out/$f" ] || { echo "the bundle has no $f"; exit 1; }
+done
+for x in "$d"/*; do
+	case "$x" in "$tgz" | "$out") ;; *) rm -rf "$x" ;; esac
+done
+echo "@@RESULT stage {\"dir\":\"$out\"}"
+`
+
+// hashes prints compose's config hash of every service of the active
+// profiles: "@@HASH <label> <service> <hash>". STAGED=1 hashes the staged
+// release's compose files in place of the installed ones (paths stay the
+// install's: --project-directory).
+const stackHashes = `
+hashes() {
+	files=$COMPOSE_FILE
+	if [ "${2:-}" = staged ]; then
+		files=""
+		for f in $(echo "$COMPOSE_FILE" | tr ':' ' '); do
+			rel=${f#"$STACK_DIR"/}
+			if [ "$rel" != "$f" ] && [ -f "$STAGE_DIR/$rel" ]; then f="$STAGE_DIR/$rel"; fi
+			files="${files:+$files:}$f"
+		done
+	fi
+	COMPOSE_FILE=$files dc config --hash '*' | awk -v l="$1" 'NF == 2 { print "@@HASH " l " " $1 " " $2 }'
+}
+`
+
+// scriptStackPlan: what the staged release would change, without changing
+// anything: the bundle's stack-apply.sh plan (files, diffs, migrations) and
+// the config hashes now and with the release's compose files.
+const scriptStackPlan = prelude + stackHashes + `
+sh "$STAGE_DIR/scripts/stack-apply.sh" plan --diff "$STAGE_DIR"
+hashes old
+hashes new staged
+echo "@@RESULT stack-plan {}"
+`
+
+// scriptStackApply: the staged release in place. Config hashes before; the
+// bundle's files; SETS (image versions) into .env; the migrations; config
+// hashes after. The services to recreate are the panel's to work out.
+const scriptStackApply = prelude + stackHashes + `
+hashes old
+step "writing the stack files of $STACK_VERSION"
+sh "$STAGE_DIR/scripts/stack-apply.sh" files "$STAGE_DIR"
+[ -z "$SETS" ] || setenv $SETS
+step "running the stack migrations"
+sh "$STAGE_DIR/scripts/stack-apply.sh" migrate "$STAGE_DIR"
+hashes new
+echo "@@RESULT stack-apply {}"
 `
 
 // scriptSelf: the panel's own update, run detached so it outlives the
@@ -242,7 +377,7 @@ func validEnv(env map[string]string) error {
 	for _, k := range keys {
 		v := env[k]
 		switch k {
-		case "STACK_DIR", "ENV_FILE", "BACKUP_ROOT", "BACKUP_DIR":
+		case "STACK_DIR", "ENV_FILE", "BACKUP_ROOT", "BACKUP_DIR", "STAGE_DIR":
 			if !rePath.MatchString(v) || strings.Contains(v, "..") {
 				return fmt.Errorf("%s: not a plain absolute path: %q", k, v)
 			}
@@ -252,7 +387,7 @@ func validEnv(env map[string]string) error {
 					return fmt.Errorf("COMPOSE_FILE: not a plain absolute path: %q", p)
 				}
 			}
-		case "SERVICES", "PRE", "STOP", "VOLUMES", "RESTORE_DBS", "RESTORE_VOLUMES":
+		case "SERVICES", "PRE", "STOP", "VOLUMES", "RESTORE_DBS", "RESTORE_VOLUMES", "FORCE":
 			for _, w := range strings.Fields(v) {
 				if !reService.MatchString(w) {
 					return fmt.Errorf("%s: bad name %q", k, w)
@@ -274,6 +409,22 @@ func validEnv(env map[string]string) error {
 		case "KEEP", "SELF_WAIT":
 			if !regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(v) {
 				return fmt.Errorf("%s: %q", k, v)
+			}
+		case "STACK_FILES", "STACK_RESTORE":
+			if v != "" && v != "1" {
+				return fmt.Errorf("%s: %q", k, v)
+			}
+		case "STACK_VERSION":
+			if _, ok := ParseVersion(v); !ok || !reValue.MatchString(v) {
+				return fmt.Errorf("STACK_VERSION: %q", v)
+			}
+		case "BUNDLE_URL":
+			if !reURL.MatchString(v) {
+				return fmt.Errorf("BUNDLE_URL: %q", v)
+			}
+		case "BUNDLE_SHA256":
+			if !reSHA256.MatchString(v) {
+				return fmt.Errorf("BUNDLE_SHA256: %q", v)
 			}
 		case "COMPOSE_PROJECT_NAME":
 			if !reService.MatchString(v) {

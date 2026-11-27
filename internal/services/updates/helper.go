@@ -105,6 +105,10 @@ type Helper struct {
 	BackupRoot string
 	// Poll is how often a running job's logs are read.
 	Poll time.Duration
+	// FetchNetwork is the network of the one job that downloads (the stack
+	// release bundle, job "stage"); every other job has none. Default
+	// "bridge" (Docker's default network, with a way out).
+	FetchNetwork string
 }
 
 func (h *Helper) poll() time.Duration {
@@ -271,6 +275,10 @@ func resolveComposeFiles(dir string, labelled []string, exists func(string) bool
 	return files, missing, nil
 }
 
+// jobStage is the job that downloads the stack release bundle: the only one
+// with a network.
+const jobStage = "stage"
+
 func jobName(runID, name string) string { return "boson-updates-" + runID + "-" + name }
 
 func (h *Helper) spec(runID, name, script string, env map[string]string) (dockerapi.JobSpec, error) {
@@ -298,11 +306,18 @@ func (h *Helper) spec(runID, name, script string, env map[string]string) (docker
 		vars = append(vars, k+"="+v)
 	}
 	sort.Strings(vars)
+	network := "none"
+	if name == jobStage {
+		network = h.FetchNetwork
+		if network == "" {
+			network = "bridge"
+		}
+	}
 	return dockerapi.JobSpec{
 		Name: jobName(runID, name), Image: h.Image, Cmd: []string{"sh", "-c", script}, Env: vars,
 		Labels:     map[string]string{LabelJob: "job", LabelJobRun: runID},
 		Binds:      binds,
-		WorkingDir: dir, NetworkMode: "none",
+		WorkingDir: dir, NetworkMode: network,
 	}, nil
 }
 

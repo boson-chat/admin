@@ -92,6 +92,10 @@ type ComponentStatus struct {
 	Applyable bool   `json:"applyable"`
 	Why       string `json:"why,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Stack: the stack row's detail (what its newest release changes here).
+	Stack *StackStatus `json:"stack,omitempty"`
+	// PartOf: comes with that component's update (not listed).
+	PartOf string `json:"-"`
 }
 
 // ApplyInfo says whether updates can be applied here.
@@ -314,19 +318,22 @@ func (s *Service) check(ctx context.Context) *Status {
 			inst["admin"] = i
 		}
 	}
-	if s.o.StackVersion != "" {
-		inst["stack"] = installed{version: strings.TrimPrefix(s.o.StackVersion, "v"), present: true}
-	} else {
-		inst["stack"] = installed{present: true}
-	}
 	var wg sync.WaitGroup
 	comps := make([]ComponentStatus, len(s.o.Catalog))
 	for i, c := range s.o.Catalog {
-		wg.Go(func() { comps[i] = s.component(ctx, c, inst[c.ID]) })
+		switch {
+		case c.PartOf != "":
+			// Comes with the stack's update (its Included list).
+			comps[i] = ComponentStatus{ID: c.ID, PartOf: c.PartOf}
+		case c.Mode == ModeStack:
+			wg.Go(func() { comps[i] = s.stackComponent(ctx, c) })
+		default:
+			wg.Go(func() { comps[i] = s.component(ctx, c, inst[c.ID]) })
+		}
 	}
 	wg.Wait()
 	for _, c := range comps {
-		if c.AddOn && !c.Present {
+		if c.PartOf != "" || c.AddOn && !c.Present {
 			continue
 		}
 		if c.Update {
@@ -343,8 +350,6 @@ func (s *Service) component(ctx context.Context, c Component, in installed) Comp
 		Present: in.present, AddOn: c.AddOn, Impact: c.Impact, Services: c.Services, NeverRestart: c.NeverRestart,
 		Releases: []Release{}}
 	switch {
-	case c.Mode == ModeStack:
-		cs.Why = "pinned in the stack's compose.yaml: it comes with a stack update (git pull on the server)"
 	case !s.applyInfo().Enabled:
 		cs.Why = s.applyInfo().Why
 	case c.Self && s.o.StateDir == "":

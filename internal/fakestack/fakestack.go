@@ -30,11 +30,49 @@ const (
 
 // Release is a GitHub release in the fake.
 type Release struct {
-	Tag  string `json:"tag_name"`
+	Tag    string  `json:"tag_name"`
+	Name   string  `json:"name"`
+	Body   string  `json:"body"`
+	At     string  `json:"published_at"`
+	URL    string  `json:"html_url"`
+	Assets []Asset `json:"assets"`
+}
+
+// Asset is a release asset.
+type Asset struct {
 	Name string `json:"name"`
-	Body string `json:"body"`
-	At   string `json:"published_at"`
-	URL  string `json:"html_url"`
+	URL  string `json:"browser_download_url"`
+}
+
+// StackRelease is a boson-chat/stack release: served as a GitHub release
+// with its bundle, .sha256 and manifest.json, and what the stack jobs
+// (stack-plan, stack-apply) report and do with it.
+type StackRelease struct {
+	Version string
+	Body    string
+	// Manifest is manifest.json (the test writes it).
+	Manifest string
+	// Bundle is the tarball's bytes (anything: only its SHA-256 matters).
+	Bundle []byte
+	// BadSHA: the .sha256 asset doesn't match the bundle.
+	BadSHA bool
+	// NoAssets: a release without its bundle yet.
+	NoAssets bool
+	// Files: "<action> <path>" as stack-apply.sh prints them; Diffs per path.
+	Files []string
+	Diffs map[string][]string
+	// Migrations: name → about; those not in Stack.Applied are pending.
+	Migrations map[string]string
+	// Hashes: compose config hashes with this release (a service that has
+	// no container yet is new); unlisted services keep theirs.
+	Hashes map[string]string
+	// Defaults: the compose default image per service (services without an
+	// env var, or with none set in .env) after this release.
+	Defaults map[string]string
+	// Restart: services the migrations ask to restart.
+	Restart []string
+	// FailMigration: stack-apply fails in the migrations (after the files).
+	FailMigration bool
 }
 
 type container struct {
@@ -47,11 +85,21 @@ type container struct {
 	job                      string
 	env                      map[string]string
 	hold                     bool
+	network                  string
 }
 
 type snapshot struct {
 	env        map[string]string
 	migrations map[string]string
+	stack      *stackSnap
+}
+
+type stackSnap struct {
+	version  string
+	baseline bool
+	applied  []string
+	hashes   map[string]string
+	defaults map[string]string
 }
 
 // Stack is the fake host.
@@ -85,6 +133,21 @@ type Stack struct {
 	// job's COMPOSE_FILE.
 	ConfigFiles string
 
+	// The installed stack: VERSION ("" = pre-release), whether its files
+	// are recorded, migrations run, compose config hashes and default
+	// images (service → hash / image), and the releases on GitHub.
+	StackVersion  string
+	StackBaseline bool
+	Applied       []string
+	Hashes        map[string]string
+	Defaults      map[string]string
+	Profiles      string
+	StackReleases []*StackRelease
+	// Downloads counts bundle downloads (stage jobs that fetched).
+	Downloads int
+	// StageNetworks: the network mode of each stage job (it must have one).
+	StageNetworks []string
+
 	cts      map[string]*container
 	backups  map[string]snapshot
 	restored []string
@@ -103,6 +166,7 @@ func New(images map[string]string) *Stack {
 		Migrations: map[string]string{"auth public.schema_migrations": "a1", "api public.goose_db_version": "b1"},
 		FreeKB:     50 << 20, cts: map[string]*container{}, backups: map[string]snapshot{},
 		Files: map[string]bool{"/srv/boson/compose.yaml": true}, ConfigFiles: "/srv/boson/compose.yaml",
+		Hashes: map[string]string{}, Defaults: map[string]string{},
 		clock: time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)}
 	svcs := make([]string, 0, len(images))
 	for svc := range images {
@@ -237,6 +301,8 @@ func (s *Stack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.registry(w, r)
 	case strings.HasPrefix(p, "/docker/"):
 		s.docker(w, r, strings.TrimPrefix(p, "/docker"))
+	case strings.HasPrefix(p, "/assets/"):
+		s.asset(w, r, strings.TrimPrefix(p, "/assets/"))
 	case strings.HasPrefix(p, "/check/"):
 		s.check(w, strings.TrimPrefix(p, "/check/"))
 	case strings.HasPrefix(p, "/auth/"):
@@ -263,6 +329,9 @@ func (s *Stack) github(w http.ResponseWriter, r *http.Request, p string) {
 	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(max(0, 60-s.ghCalls)))
 	repo, ok := strings.CutSuffix(strings.TrimPrefix(p, "/repos/"), "/releases")
 	rs, found := s.Releases[repo]
+	if repo == "boson-chat/stack" && len(s.StackReleases) > 0 {
+		rs, found = s.stackGitHub(), true
+	}
 	if !ok || !found {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
 		return
@@ -521,10 +590,11 @@ func (s *Stack) inspect(w http.ResponseWriter, c *container) {
 
 func (s *Stack) create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Image  string
-		Cmd    []string
-		Env    []string
-		Labels map[string]string
+		Image      string
+		Cmd        []string
+		Env        []string
+		Labels     map[string]string
+		HostConfig struct{ NetworkMode string }
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
@@ -541,7 +611,7 @@ func (s *Stack) create(w http.ResponseWriter, r *http.Request) {
 	job := strings.TrimPrefix(name, "boson-updates-"+runID+"-")
 	s.seq++
 	c := &container{ID: fmt.Sprintf("%064x", 0xfeed0000+s.seq), Name: name, Image: body.Image, State: "created",
-		Labels: body.Labels, job: job, env: map[string]string{}, hold: job == "self" && s.HoldSelf}
+		Labels: body.Labels, job: job, env: map[string]string{}, hold: job == "self" && s.HoldSelf, network: body.HostConfig.NetworkMode}
 	for _, kv := range body.Env {
 		k, v, _ := strings.Cut(kv, "=")
 		c.env[k] = v
@@ -565,42 +635,29 @@ func (s *Stack) svc(name string) *container {
 }
 
 // up recreates a service from the .env value of the variable that names its
-// image (the fake knows them by the image's repository).
+// image (the fake knows them by the image's repository), else from its
+// compose default (Defaults); a service with no container yet but a default
+// is created.
 func (s *Stack) up(name string) {
 	c := s.svc(name)
 	if c == nil {
+		if img := s.Defaults[name]; img != "" {
+			s.add(name, img)
+		}
 		return
 	}
-	repo := c.Image
-	if i := strings.LastIndex(repo, ":"); i > strings.LastIndex(repo, "/") {
-		repo = repo[:i]
+	v := s.effective(name)
+	old := c.Image
+	delete(s.cts, c.ID)
+	n := s.add(name, v)
+	if name == "admin" {
+		s.AdminID = n.ID
 	}
-	if i := strings.Index(repo, "@"); i >= 0 {
-		repo = repo[:i]
-	}
-	for _, v := range s.Env {
-		r := v
-		if i := strings.Index(r, "@"); i >= 0 {
-			r = r[:i]
-		}
-		if i := strings.LastIndex(r, ":"); i > strings.LastIndex(r, "/") {
-			r = r[:i]
-		}
-		if r == repo {
-			old := c.Image
-			delete(s.cts, c.ID)
-			n := s.add(name, v)
-			if name == "admin" {
-				s.AdminID = n.ID
+	if db := s.Migrates[v]; db != "" && v != old {
+		for k := range s.Migrations {
+			if strings.HasPrefix(k, db+" ") {
+				s.Migrations[k] += "+" + ImageTagOf(v)
 			}
-			if db := s.Migrates[v]; db != "" && v != old {
-				for k := range s.Migrations {
-					if strings.HasPrefix(k, db+" ") {
-						s.Migrations[k] += "+" + ImageTagOf(v)
-					}
-				}
-			}
-			return
 		}
 	}
 }
@@ -649,6 +706,9 @@ func (s *Stack) runJob(c *container) {
 		s.say(c, "%s", msg)
 		c.State, c.Exit = "exited", 1
 	}
+	if s.stackJob(c) {
+		return
+	}
 	if c.job == "files" {
 		for _, f := range strings.Split(e["COMPOSE_FILE"], ":") {
 			if f != "" && s.Files[f] {
@@ -689,7 +749,13 @@ func (s *Stack) runJob(c *container) {
 		for _, f := range []string{"env 812", "config.tgz 2048", "images.txt 400", "pg-globals.sql 900", "pg-auth.dump 81234", "pg-api.dump 40321", "vol-ergo_db.tgz 5120"} {
 			s.say(c, "@@FILE %s", f)
 		}
-		s.backups[dir] = snapshot{env: cp(s.Env), migrations: cp(s.Migrations)}
+		snap := snapshot{env: cp(s.Env), migrations: cp(s.Migrations)}
+		if e["STACK_FILES"] == "1" {
+			s.say(c, "@@STEP saving the stack directory")
+			s.say(c, "@@FILE stack-dir.tgz 300123")
+			snap.stack = s.snapStack()
+		}
+		s.backups[dir] = snap
 		s.say(c, `@@RESULT backup {"dir":"%s"}`, dir)
 	case "pull":
 		for _, img := range strings.Fields(e["IMAGES"]) {
@@ -712,7 +778,7 @@ func (s *Stack) runJob(c *container) {
 			s.say(c, "@@STEP running %s", p)
 		}
 		s.say(c, "@@STEP recreating %s", e["SERVICES"])
-		for _, svc := range strings.Fields(e["SERVICES"]) {
+		for _, svc := range append(strings.Fields(e["SERVICES"]), strings.Fields(e["FORCE"])...) {
 			s.up(svc)
 			s.say(c, "Container boson-%s-1  Started", svc)
 		}
@@ -726,6 +792,11 @@ func (s *Stack) runJob(c *container) {
 			fail("cat: " + e["BACKUP_DIR"] + "/env: No such file or directory")
 			return
 		}
+		services := strings.Fields(e["SERVICES"])
+		if e["STACK_RESTORE"] == "1" && snap.stack != nil {
+			s.say(c, "@@STEP restoring the stack files")
+			s.restoreStack(snap.stack)
+		}
 		s.say(c, "@@STEP restoring .env and config")
 		s.Env = cp(snap.env)
 		s.setenv(c, e["SETS"])
@@ -738,7 +809,7 @@ func (s *Stack) runJob(c *container) {
 			}
 			s.restored = append(s.restored, db)
 		}
-		for _, svc := range append(strings.Fields(e["SERVICES"]), strings.Fields(e["STOP"])...) {
+		for _, svc := range append(services, strings.Fields(e["STOP"])...) {
 			s.up(svc)
 		}
 		s.say(c, "@@RESULT rollback {}")

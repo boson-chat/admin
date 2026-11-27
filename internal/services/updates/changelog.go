@@ -22,6 +22,9 @@ type Release struct {
 	// Published: the image for this version is in the registry (an update
 	// to it can be applied). Unknown (not checked) counts as published.
 	Published bool `json:"published"`
+	// Assets: name → download URL (the stack's bundle, its .sha256,
+	// manifest.json).
+	Assets map[string]string `json:"-"`
 
 	v Version
 }
