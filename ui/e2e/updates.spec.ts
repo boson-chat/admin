@@ -18,6 +18,77 @@ async function shot(page: Page, name: string, project: string) {
 	await page.screenshot({ path: `${dir}/updates-${name}-${project}.png`, fullPage: true });
 }
 
+// Right after the panel starts, its first check is still running: no
+// "Nothing to update", no empty table, and the results show up by
+// themselves when it finishes. GET /api/updates is held in the browser in
+// the "checking, never checked" state the panel answers with then.
+test('the first check still running → checking state → results without a reload', async ({ page }, info) => {
+	await fresh(page);
+	let held = true;
+	let gets = 0;
+	await page.route('**/api/updates', async (route) => {
+		if (route.request().method() !== 'GET') return route.fallback();
+		const res = await route.fetch();
+		const real = await res.json();
+		gets++;
+		const body = held
+			? {
+					...real,
+					checking: true,
+					checked_at: undefined,
+					next_check_at: undefined,
+					available: 0,
+					components: []
+				}
+			: real;
+		await route.fulfill({ response: res, json: body });
+	});
+	await page.reload();
+	await expect(page.getByText('Checking for updates…').first()).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Checking…' })).toBeDisabled();
+	await expect(page.getByRole('status').getByText('Checking for updates…')).toBeVisible();
+	await expect(page.getByText('Nothing to update')).toHaveCount(0);
+	await expect(page.getByRole('heading', { name: 'Up to date' })).toHaveCount(0);
+	await shot(page, 'checking', info.project.name);
+	// It keeps asking while the check runs…
+	await expect.poll(() => gets, { timeout: 10_000 }).toBeGreaterThan(2);
+	// …and shows the answer once it's in.
+	held = false;
+	await expect(page.getByText('3 parts of this install have a newer release.')).toBeVisible({
+		timeout: 10_000
+	});
+	await expect(page.getByRole('article', { name: /Auth/ })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Up to date' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Check now' })).toBeEnabled();
+	await page.unroute('**/api/updates');
+});
+
+// A check that finished with an error says so instead of "Nothing to update".
+test('a failed check → error state → try again', async ({ page }, info) => {
+	await fresh(page);
+	let failing = true;
+	await page.route('**/api/updates{,/check}', async (route) => {
+		const res = await route.fetch();
+		const real = await res.json();
+		const body = failing
+			? { ...real, available: 0, components: [], error: 'the Docker socket proxy isn’t answering' }
+			: real;
+		await route.fulfill({ response: res, json: body });
+	});
+	await page.reload();
+	const err = page.getByRole('alert').filter({ hasText: 'Couldn’t check for updates' });
+	await expect(err).toBeVisible();
+	await expect(err).toContainText('the Docker socket proxy isn’t answering');
+	await expect(page.getByText('The last check didn’t finish.')).toBeVisible();
+	await expect(page.getByText('Nothing to update')).toHaveCount(0);
+	await expect(page.getByRole('heading', { name: 'Up to date' })).toHaveCount(0);
+	await shot(page, 'check-failed', info.project.name);
+	failing = false;
+	await err.getByRole('button', { name: 'Try again' }).click();
+	await expect(page.getByText('3 parts of this install have a newer release.')).toBeVisible();
+	await page.unroute('**/api/updates{,/check}');
+});
+
 test('update available → changelog across versions → apply → checks pass', async ({ page }, info) => {
 	await fresh(page);
 	await expect(page.getByRole('heading', { name: 'Updates', level: 1 })).toBeVisible();

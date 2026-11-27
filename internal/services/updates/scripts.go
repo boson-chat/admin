@@ -57,6 +57,16 @@ fingerprint() {
 }
 `
 
+// scriptFiles: which of the COMPOSE_FILE candidates exist on the host
+// (one "@@EXISTS <path>" line each). No compose here: a missing file is
+// exactly what it is asked about.
+const scriptFiles = `set -eu
+echo "$COMPOSE_FILE" | tr ':' '\n' | while read -r f; do
+	if [ -n "$f" ] && [ -f "$f" ]; then echo "@@EXISTS $f"; fi
+done
+echo "@@RESULT files {}"
+`
+
 // scriptPreflight: the compose project parses, and the backup fits.
 // Env: VOLUMES (compose volume names without the project prefix).
 const scriptPreflight = prelude + `

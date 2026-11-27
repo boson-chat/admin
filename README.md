@@ -683,7 +683,13 @@ a **second** socket proxy, the stack's `updates` profile, which also allows
 directory, so **turning this on gives the panel root-equivalent access to the
 host**; without it, updates are shown but not applied. The stack directory,
 compose files and `.env` are read from compose's labels on the panel's own
-container.
+container. Labels are frozen when a container is created, so before each
+update the helper checks which of those files still exist: a default set
+(`compose.yaml`, plus `compose.override.yaml`) is resolved the way plain
+`docker compose` does (the override is used if it exists now, labelled or
+not); a custom `-f` set is kept in order minus files that are gone (logged,
+and named on the preflight step). A missing main `compose.yaml` stops the
+update at preflight.
 
 Tests: `go test ./internal/services/updates/` (versions, changelog ranges,
 breaking detection, the impact table and summary, and the whole flow against

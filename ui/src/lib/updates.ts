@@ -332,3 +332,33 @@ export function selectable(st: UpdatesStatus | null): ComponentStatus[] {
 	return (st?.components ?? []).filter((c) => c.update && c.applyable);
 }
 export type ApplyMode = 'all' | 'selected' | 'quiet';
+
+/**
+ * Where the version check stands, for what the Available section shows:
+ * waiting (none has finished and none is running: the panel checks a few
+ * seconds after it starts), checking (the first one is running), failed
+ * (it finished without finding an update but with an error, or every part
+ * of the install errored: "nothing to update" would be a guess) or done.
+ */
+export type CheckPhase = 'waiting' | 'checking' | 'failed' | 'done';
+
+export function checkPhase(st: UpdatesStatus | null | undefined, checkingHere = false): CheckPhase {
+	if (!st?.checked_at) return st?.checking || checkingHere ? 'checking' : 'waiting';
+	return checkError(st) ? 'failed' : 'done';
+}
+
+/** Why a finished check can't say whether anything needs updating ('' if it can). */
+export function checkError(st: UpdatesStatus | null | undefined): string {
+	if (!st?.checked_at) return '';
+	const comps = st.components ?? [];
+	if (comps.some((c) => c.update)) return '';
+	if (st.error) return st.error;
+	const present = comps.filter((c) => c.present);
+	if (present.length && present.every((c) => c.error)) return present[0].error ?? '';
+	return '';
+}
+
+/** A check is due or running: the page polls until its result is in. */
+export function checkPending(st: UpdatesStatus | null | undefined): boolean {
+	return !!st && (st.checking || !st.checked_at);
+}

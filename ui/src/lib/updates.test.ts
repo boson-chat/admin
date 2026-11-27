@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+	checkError,
+	checkPending,
+	checkPhase,
 	impactWord,
 	renderMarkdown,
 	withoutTitle,
@@ -95,5 +98,48 @@ describe('withoutTitle', () => {
 		expect(withoutTitle(semrel, '1.22.0')).toContain('### Features');
 		expect(withoutTitle('## 1.22.0 Big rename\n\n* x', '1.22.0')).toContain('Big rename');
 		expect(withoutTitle('* x', '1.22.0')).toBe('* x');
+	});
+});
+
+describe('checkPhase', () => {
+	const base = { checking: false, available: 0, components: [], history: [] } as unknown as UpdatesStatus;
+	const comp = { id: 'auth', update: false } as unknown as UpdatesStatus['components'][number];
+	it('never says "done" before a check finished', () => {
+		expect(checkPhase(null)).toBe('waiting');
+		expect(checkPhase(base)).toBe('waiting');
+		expect(checkPhase(base, true)).toBe('checking');
+		expect(checkPhase({ ...base, checking: true })).toBe('checking');
+		expect(checkPending(base)).toBe(true);
+		expect(checkPending({ ...base, checking: true })).toBe(true);
+		expect(checkPending(null)).toBe(false);
+	});
+	it('done once a check finished, even while the next one runs', () => {
+		const done = { ...base, checked_at: '2026-11-26T12:00:00Z', components: [comp] };
+		expect(checkPhase(done)).toBe('done');
+		expect(checkPending(done)).toBe(false);
+		expect(checkPhase({ ...done, checking: true })).toBe('done');
+		expect(checkPending({ ...done, checking: true })).toBe(true);
+	});
+	it('failed when an error means "nothing to update" would be a guess', () => {
+		const failed = { ...base, checked_at: '2026-11-26T12:00:00Z', error: 'docker: connection refused' };
+		expect(checkPhase(failed)).toBe('failed');
+		expect(checkError(failed)).toBe('docker: connection refused');
+		expect(checkPending(failed)).toBe(false);
+		expect(checkPhase({ ...failed, components: [comp] })).toBe('failed');
+		// Updates it did find are shown (with the warning).
+		expect(checkPhase({ ...failed, components: [{ ...comp, update: true }] })).toBe('done');
+		// Every installed part errored (GitHub unreachable): not "up to date".
+		const gh = {
+			...base,
+			checked_at: '2026-11-26T12:00:00Z',
+			components: [
+				{ ...comp, present: true, error: 'github: timeout' },
+				{ ...comp, id: 'evrd', present: false }
+			]
+		};
+		expect(checkPhase(gh)).toBe('failed');
+		expect(checkError(gh)).toBe('github: timeout');
+		const partial = { ...gh, components: [...gh.components, { ...comp, id: 'web', present: true }] };
+		expect(checkPhase(partial)).toBe('done');
 	});
 });

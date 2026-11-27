@@ -390,7 +390,15 @@ func (s *Service) execUpdate(ctx context.Context, runID string) {
 			bytesText(free), env["BACKUP_ROOT"], bytesText(need+need/5), bytesText(s.o.MinFree)))
 		return
 	}
-	s.setStep("preflight", StepOK, fmt.Sprintf("%s free, backup about %s", bytesText(free), bytesText(need)))
+	detail := fmt.Sprintf("%s free, backup about %s", bytesText(free), bytesText(need))
+	if len(loc.MissingFiles) > 0 {
+		names := make([]string, len(loc.MissingFiles))
+		for i, f := range loc.MissingFiles {
+			names[i] = filepath.Base(f)
+		}
+		detail += "; left out " + strings.Join(names, ", ") + " (listed in the containers' labels, no longer on disk)"
+	}
+	s.setStep("preflight", StepOK, detail)
 
 	// 2. Backup.
 	s.setStep("backup", StepRunning, "")

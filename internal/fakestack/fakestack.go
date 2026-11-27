@@ -77,6 +77,13 @@ type Stack struct {
 	RateLimited bool
 	// HoldSelf: the self-update job keeps running until ReleaseSelf.
 	HoldSelf bool
+	// Files that exist on the host (compose files). A job given a
+	// COMPOSE_FILE naming one that doesn't fails the way compose does.
+	Files map[string]bool
+	// ConfigFiles is the config_files label of containers created from now
+	// on (comma-separated, as compose writes it); a recreate sets it to the
+	// job's COMPOSE_FILE.
+	ConfigFiles string
 
 	cts      map[string]*container
 	backups  map[string]snapshot
@@ -95,6 +102,7 @@ func New(images map[string]string) *Stack {
 		Tags: map[string]bool{}, Broken: map[string]bool{}, Migrates: map[string]string{},
 		Migrations: map[string]string{"auth public.schema_migrations": "a1", "api public.goose_db_version": "b1"},
 		FreeKB:     50 << 20, cts: map[string]*container{}, backups: map[string]snapshot{},
+		Files: map[string]bool{"/srv/boson/compose.yaml": true}, ConfigFiles: "/srv/boson/compose.yaml",
 		clock: time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)}
 	svcs := make([]string, 0, len(images))
 	for svc := range images {
@@ -115,7 +123,7 @@ func (s *Stack) add(svc, image string) *container {
 	id := fmt.Sprintf("%012x%052d", 0xc0ffee000000+s.seq, s.seq)
 	c := &container{ID: id, Name: s.Project + "-" + svc + "-1", Service: svc, Image: image, State: "running",
 		Labels: map[string]string{labelProject: s.Project, labelService: svc, labelWorkDir: s.Dir,
-			labelFiles: s.Dir + "/compose.yaml"}}
+			labelFiles: s.ConfigFiles}}
 	s.cts[id] = c
 	return c
 }
@@ -137,6 +145,29 @@ func (s *Stack) EnvValue(k string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Env[k]
+}
+
+// SetConfigFiles relabels every service container as created from these
+// compose files (comma-separated), and the ones created from now on.
+func (s *Stack) SetConfigFiles(files string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ConfigFiles = files
+	for _, c := range s.cts {
+		if c.job == "" {
+			c.Labels[labelFiles] = files
+		}
+	}
+}
+
+// Labels is a service container's compose labels.
+func (s *Stack) Labels(svc string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c := s.svc(svc); c != nil {
+		return cp(c.Labels)
+	}
+	return nil
 }
 
 // Restored lists the databases a rollback restored.
@@ -617,6 +648,25 @@ func (s *Stack) runJob(c *container) {
 	fail := func(msg string) {
 		s.say(c, "%s", msg)
 		c.State, c.Exit = "exited", 1
+	}
+	if c.job == "files" {
+		for _, f := range strings.Split(e["COMPOSE_FILE"], ":") {
+			if f != "" && s.Files[f] {
+				s.say(c, "@@EXISTS %s", f)
+			}
+		}
+		s.say(c, "@@RESULT files {}")
+		c.State = "exited"
+		return
+	}
+	if cf := e["COMPOSE_FILE"]; cf != "" {
+		for _, f := range strings.Split(cf, ":") {
+			if !s.Files[f] {
+				fail(fmt.Sprintf("compose file %q set by COMPOSE_FILE environment variable is invalid: stat %s: no such file or directory", f, f))
+				return
+			}
+		}
+		s.ConfigFiles = strings.ReplaceAll(cf, ":", ",")
 	}
 	switch c.job {
 	case "preflight":
