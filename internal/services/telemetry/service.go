@@ -7,8 +7,10 @@
 // to https://telemetry.boson.chat/v1/report. Nothing in it names a person,
 // a server or a network.
 //
-// A send that fails is never retried before the next scheduled one, never
-// slows anything else and is only logged at debug level. TELEMETRY=off in
+// A send that fails on the way (network, TLS, timeout, a 5xx) is retried
+// with backoff, about 15 min, 30 min, 1 h, 2 h, … up to the daily cadence,
+// keeping its reason; one the receiver refused (4xx) waits for the next
+// daily send. It never slows anything else. TELEMETRY=off in
 // the env, or admin.telemetry: false in config/boson.yaml, turns it off.
 package telemetry
 
@@ -62,6 +64,12 @@ const (
 	BuildTimeout = 30 * time.Second
 	// KnownRefresh: how often an admin's visit refreshes the account counts.
 	KnownRefresh = 12 * time.Hour
+	// RetryFirst is the first retry after a failed send; each further
+	// failure doubles it (± RetryJitter), up to Day. Never sooner than
+	// RetryMin.
+	RetryFirst  = 15 * time.Minute
+	RetryMin    = 10 * time.Minute
+	RetryJitter = 5 // ± 1/5 of the delay
 )
 
 // IRCSampleEvery: how often the IRC user count is sampled for the 24 h
@@ -129,10 +137,14 @@ type ircSample struct {
 
 // state is StateFile.
 type state struct {
-	LastAttempt time.Time   `json:"last_attempt,omitzero"`
-	Last        *Result     `json:"last,omitempty"`
-	Sends       int         `json:"sends"`
-	Known       *Known      `json:"known,omitempty"`
+	LastAttempt time.Time `json:"last_attempt,omitzero"`
+	Last        *Result   `json:"last,omitempty"`
+	Sends       int       `json:"sends"`
+	Known       *Known    `json:"known,omitempty"`
+	// Failures counts the sends in a row that failed on the way (retried
+	// with backoff); RetryReason is the reason they retry as.
+	Failures    int         `json:"failures,omitempty"`
+	RetryReason string      `json:"retry_reason,omitempty"`
 	IRC         []ircSample `json:"irc,omitempty"`
 }
 
@@ -305,6 +317,13 @@ func (s *Service) plan(now time.Time, start bool) (time.Time, string) {
 		return now.Add(first()), ReasonSetup
 	}
 	last := s.st.LastAttempt
+	if d := s.retryDelay(); d > 0 {
+		at := last.Add(d)
+		if start && at.Before(now.Add(RetryMin)) {
+			at = now.Add(max(first(), RetryMin)) // restarted while one was due
+		}
+		return at, s.st.RetryReason
+	}
 	if !start {
 		return last.Add(Day + s.o.Rand(-DayJitter, DayJitter)), ReasonDaily
 	}
@@ -312,6 +331,40 @@ func (s *Service) plan(now time.Time, start bool) (time.Time, string) {
 		return now.Add(first()), ReasonDaily
 	}
 	return last.Add(Day + s.o.Rand(0, DayJitter)), ReasonDaily
+}
+
+// retryDelay is the wait after the last attempt when it failed on the way
+// (0: it didn't). Past a day of backoff it is the daily cadence.
+func (s *Service) retryDelay() time.Duration {
+	n := s.st.Failures
+	if n <= 0 || s.st.RetryReason == "" {
+		return 0
+	}
+	d := RetryFirst
+	for i := 1; i < n && d < Day; i++ {
+		d *= 2
+	}
+	if d >= Day { // the daily cadence, still with the failed send's reason
+		return Day + s.o.Rand(-DayJitter, DayJitter)
+	}
+	d += s.o.Rand(-d/RetryJitter, d/RetryJitter)
+	return max(d, RetryMin)
+}
+
+// retryable: the send failed on the way (no answer, or a 5xx), not
+// because the receiver refused the report or it couldn't be built.
+func retryable(r Result) bool {
+	if r.OK {
+		return false
+	}
+	if r.Status != 0 {
+		return r.Status >= 500
+	}
+	switch r.Error {
+	case "timeout", "dns", "refused", "tls", "network":
+		return true
+	}
+	return false
 }
 
 // Notify is told when an update or a rollback finished ("update",
@@ -437,6 +490,14 @@ func (s *Service) Send(ctx context.Context, reason string) (res Result) {
 		}
 		s.mu.Lock()
 		s.st.LastAttempt, s.st.Last = now, &res
+		if retryable(res) {
+			s.st.Failures++
+			if rank(reason) >= rank(s.st.RetryReason) || s.st.RetryReason == "" {
+				s.st.RetryReason = reason
+			}
+		} else {
+			s.st.Failures, s.st.RetryReason = 0, ""
+		}
 		s.st.Sends++
 		s.sending = false
 		s.saveLocked()
@@ -475,8 +536,14 @@ func (s *Service) Send(ctx context.Context, reason string) (res Result) {
 	_ = resp.Body.Close()
 	res.Status = resp.StatusCode
 	res.OK = resp.StatusCode >= 200 && resp.StatusCode < 300
-	if !res.OK {
-		log.Debug().Int("status", resp.StatusCode).Msg("usage & health stats: the receiver refused the report")
+	switch {
+	case res.OK:
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		// The receiver refused this report (schema, size, rate): sending
+		// it again soon won't help; the next daily one goes as usual.
+		log.Info().Int("status", resp.StatusCode).Msg("usage & health stats: the receiver refused the report; the next daily one goes as usual")
+	default:
+		log.Debug().Int("status", resp.StatusCode).Msg("usage & health stats: the receiver failed; retrying with backoff")
 	}
 	return res
 }

@@ -260,10 +260,10 @@ func TestSendFailuresAreIsolated(t *testing.T) {
 	if res := s.Send(context.Background(), ReasonDaily); res.OK || res.Status != 500 || res.Error != "" {
 		t.Fatalf("500: %+v", res)
 	}
-	// Then the next send: a day later, not retried now.
+	// A 5xx is retried with backoff (TestRetrySchedule), never right away.
 	s.fire(context.Background())
-	if d := s.next.Sub(c.Now()); d < Day-DayJitter {
-		t.Fatalf("retried after %s", d)
+	if d := s.next.Sub(c.Now()); d < RetryMin || d > Day-DayJitter {
+		t.Fatalf("5xx retried after %s", d)
 	}
 
 	// A closed port: refused, quickly.
