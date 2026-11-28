@@ -140,7 +140,8 @@ export interface Backup {
 	free_bytes?: number;
 }
 
-export type RunState = 'running' | 'restarting' | 'succeeded' | 'failed' | 'rolled_back' | 'rollback_failed';
+export type RunState =
+	'running' | 'restarting' | 'succeeded' | 'failed' | 'unverified' | 'rolled_back' | 'rollback_failed';
 
 export interface Run {
 	id: string;
@@ -175,6 +176,7 @@ export interface RunSummary {
 	items: Item[];
 	error?: string;
 	backup_dir?: string;
+	changed?: boolean;
 }
 
 export interface UpdatesStatus {
@@ -221,6 +223,7 @@ export const stateWord: Record<RunState, string> = {
 	restarting: 'Panel restarting',
 	succeeded: 'Done',
 	failed: 'Failed',
+	unverified: 'Couldn’t verify',
 	rolled_back: 'Rolled back',
 	rollback_failed: 'Rollback failed'
 };
@@ -230,9 +233,28 @@ export const stateTag: Record<RunState, string> = {
 	restarting: 'tag-accent',
 	succeeded: 'tag-ok',
 	failed: 'tag-bad',
+	unverified: 'tag-warn',
 	rolled_back: 'tag-warn',
 	rollback_failed: 'tag-bad'
 };
+
+/** A run's state for its header: a rollback that failed before putting anything back "didn't run". */
+export function runState(r: Pick<RunSummary, 'kind' | 'state' | 'changed'>): {
+	text: string;
+	tone: string;
+} {
+	if (r.kind === 'rollback' && r.state === 'rollback_failed' && r.changed === false) {
+		return { text: 'Didn’t run', tone: 'tag-warn' };
+	}
+	return { text: stateWord[r.state], tone: stateTag[r.state] };
+}
+
+/** The run's error is a warning, not a failure: nothing was changed or broken by it. */
+export function runErrorTone(r: Pick<Run, 'kind' | 'state' | 'changed'>): 'bad' | 'warn' {
+	if (r.state === 'unverified') return 'warn';
+	if (r.kind === 'rollback' && r.state === 'rollback_failed' && !r.changed) return 'warn';
+	return 'bad';
+}
 
 /** "affects everyone" / "brief pause" / "nobody notices", for a tag. */
 export function impactWord(i: Impact): { text: string; tone: string } {

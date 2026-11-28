@@ -355,7 +355,8 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *int) {
 
 	// Health.
 	r.Health.Updates, _ = updateHealth(runs, in.Now)
-	unresolved := len(runs) > 0 && (runs[0].State == updates.StateFailed || runs[0].State == updates.StateRollbackFailed)
+	unresolved := len(runs) > 0 && (runs[0].State == updates.StateFailed || runs[0].State == updates.StateRollbackFailed ||
+		runs[0].State == updates.StateUnverified)
 	r.Health.Host = hostH
 	r.UptimeDays = uptime
 	healthy := !unresolved

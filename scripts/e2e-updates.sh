@@ -5,7 +5,8 @@
 # the services' endpoints) and the panel on them, runs
 # ui/e2e/updates.spec.ts (update available → changelog across versions →
 # apply → checks → done; a breaking, migrating update that fails → rollback
-# with the data restored → healthy), and stops everything.
+# with the data restored → healthy; a rollback that can't reach Docker
+# says it didn't run), and stops everything.
 #
 #   ./scripts/e2e-updates.sh          # SCREENSHOT_DIR=... to keep screenshots
 set -eu
@@ -32,7 +33,7 @@ ENV=development VERSION=1.26.0 HTTP_ADDR=127.0.0.1:18690 INTERNAL_ADDR=127.0.0.1
 	AUTH_URL=http://127.0.0.1:18680 DIRECTORY_REGISTRATION=false \
 	DOCKER_PROXY_URL=$F/docker UPDATES_DOCKER_PROXY_URL=$F/docker \
 	UPDATES_GITHUB_API_URL=$F/gh UPDATES_REGISTRY_URL=$F UPDATES_STATE_DIR="$TMP/state" \
-	UPDATES_BACKUP_DIR=/root/backups/boson UPDATES_HEALTH_TIMEOUT=4s UPDATES_CHECK_TARGETS="$checks" \
+	UPDATES_BACKUP_DIR=/root/backups/boson UPDATES_HEALTH_TIMEOUT=4s UPDATES_DOCKER_RETRY=300ms UPDATES_PROXY_WAIT=1s UPDATES_CHECK_TARGETS="$checks" \
 	"$TMP/admin" serve > "$TMP/admin.log" 2>&1 &
 PIDS="$PIDS $!"
 for _ in 1 2 3 4 5 6 7 8 9 10; do

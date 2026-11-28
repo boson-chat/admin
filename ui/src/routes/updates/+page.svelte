@@ -20,10 +20,10 @@
 		renderInline,
 		renderMarkdown,
 		running,
+		runErrorTone,
+		runState,
 		selectable,
 		withoutTitle,
-		stateTag,
-		stateWord,
 		type ApplyMode,
 		type ComponentStatus,
 		type Preview,
@@ -104,7 +104,7 @@
 					// The panel is down while it restarts: say so and keep trying.
 					if (!(e instanceof ApiError) || e.status === 0 || e.status >= 500) lost = true;
 				}
-			} else if (checkPending(updates.status) && !checking) {
+			} else if ((checkPending(updates.status) || updates.status?.error || error) && !checking) {
 				// A check is running (or due: the panel checks a few seconds
 				// after it starts): show its result as soon as it's in.
 				try {
@@ -116,7 +116,10 @@
 					else error = errorText(e);
 				}
 			}
-			t = setTimeout(poll, lost ? 2000 : runPoll ? 1000 : 1500);
+			// A check that failed (Docker out of reach) runs again soon on
+			// the panel: keep reading until its error clears.
+			const slow = !checkPending(updates.status) && !!(updates.status?.error || error);
+			t = setTimeout(poll, lost ? 2000 : runPoll ? 1000 : slow ? 10_000 : 1500);
 		};
 		t = setTimeout(poll, 1000);
 		return () => {
@@ -170,7 +173,9 @@
 		if (!run) return;
 		busy = true;
 		try {
-			await api<Run>('POST', '/updates/rollback', { run_id: run.id, restore_data: restoreData });
+			// A rollback that didn't run is tried again for the same update.
+			const id = run.kind === 'rollback' ? run.rollback_of : run.id;
+			await api<Run>('POST', '/updates/rollback', { run_id: id, restore_data: restoreData });
 			rbDialog?.close();
 			await load(true);
 		} catch (e) {
@@ -254,7 +259,7 @@
 		<div class="section-head">
 			<h2 id="run-h">
 				{run.kind === 'rollback' ? 'Rollback' : 'Update'}
-				<span class="tag {stateTag[run.state]}">{stateWord[run.state]}</span>
+				<span class="tag {runState(run).tone}">{runState(run).text}</span>
 			</h2>
 			<p>
 				{run.actor} started it
@@ -279,7 +284,7 @@
 				{/each}
 			</ul>
 			<p class="summary-line">{run.summary}</p>
-			{#if run.error}<Notice>{run.error}</Notice>{/if}
+			{#if run.error}<Notice tone={runErrorTone(run)}>{run.error}</Notice>{/if}
 
 			<ol class="steps" aria-label="Progress">
 				{#each run.steps as s (s.id)}
@@ -320,7 +325,8 @@
 
 			{#if run.migrations_ran?.length}
 				<Notice tone="warn"
-					>This {run.kind} ran database migrations in <strong>{run.migrations_ran.join(', ')}</strong>.
+					>{run.kind === 'rollback' ? 'The update' : 'This update'} ran database migrations in
+					<strong>{run.migrations_ran.join(', ')}</strong>.
 					{#if run.kind === 'update'}A rollback restores those databases from the backup, so changes made
 						since the update are lost.{/if}</Notice
 				>
@@ -338,11 +344,18 @@
 					<p>
 						{run.state === 'failed'
 							? 'Something failed. Put back exactly what ran before:'
-							: 'Not happy with it? Put back exactly what ran before:'}
+							: run.state === 'unverified'
+								? 'Check the services first. To put back exactly what ran before:'
+								: 'Not happy with it? Put back exactly what ran before:'}
 					</p>
 					<button class="btn {run.state === 'failed' ? 'btn-primary' : ''}" onclick={openRollback}
 						>Roll back</button
 					>
+				</div>
+			{:else if run.kind === 'rollback' && run.state === 'rollback_failed' && !run.changed && run.rollback_of && !active && canApply}
+				<div class="rb">
+					<p>Nothing was put back, so it can be tried again:</p>
+					<button class="btn" onclick={openRollback}>Try the rollback again</button>
 				</div>
 			{/if}
 		</div>
@@ -531,7 +544,7 @@
 										)
 										.join(', ')}
 								</td>
-								<td><span class="tag {stateTag[h.state]}">{stateWord[h.state]}</span></td>
+								<td><span class="tag {runState(h).tone}">{runState(h).text}</span></td>
 							</tr>
 						{/each}
 					</tbody>

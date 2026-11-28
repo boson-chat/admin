@@ -91,6 +91,8 @@ type JobRunner interface {
 	// Collect returns a started job's output once it has exited (done) and
 	// removes its container.
 	Collect(ctx context.Context, runID, name string) (out *JobOutput, done bool, err error)
+	// Ping: nil when the proxy jobs go through answers.
+	Ping(ctx context.Context) error
 }
 
 // Helper runs jobs in a docker:cli container created through the socket proxy.
@@ -117,6 +119,9 @@ func (h *Helper) poll() time.Duration {
 	}
 	return h.Poll
 }
+
+// Ping asks the updates proxy for _ping.
+func (h *Helper) Ping(ctx context.Context) error { return h.Client.Ping(ctx) }
 
 func (h *Helper) Locate(ctx context.Context) (*Location, error) {
 	loc, err := h.locateLabels(ctx)
@@ -326,8 +331,7 @@ func within(p, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
-func (h *Helper) create(ctx context.Context, spec dockerapi.JobSpec) (string, error) {
-	// A leftover with the same name (a crashed run): ours by label, so remove it.
+func (h *Helper) removeNamed(ctx context.Context, spec dockerapi.JobSpec) {
 	if old, _ := h.Client.ListLabel(ctx, LabelJobRun+"="+spec.Labels[LabelJobRun]); len(old) > 0 {
 		for _, c := range old {
 			if c.Name() == spec.Name {
@@ -335,11 +339,23 @@ func (h *Helper) create(ctx context.Context, spec dockerapi.JobSpec) (string, er
 			}
 		}
 	}
+}
+
+func (h *Helper) create(ctx context.Context, spec dockerapi.JobSpec) (string, error) {
+	// A leftover with the same name (a crashed run): ours by label, so remove it.
+	h.removeNamed(ctx, spec)
 	if err := h.Client.Pull(ctx, spec.Image); err != nil {
 		// Offline but already present is fine; create says otherwise.
 		_ = err
 	}
 	id, err := h.Client.Create(ctx, spec)
+	// The client doesn't retry a create the proxy may have carried out
+	// (the connection dropped after sending it): the container, if it was
+	// made, goes, then a second try.
+	for try := 0; try < 2 && err != nil && errors.Is(err, dockerapi.ErrUnavailable) && dockerapi.IsTransient(err) && ctx.Err() == nil; try++ {
+		h.removeNamed(ctx, spec)
+		id, err = h.Client.Create(ctx, spec)
+	}
 	if err != nil {
 		return "", fmt.Errorf("starting the update helper (%s): %w", spec.Image, err)
 	}

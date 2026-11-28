@@ -62,8 +62,15 @@ type Options struct {
 	UtilImage     string
 	HealthTimeout time.Duration
 	VerifyTimeout time.Duration
-	Catalog       []Component
-	Now           func() time.Time
+	// ProxyWait is how long a run waits for the Docker socket proxies to
+	// answer again (after a recreate, before a rollback). Default 90 s.
+	ProxyWait time.Duration
+	// RetryCheck: a check that couldn't reach Docker runs again this soon
+	// (default 1 min) instead of an Interval later, so its error clears
+	// once the proxies are back.
+	RetryCheck time.Duration
+	Catalog    []Component
+	Now        func() time.Time
 	// OnFinish is called (in its own goroutine) when an update or a
 	// rollback finishes, failed or not, with the run's kind ("update" or
 	// "rollback"): the usage & health stats send a report soon after.
@@ -131,6 +138,8 @@ type Status struct {
 	Apply       ApplyInfo         `json:"apply"`
 	Run         *Run              `json:"run,omitempty"`
 	History     []RunSummary      `json:"history"`
+	// dockerDown: the check couldn't reach Docker (it runs again soon).
+	dockerDown bool
 }
 
 // Service implements ServiceImpl.
@@ -174,6 +183,12 @@ func New(o Options) *Service {
 	if o.VerifyTimeout <= 0 {
 		o.VerifyTimeout = 90 * time.Second
 	}
+	if o.ProxyWait <= 0 {
+		o.ProxyWait = 90 * time.Second
+	}
+	if o.RetryCheck <= 0 {
+		o.RetryCheck = time.Minute
+	}
 	if o.Catalog == nil {
 		o.Catalog = Catalog
 	}
@@ -213,6 +228,9 @@ func (s *Service) Start(ctx context.Context) {
 			} else {
 				st = s.Check(ctx)
 				due, rechecks = time.Now().Add(s.o.Interval), 0
+				if st.dockerDown {
+					due = time.Now().Add(s.o.RetryCheck)
+				}
 			}
 			t.Reset(s.wait(st, due, rechecks, time.Now()))
 		}
@@ -415,6 +433,11 @@ func (s *Service) check(ctx context.Context) *Status {
 	inst, err := s.installed(ctx)
 	if err != nil {
 		st.Error = err.Error()
+		if errors.Is(err, dockerapi.ErrUnavailable) {
+			st.dockerDown = true
+			retry := now.Add(s.o.RetryCheck)
+			st.NextCheckAt = &retry
+		}
 	}
 	var wg sync.WaitGroup
 	comps := make([]ComponentStatus, len(s.o.Catalog))

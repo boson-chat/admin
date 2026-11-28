@@ -173,6 +173,7 @@ func (f *fakeDocker) Logs(context.Context, string, dockerapi.LogOptions) ([]dock
 func (f *fakeDocker) Stats(context.Context, string) (*dockerapi.Stats, error) {
 	return &dockerapi.Stats{}, nil
 }
+func (f *fakeDocker) Ping(context.Context) error { return nil }
 
 func TestServicesEndpoints(t *testing.T) {
 	h := newHarness(t)

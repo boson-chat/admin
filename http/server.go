@@ -357,11 +357,13 @@ func buildUpdates(ctx context.Context, cfg config.Config, irc *config.IRCTarget,
 		Releases: updates.NewGitHub(uc.GitHubURL, uc.GitHubToken, 15*time.Second),
 		Registry: reg, Project: dc.Project, SelfVersion: cfg.AppConfig.Version, StackVersion: uc.StackVersion,
 		Interval: uc.Interval, StateDir: uc.StateDir, BackupRoot: uc.BackupDir, Keep: uc.BackupKeep,
-		MinFree: uc.MinFreeMB << 20, UtilImage: uc.UtilImage, HealthTimeout: uc.HealthTimeout,
+		MinFree: uc.MinFreeMB << 20, UtilImage: uc.UtilImage, HealthTimeout: uc.HealthTimeout, ProxyWait: uc.ProxyWait,
 		OnFinish: onFinish,
 	}
 	if dc.ProxyURL != "" {
-		o.Docker = dockerapi.NewDockerClient(dc.ProxyURL, dc.Timeout, upstream("docker"))
+		// Retrying: a run (and the periodic check) outlasts a proxy being
+		// replaced, when Docker's DNS has no name for it for a moment.
+		o.Docker = dockerapi.NewDockerClient(dc.ProxyURL, dc.Timeout, upstream("docker"), dockerapi.WithRetry(uc.DockerRetry))
 	}
 	switch {
 	case uc.DockerProxyURL == "":
@@ -371,7 +373,8 @@ func buildUpdates(ctx context.Context, cfg config.Config, irc *config.IRCTarget,
 	default:
 		self, _ := os.Hostname()
 		o.Jobs = &updates.Helper{
-			Client:  dockerapi.NewJobsClient(uc.DockerProxyURL, 2*time.Minute, upstream("docker_updates")),
+			Client: dockerapi.NewJobsClient(uc.DockerProxyURL, 2*time.Minute, upstream("docker_updates"),
+				dockerapi.WithRetry(uc.DockerRetry)),
 			Project: dc.Project, SelfID: self, Image: uc.HelperImage, BackupRoot: uc.BackupDir,
 		}
 	}

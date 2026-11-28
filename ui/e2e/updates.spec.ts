@@ -174,6 +174,51 @@ test('a breaking update that fails after migrating → rollback restores the dat
 	await expect(page.getByRole('region', { name: 'History' }).getByText('Rolled back').first()).toBeVisible();
 });
 
+// Docker out of reach when a rollback starts (as right after compose
+// replaced the socket proxies): the rollback says plainly that it didn't
+// run and changed nothing, can be tried again once Docker answers, and the
+// check's error goes with the next check that reaches Docker.
+test('a rollback that can’t reach Docker → didn’t run, nothing changed → again once it answers', async ({
+	page
+}, info) => {
+	await fresh(page);
+	await page.getByRole('checkbox', { name: 'Select API' }).check();
+	await page.getByRole('button', { name: 'Update selected (1)' }).click();
+	const dlg = page.getByRole('dialog');
+	await dlg.getByLabel(/I’ve read these/).check();
+	await dlg.getByRole('button', { name: 'Back up and update' }).click();
+	await expect(page.locator('.run .tag', { hasText: 'Failed' })).toBeVisible({ timeout: 20_000 });
+
+	const down = (seconds: number) =>
+		page.request.post(`${fake}/__state`, { data: { proxy_down_for: seconds } });
+	expect((await down(3600)).ok()).toBe(true);
+	await page.getByRole('button', { name: 'Roll back' }).click();
+	const rb = page.getByRole('dialog', { name: 'Roll back' });
+	await rb.getByRole('button', { name: 'Roll back' }).click();
+	await expect(page.locator('.run .tag', { hasText: 'Didn’t run' })).toBeVisible({ timeout: 20_000 });
+	await expect(
+		page.getByText(
+			"Rollback didn't run: Docker was unreachable. Nothing was changed; API 0.58.0 is installed."
+		)
+	).toBeVisible();
+	await expect(page.getByRole('heading', { name: /Rollback/ })).toBeVisible();
+	let state = await (await page.request.get(`${fake}/__state`)).json();
+	expect(state.restored ?? []).toEqual([]);
+	expect(state.images.api).toBe('harbor.floret.dev/boson/backend:0.58.0');
+	await shot(page, 'rollback-didnt-run', info.project.name);
+
+	expect((await down(0)).ok()).toBe(true);
+	await page.getByRole('button', { name: 'Try the rollback again' }).click();
+	await rb.getByRole('button', { name: 'Roll back' }).click();
+	await expect(page.locator('.run .tag', { hasText: 'Rolled back' })).toBeVisible({ timeout: 20_000 });
+	state = await (await page.request.get(`${fake}/__state`)).json();
+	expect(state.images.api).toMatch(/backend:0\.57\.0@sha256:/);
+	// The banner from the check that couldn't reach Docker goes with the next one.
+	await page.getByRole('button', { name: 'Check now' }).click();
+	await expect(page.getByRole('button', { name: 'Check now' })).toBeEnabled();
+	await expect(page.getByText(/docker_unavailable/)).toHaveCount(0);
+});
+
 // The stack: what release 1.1.0 changes on this install (files with their
 // diffs, a local edit, Ergo included on the stack's version, auth's pin
 // raised, a migration, what restarts and who notices), then apply → done,

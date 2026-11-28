@@ -16,6 +16,11 @@ const (
 	StateFailed         = "failed"
 	StateRolledBack     = "rolled_back"
 	StateRollbackFailed = "rollback_failed"
+	// StateUnverified: the update changed the stack, then Docker couldn't
+	// be reached to check it (past the retry window). Nothing says it went
+	// wrong and a rollback would hit the same wall: the stack is left as
+	// it is, and can still be rolled back by hand.
+	StateUnverified = "unverified"
 )
 
 // Step states.
@@ -140,7 +145,8 @@ type Run struct {
 	// RestoreData: the rollback restores the databases and volumes.
 	RestoreData bool   `json:"restore_data,omitempty"`
 	Error       string `json:"error,omitempty"`
-	// Changed: the run got as far as changing the stack (a rollback makes sense).
+	// Changed: the run got as far as changing the stack (a rollback makes
+	// sense; for a rollback: it started putting things back).
 	Changed      bool   `json:"changed"`
 	CanRollback  bool   `json:"can_rollback"`
 	RollbackOf   string `json:"rollback_of,omitempty"`
@@ -165,6 +171,9 @@ type RunSummary struct {
 	// FailedStep is the id of the step the run failed at (preflight,
 	// backup, pull, …), for the usage & health stats' error class.
 	FailedStep string `json:"failed_step,omitempty"`
+	// Changed: the run got as far as changing the stack (a rollback that
+	// didn't: it didn't run). Unset in entries from before it was kept.
+	Changed *bool `json:"changed,omitempty"`
 }
 
 func (r *Run) clone() *Run {
@@ -176,7 +185,7 @@ func (r *Run) clone() *Run {
 
 func (r *Run) summary() RunSummary {
 	s := RunSummary{ID: r.ID, Kind: r.Kind, Actor: r.Actor, State: r.State, StartedAt: r.StartedAt,
-		FinishedAt: r.FinishedAt, Items: r.Items, Error: r.Error}
+		FinishedAt: r.FinishedAt, Items: r.Items, Error: r.Error, Changed: &r.Changed}
 	if r.Backup != nil {
 		s.BackupDir = r.Backup.Dir
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -314,7 +315,7 @@ func (s *Service) finish(state, errText string) {
 	// Steps still pending after a failure were skipped.
 	for i := range r.Steps {
 		if r.Steps[i].State == StepPending || r.Steps[i].State == StepRunning {
-			if state == StateFailed || state == StateRollbackFailed {
+			if state == StateFailed || state == StateRollbackFailed || state == StateUnverified {
 				r.Steps[i].State = StepSkipped
 			}
 		}
@@ -360,7 +361,7 @@ func (s *Service) env(loc *Location, run *Run) map[string]string {
 		"COMPOSE_PROJECT_NAME": loc.Project, "COMPOSE_FILE": strings.Join(loc.ComposeFiles, ":"),
 		"STACK_DIR": loc.Dir, "ENV_FILE": loc.EnvFile, "BACKUP_ROOT": root, "BACKUP_DIR": bdir,
 		"UTIL_IMAGE": s.o.UtilImage,
-		"SERVICES":   "", "PRE": "", "STOP": "", "VOLUMES": "", "RESTORE_DBS": "", "RESTORE_VOLUMES": "", "FORCE": "",
+		"SERVICES":   "", "PRE": "", "STOP": "", "VOLUMES": "", "RESTORE_DBS": "", "RESTORE_VOLUMES": "", "FORCE": "", "LAST": "",
 		"SETS": "", "TARGET_SETS": "", "FALLBACK_SETS": "", "IMAGES": "", "KEEP": fmt.Sprint(s.o.Keep),
 		"STACK_FILES": "", "STACK_RESTORE": "",
 	}
@@ -410,6 +411,13 @@ func (s *Service) allServices() []string {
 func (s *Service) execUpdate(ctx context.Context, runID string) {
 	log := logger.FromCtx(ctx)
 	fail := func(step string, err error) {
+		// Docker out of reach (past the clients' retry window) after the
+		// stack changed: nothing says the update is wrong, and a rollback
+		// would hit the same wall.
+		if r := s.current(); r != nil && r.Changed && errors.Is(err, dockerapi.ErrUnavailable) {
+			s.couldntVerify(step, err)
+			return
+		}
 		s.setStep(step, StepFailed, err.Error())
 		log.Error().Err(err).Str("step", step).Msg("update failed")
 		// Did it get as far as migrating a database? The rollback offer says so.
@@ -595,6 +603,9 @@ func (s *Service) execUpdate(ctx context.Context, runID string) {
 		services = health
 		force = slices.DeleteFunc(force, func(x string) bool { return !slices.Contains(services, x) })
 		plainSvc := slices.DeleteFunc(slices.Clone(services), func(x string) bool { return slices.Contains(force, x) })
+		// The socket proxies go last (scriptRecreate).
+		last := slices.DeleteFunc(slices.Clone(plainSvc), func(x string) bool { return !slices.Contains(proxyServices, x) })
+		plainSvc = slices.DeleteFunc(plainSvc, func(x string) bool { return slices.Contains(proxyServices, x) })
 		// 5. Recreate.
 		if len(services)+len(pre) == 0 {
 			s.setStep("recreate", StepSkipped, "no service's configuration changed")
@@ -602,13 +613,18 @@ func (s *Service) execUpdate(ctx context.Context, runID string) {
 		} else {
 			s.setStep("recreate", StepRunning, "")
 			if _, err := s.job(ctx, run.ID, "recreate", scriptRecreate, with(env, "SERVICES", strings.Join(plainSvc, " "),
-				"FORCE", strings.Join(force, " "), "PRE", strings.Join(pre, " "))); err != nil {
+				"FORCE", strings.Join(force, " "), "PRE", strings.Join(pre, " "), "LAST", strings.Join(last, " "))); err != nil {
 				fail("recreate", err)
 				return
 			}
 			s.setStep("recreate", StepOK, strings.Join(append(slices.Clone(pre), services...), ", "))
-			// 6. Health.
+			// 6. Health: the proxies answer again first (compose may
+			// just have replaced them), then the services.
 			s.setStep("health", StepRunning, "")
+			if err := s.waitProxies(ctx); err != nil {
+				fail("health", err)
+				return
+			}
 			if detail, err := s.waitHealthy(ctx, services); err != nil {
 				fail("health", err)
 				return
@@ -747,6 +763,9 @@ func (s *Service) waitHealthy(ctx context.Context, services []string) (string, e
 	deadline := time.Now().Add(s.o.HealthTimeout)
 	var last string
 	for {
+		// unreachable: this round couldn't ask Docker (kept in the error,
+		// so the run says "couldn't verify" rather than "unhealthy").
+		var unreachable error
 		cs, err := s.o.Docker.List(ctx, s.o.Project)
 		if err == nil {
 			bad := []string{}
@@ -764,6 +783,9 @@ func (s *Service) waitHealthy(ctx context.Context, services []string) (string, e
 				}
 				in, err := s.o.Docker.Inspect(ctx, c.ID)
 				if err != nil {
+					if errors.Is(err, dockerapi.ErrUnavailable) {
+						unreachable = err
+					}
 					bad = append(bad, svc+": "+err.Error())
 					continue
 				}
@@ -780,8 +802,14 @@ func (s *Service) waitHealthy(ctx context.Context, services []string) (string, e
 			last = strings.Join(bad, "; ")
 		} else {
 			last = err.Error()
+			if errors.Is(err, dockerapi.ErrUnavailable) {
+				unreachable = err
+			}
 		}
 		if time.Now().After(deadline) {
+			if unreachable != nil {
+				return "", fmt.Errorf("can't tell whether the services are healthy after %s: %w", s.o.HealthTimeout, unreachable)
+			}
 			return "", fmt.Errorf("not healthy after %s: %s", s.o.HealthTimeout, last)
 		}
 		select {
@@ -823,6 +851,14 @@ func (s *Service) verifyStep(ctx context.Context, run *Run, items []Item, rollba
 	for _, c := range checks {
 		if !c.OK && !c.Skipped {
 			failed = append(failed, c.Label)
+		}
+	}
+	if len(failed) > 0 && !rollback {
+		// A check that failed because Docker is out of reach says nothing
+		// about the update: don't roll back on it.
+		if err := s.waitProxies(ctx); err != nil {
+			s.couldntVerify("verify", fmt.Errorf("checks failed (%s) and %w", strings.Join(failed, ", "), err))
+			return false
 		}
 	}
 	if len(failed) > 0 {
@@ -882,6 +918,88 @@ func (s *Service) verify(ctx context.Context, runID string, expect map[string]st
 		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+// proxyServices are the stack's Docker socket proxies: the panel's only
+// way to Docker (docker-proxy for what runs, docker-proxy-updates for
+// helper jobs).
+var proxyServices = []string{"docker-proxy", "docker-proxy-updates"}
+
+// pingProxies asks both proxies for _ping once (each call retries within
+// the clients' window). Only "no answer" is an error: a refusal (403)
+// still means the proxy is there.
+func (s *Service) pingProxies(ctx context.Context) error {
+	if s.o.Docker != nil {
+		if err := s.o.Docker.Ping(ctx); err != nil && errors.Is(err, dockerapi.ErrUnavailable) {
+			return fmt.Errorf("the Docker socket proxy (docker-proxy) didn't answer: %w", err)
+		}
+	}
+	if s.o.Jobs != nil {
+		if err := s.o.Jobs.Ping(ctx); err != nil && errors.Is(err, dockerapi.ErrUnavailable) {
+			return fmt.Errorf("the updates socket proxy (docker-proxy-updates) didn't answer: %w", err)
+		}
+	}
+	return nil
+}
+
+// waitProxies waits up to ProxyWait for both proxies to answer, as after
+// compose replaced them. The error wraps dockerapi.ErrUnavailable.
+func (s *Service) waitProxies(ctx context.Context) error {
+	deadline := time.Now().Add(s.o.ProxyWait)
+	for {
+		err := s.pingProxies(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// couldntVerify ends an update that changed the stack and then lost Docker
+// (StateUnverified): the stack stays as it is, no rollback starts.
+func (s *Service) couldntVerify(step string, err error) {
+	r := s.current()
+	if r == nil {
+		return
+	}
+	s.setStep(step, StepFailed, "Docker was unreachable: "+err.Error())
+	where := "the stack is left as the update left it"
+	if st := r.step("configure"); st != nil && st.State == StepOK {
+		where = onText(r.Items)
+	}
+	logger.FromCtx(context.Background()).Warn().Err(err).Str("run", r.ID).Str("step", step).
+		Msg("update not verified: Docker was unreachable; not rolling back")
+	s.finish(StateUnverified, "Couldn't verify the update: Docker was unreachable. Nothing was rolled back; "+where+".")
+}
+
+// onText says what a run's items leave installed: "the stack is on 1.5.0",
+// or "Auth 1.22.0, Web 0.101.0 are installed".
+func onText(items []Item) string {
+	var parts []string
+	for _, it := range items {
+		if it.Stack != nil {
+			return "the stack is on " + it.To
+		}
+		parts = append(parts, it.Name+" "+it.To)
+	}
+	if len(parts) == 0 {
+		return "the stack is as it was"
+	}
+	verb := " is installed"
+	if len(parts) > 1 {
+		verb = " are installed"
+	}
+	return strings.Join(parts, ", ") + verb
 }
 
 func sortedKeys(m map[string]string) []string {

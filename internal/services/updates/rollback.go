@@ -2,16 +2,18 @@ package updates
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
+	"github.com/boson-chat/admin/internal/clients/dockerapi"
 	"github.com/boson-chat/admin/internal/logger"
 )
 
 func rollbackSteps(self bool) []Step {
 	st := []Step{
-		{ID: "inspect", Label: "Check whether the update migrated any database"},
+		{ID: "inspect", Label: "Check that Docker answers and whether the update migrated any database"},
 		{ID: "restore", Label: "Put back the previous images, .env and config (and data)"},
 		{ID: "health", Label: "Wait for the services to be healthy"},
 		{ID: "verify", Label: "Check that everything works"},
@@ -76,7 +78,7 @@ func (s *Service) Rollback(ctx context.Context, actor string, req RollbackReques
 	run := &Run{ID: s.o.Now().UTC().Format("20060102T150405Z") + "-" + newID(), Kind: "rollback", Actor: actor,
 		State: StateRunning, StartedAt: s.o.Now().UTC(), Items: items, Summary: Summary(comps),
 		Steps: rollbackSteps(self), Checks: []Check{}, Log: []string{}, RollbackOf: orig.ID,
-		Backup: orig.Backup, Location: orig.Location, MigrationsRan: orig.MigrationsRan, Changed: true}
+		Backup: orig.Backup, Location: orig.Location, MigrationsRan: orig.MigrationsRan}
 	if req.RestoreData != nil {
 		run.RestoreData = *req.RestoreData
 	}
@@ -121,10 +123,26 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 	fail := func(step string, err error) {
 		s.setStep(step, StepFailed, err.Error())
 		log.Error().Err(err).Str("step", step).Msg("rollback failed")
-		s.finish(StateRollbackFailed, err.Error())
+		msg := err.Error()
+		// Before the restore job started, nothing was put back: say so.
+		if r := s.current(); r != nil && !r.Changed {
+			why := msg
+			if errors.Is(err, dockerapi.ErrUnavailable) {
+				why = "Docker was unreachable"
+			}
+			msg = "Rollback didn't run: " + why + ". Nothing was changed; " + onText(r.Items) + "."
+		}
+		s.finish(StateRollbackFailed, msg)
 	}
 	run := s.current()
 	if run == nil || run.ID != runID {
+		return
+	}
+	// 0. Docker answers (an automatic rollback starts right after an
+	// update that may just have replaced the proxies).
+	s.setStep("inspect", StepRunning, "waiting for the Docker socket proxies")
+	if err := s.waitProxies(ctx); err != nil {
+		fail("inspect", err)
 		return
 	}
 	loc := run.Location
@@ -237,6 +255,7 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 	if stack {
 		renv["STACK_RESTORE"] = "1"
 	}
+	s.mutate(func(r *Run) { r.Changed = true })
 	rout, err := s.job(ctx, run.ID, "rollback", scriptRollback, renv)
 	if err != nil {
 		// The script started the services again (on the restored files)
@@ -279,6 +298,10 @@ func (s *Service) execRollback(ctx context.Context, runID string, autoData bool)
 	all := append(slices.Clone(up), stop...)
 	if len(all) > 0 {
 		s.setStep("health", StepRunning, "")
+		if err := s.waitProxies(ctx); err != nil {
+			fail("health", err)
+			return
+		}
 		if detail, err := s.waitHealthy(ctx, all); err != nil {
 			fail("health", err)
 			return

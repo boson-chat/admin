@@ -23,3 +23,7 @@ func RollbackEnv(loc *Location, root, backupDir string, kv ...string) map[string
 	env := s.env(loc, &Run{ID: "rollbacktest", Backup: &Backup{Dir: backupDir}})
 	return with(env, kv...)
 }
+
+// ScriptRecreate lets a test run the recreate helper alone (RollbackEnv
+// makes its env too).
+var ScriptRecreate = scriptRecreate
