@@ -373,6 +373,8 @@ stack's `.env` and recreate the service.
 | `UPDATES_MIN_FREE_MB` | `1024` | free space that must remain after the backup |
 | `UPDATES_STATE_DIR` | – | the update journal (a volume); needed for the panel to update itself |
 | `UPDATES_HEALTH_TIMEOUT` | `3m` | how long updated services get to become healthy |
+| `UPDATES_DOCKER_RETRY` | `45s` | how long a Docker call of the Updates page retries a socket proxy it can't reach (DNS failure, refused or reset connection, as while compose replaces the proxy); an answer such as 403 is never retried |
+| `UPDATES_PROXY_WAIT` | `90s` | how long a run waits for both socket proxies to answer `_ping` after recreating services and before a rollback; past it the update ends as "couldn't verify" (no automatic rollback) and a rollback doesn't start |
 | `UPDATES_CHECK_TARGETS` | – | `id=url` overrides for the post-update checks |
 | `STACK_VERSION` | – | the stack's version, when the stack passes one |
 | `TELEMETRY` | – (on) | `off` (also `false`, `0`, `no`) turns the usage & health stats report off; wins over `admin.telemetry` and the Settings switch, which shows off and locked |
@@ -668,8 +670,11 @@ logged with the admin's name and listed under History):
 3. **Pull** the new images (still nothing changed if that fails).
 4. **Set** the `*_IMAGE` lines in `.env` (rewritten in place, other lines kept).
 5. **Recreate** only those services, `up -d --no-deps` (one-off migration
-   services like `api-migrate` first).
-6. **Health:** each container running (and healthy, with a healthcheck).
+   services like `api-migrate` first, the Docker socket proxies
+   `docker-proxy` and `docker-proxy-updates` last).
+6. **Health:** both socket proxies answer `_ping` again (while compose
+   replaces one, Docker's DNS has no name for it), then each container
+   running (and healthy, with a healthcheck).
 7. **Checks:** IRC connects over TLS and registers; auth issues a token (a
    voice token with the admin's own access token, else its signing keys);
    the api, voice, video, files, directory and gateway answer; the web
@@ -679,6 +684,16 @@ logged with the admin's name and listed under History):
    waits for it to stay up; the new panel picks the run up from its journal
    (`UPDATES_STATE_DIR`, a volume), checks again and the page reloads into it.
    If the new panel doesn't stay up, the helper puts the previous digest back.
+
+Docker calls during a run (and the periodic check) retry a proxy that can't
+be reached for a moment: a DNS failure, a refused or reset connection, an
+answer cut short, for `UPDATES_DOCKER_RETRY`. An answer (403 included) is
+never retried. If Docker stays out of reach after the stack changed, the
+update ends as **Couldn't verify**: nothing says it went wrong, and an
+automatic rollback would hit the same wall, so the stack is left as it is
+(a rollback can still be started from the page). A check that couldn't reach
+Docker runs again a minute later, so its error clears once the proxies are
+back.
 
 **Rollback** (offered after a failure, and after a success): `.env` and
 `config/` from the backup, each component pinned to the exact previous
@@ -690,7 +705,10 @@ stopped: it is started on the restored files and waited for before a
 database restore. If a rollback step fails, the services it stopped or was
 to recreate are started again on the files in place by then (the run says
 whether that worked), so a failed rollback doesn't leave the stack down.
-Then the same health and checks run again.
+Then the same health and checks run again. A rollback first waits for both
+socket proxies to answer; if they don't, it stops there and says so
+("Rollback didn't run: Docker was unreachable. Nothing was changed; the
+stack is on 1.5.0.").
 
 ### Stack releases
 

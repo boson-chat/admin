@@ -47,6 +47,7 @@ func (f *fakeDocker) Logs(_ context.Context, id string, o dockerapi.LogOptions) 
 func (f *fakeDocker) Stats(context.Context, string) (*dockerapi.Stats, error) {
 	return &dockerapi.Stats{CPUPercent: 1.5, MemoryBytes: 10 << 20}, nil
 }
+func (f *fakeDocker) Ping(context.Context) error { return nil }
 
 func (f *fakeDocker) done() []string {
 	f.mu.Lock()

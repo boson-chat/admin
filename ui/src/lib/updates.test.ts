@@ -9,6 +9,8 @@ import {
 	shortImage,
 	type StackStatus,
 	renderMarkdown,
+	runErrorTone,
+	runState,
 	withoutTitle,
 	updatesByService,
 	type Impact,
@@ -174,5 +176,29 @@ describe('stack release helpers', () => {
 		} as StackStatus;
 		expect(localEdits(s).map((f) => f.path)).toEqual(['traefik/dynamic/stack.yml', 'docs/old.md']);
 		expect(localEdits(undefined)).toEqual([]);
+	});
+});
+
+describe('runState', () => {
+	it('says a rollback that put nothing back didn’t run', () => {
+		expect(runState({ kind: 'rollback', state: 'rollback_failed', changed: false })).toEqual({
+			text: 'Didn’t run',
+			tone: 'tag-warn'
+		});
+		expect(runErrorTone({ kind: 'rollback', state: 'rollback_failed', changed: false })).toBe('warn');
+	});
+	it('keeps a rollback that failed half-way a failure', () => {
+		expect(runState({ kind: 'rollback', state: 'rollback_failed', changed: true }).text).toBe(
+			'Rollback failed'
+		);
+		expect(runErrorTone({ kind: 'rollback', state: 'rollback_failed', changed: true })).toBe('bad');
+	});
+	it('words an update that couldn’t be verified as a warning', () => {
+		expect(runState({ kind: 'update', state: 'unverified', changed: true })).toEqual({
+			text: 'Couldn’t verify',
+			tone: 'tag-warn'
+		});
+		expect(runErrorTone({ kind: 'update', state: 'unverified', changed: true })).toBe('warn');
+		expect(runErrorTone({ kind: 'update', state: 'failed', changed: true })).toBe('bad');
 	});
 });

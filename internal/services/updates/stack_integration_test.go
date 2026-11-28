@@ -65,6 +65,12 @@ func stackRelease(t *testing.T) *fakestack.StackRelease {
 // the stack's 1.1.0 release.
 func newStackHost(t *testing.T) (*fakestack.Stack, *updates.Service) {
 	fs, srv := newStack(t)
+	stackHost(t, fs)
+	return fs, newService(t, fs, srv, "1.26.0", t.TempDir())
+}
+
+// stackHost sets newStackHost's scene up on fs.
+func stackHost(t *testing.T, fs *fakestack.Stack) {
 	fs.Set(func(s *fakestack.Stack) {
 		s.AddService("traefik", "traefik:v3.7.19")
 		s.AddService("roleserv", harbor+"stack-ergo:2.19.1")
@@ -78,7 +84,6 @@ func newStackHost(t *testing.T) (*fakestack.Stack, *updates.Service) {
 		s.Tags["boson/auth:1.21.0"] = true
 		s.Tags["traefik:v3.7.20"] = true
 	})
-	return fs, newService(t, fs, srv, "1.26.0", t.TempDir())
 }
 
 func TestStackReleaseReviewApplyHealthy(t *testing.T) {

@@ -167,7 +167,9 @@ echo "@@RESULT configure {}"
 // stack update's one-shot services), then SERVICES recreated without their
 // dependencies (none: nothing is recreated), and FORCE recreated even
 // though their compose configuration is the same (a file they bind-mount
-// changed).
+// changed). LAST (the Docker socket proxies the panel works through) go
+// at the very end: while compose replaces one, Docker's DNS has no name for
+// it and the panel can't see the host, so nothing else changes after that.
 const scriptRecreate = prelude + `
 for s in $PRE; do step "running $s"; dc run --rm --no-deps "$s"; done
 if [ -n "$SERVICES" ]; then
@@ -178,6 +180,10 @@ if [ -n "$FORCE" ]; then
 	# Their compose config is the same, but a file they read changed.
 	step "restarting $FORCE (a file they read changed)"
 	dc up -d --no-deps --force-recreate $FORCE
+fi
+if [ -n "$LAST" ]; then
+	step "recreating $LAST (the panel's way to Docker: last)"
+	dc up -d --no-deps $LAST
 fi
 echo "@@RESULT recreate {}"
 `
@@ -440,7 +446,7 @@ func validEnv(env map[string]string) error {
 					return fmt.Errorf("COMPOSE_FILE: not a plain absolute path: %q", p)
 				}
 			}
-		case "SERVICES", "PRE", "STOP", "VOLUMES", "RESTORE_DBS", "RESTORE_VOLUMES", "FORCE":
+		case "SERVICES", "PRE", "STOP", "VOLUMES", "RESTORE_DBS", "RESTORE_VOLUMES", "FORCE", "LAST":
 			for _, w := range strings.Fields(v) {
 				if !reService.MatchString(w) {
 					return fmt.Errorf("%s: bad name %q", k, w)

@@ -159,6 +159,19 @@ type Stack struct {
 	Downloads int
 	// StageNetworks: the network mode of each stage job (it must have one).
 	StageNetworks []string
+	// ProxyOutage: recreating docker-proxy or docker-proxy-updates takes
+	// the Docker API away for this long (as Docker's DNS has no name for a
+	// container compose is replacing): every /docker request meanwhile gets
+	// its connection closed without an answer. ProxyDownUntil is when it
+	// ends (tests can set it directly: zero = up).
+	ProxyOutage    time.Duration
+	ProxyDownUntil time.Time
+	// OutageAtFingerprint: the next fingerprint job (a failed update runs
+	// one just before it ends, and its automatic rollback starts right
+	// after) takes the Docker API away for this long. Once.
+	OutageAtFingerprint time.Duration
+	// Recreated: every service a recreate job brought up, in order.
+	Recreated []string
 
 	cts      map[string]*container
 	backups  map[string]snapshot
@@ -443,6 +456,9 @@ func (s *Stack) state(w http.ResponseWriter, r *http.Request) {
 			Migrates    map[string]string `json:"migrates"`
 			RateLimited *bool             `json:"rate_limited"`
 			FreeKB      *int64            `json:"free_kb"`
+			// ProxyDownFor (seconds): the Docker API is out for that long
+			// from now (0 = back now).
+			ProxyDownFor *float64 `json:"proxy_down_for"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -461,6 +477,9 @@ func (s *Stack) state(w http.ResponseWriter, r *http.Request) {
 		if in.FreeKB != nil {
 			s.FreeKB = *in.FreeKB
 		}
+		if in.ProxyDownFor != nil {
+			s.ProxyDownUntil = time.Now().Add(time.Duration(*in.ProxyDownFor * float64(time.Second)))
+		}
 		s.mu.Unlock()
 	}
 	s.mu.Lock()
@@ -474,7 +493,25 @@ func (s *Stack) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"images": imgs, "env": s.Env, "restored": s.restored, "migrations": s.Migrations})
 }
 
+// ProxyDown: the fake's Docker API is in an outage (ProxyOutage).
+func (s *Stack) ProxyDown() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().Before(s.ProxyDownUntil)
+}
+
 func (s *Stack) docker(w http.ResponseWriter, r *http.Request, p string) {
+	if s.ProxyDown() {
+		// No answer at all: the client sees the connection end (EOF).
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close()
+				return
+			}
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
 	// Strip an API version prefix (/v1.47/...).
 	if strings.HasPrefix(p, "/v1.") {
 		if i := strings.Index(p[1:], "/"); i >= 0 {
@@ -484,6 +521,9 @@ func (s *Stack) docker(w http.ResponseWriter, r *http.Request, p string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
+	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && p == "/_ping":
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("OK"))
 	case r.Method == http.MethodGet && p == "/containers/json":
 		s.list(w, r)
 	case r.Method == http.MethodPost && p == "/images/create":
@@ -811,14 +851,23 @@ func (s *Stack) runJob(c *container) {
 			s.say(c, "@@STEP running %s", p)
 		}
 		s.say(c, "@@STEP recreating %s", e["SERVICES"])
-		for _, svc := range append(strings.Fields(e["SERVICES"]), strings.Fields(e["FORCE"])...) {
+		all := append(append(strings.Fields(e["SERVICES"]), strings.Fields(e["FORCE"])...), strings.Fields(e["LAST"])...)
+		for _, svc := range all {
 			s.up(svc)
+			s.Recreated = append(s.Recreated, svc)
 			s.say(c, "Container boson-%s-1  Started", svc)
+			if (svc == "docker-proxy" || svc == "docker-proxy-updates") && s.ProxyOutage > 0 {
+				s.ProxyDownUntil = time.Now().Add(s.ProxyOutage)
+			}
 		}
 		s.say(c, "@@RESULT recreate {}")
 	case "fingerprint":
 		s.fingerprint(c)
 		s.say(c, "@@RESULT fingerprint {}")
+		if s.OutageAtFingerprint > 0 {
+			s.ProxyDownUntil = time.Now().Add(s.OutageAtFingerprint)
+			s.OutageAtFingerprint = 0
+		}
 	case "rollback":
 		snap, ok := s.backups[e["BACKUP_DIR"]]
 		if !ok {

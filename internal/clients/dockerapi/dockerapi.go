@@ -13,10 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/boson-chat/admin/internal/apperr"
@@ -116,6 +118,8 @@ type DockerClientImpl interface {
 	Restart(ctx context.Context, id string) error
 	Logs(ctx context.Context, id string, o LogOptions) ([]LogLine, error)
 	Stats(ctx context.Context, id string) (*Stats, error)
+	// Ping asks GET /_ping: nil when the proxy answers.
+	Ping(ctx context.Context) error
 }
 
 // Observer is told about every call (for metrics).
@@ -127,11 +131,40 @@ type Client struct {
 	Observe Observer
 	// MaxLogBytes caps one logs response.
 	MaxLogBytes int64
+	// RetryWindow: a call that fails because the proxy can't be reached
+	// for a moment (its name doesn't resolve, the connection is refused or
+	// reset, the answer ends early: IsTransient) is tried again, with
+	// backoff, for up to this long. 0 = never. Docker's embedded DNS has
+	// no record for a container while compose replaces it, which is
+	// exactly when an update needs the proxies. An answer (any status,
+	// 403 included) is never retried.
+	RetryWindow time.Duration
+	// RetryBackoff is the first wait between tries (doubling, at most
+	// 5 s). Default 250 ms.
+	RetryBackoff time.Duration
+}
+
+// DefaultRetryWindow is how long the update runner's clients keep trying
+// an unreachable proxy (WithRetry).
+const DefaultRetryWindow = 45 * time.Second
+
+// Option configures a client.
+type Option func(*Client)
+
+// WithRetry retries transient proxy errors for up to window (RetryWindow).
+func WithRetry(window time.Duration) Option { return func(c *Client) { c.RetryWindow = window } }
+
+func newClient(baseURL string, timeout time.Duration, observe Observer, opts []Option) *Client {
+	c := &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: timeout}, Observe: observe, MaxLogBytes: 16 << 20}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // NewDockerClient talks to the socket proxy at baseURL (http://host:2375).
-func NewDockerClient(baseURL string, timeout time.Duration, observe Observer) DockerClientImpl {
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: timeout}, Observe: observe, MaxLogBytes: 16 << 20}
+func NewDockerClient(baseURL string, timeout time.Duration, observe Observer, opts ...Option) DockerClientImpl {
+	return newClient(baseURL, timeout, observe, opts)
 }
 
 // ErrUnavailable: the proxy can't be reached.
@@ -146,43 +179,124 @@ func (c *Client) request(ctx context.Context, op, method, path string, limit int
 	return body, err
 }
 
-func (c *Client) roundTrip(ctx context.Context, method, path string, limit int64) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, nil)
-	if err != nil {
-		return 0, nil, err
+// IsTransient: err says the proxy couldn't be reached just now (a DNS
+// failure, a refused, reset or aborted connection, an answer cut short),
+// not that it answered.
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	for _, e := range []error{syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.ECONNABORTED, syscall.EPIPE,
+		syscall.EHOSTUNREACH, syscall.ENETUNREACH, io.EOF, io.ErrUnexpectedEOF} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// notSent: err happened before the request left (resolving or dialling).
+func notSent(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	return errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial"
+}
+
+// idempotent: trying the call twice does no harm. Creating a container
+// doesn't qualify (the second try finds the name taken), so it is only
+// retried when the first try never reached the proxy.
+func idempotent(method, path string) bool {
+	return method != http.MethodPost || !strings.HasPrefix(path, "/containers/create")
+}
+
+// exchange sends one call and reads its answer, retrying transient errors
+// within RetryWindow. A non-nil error means no answer (wrapping
+// ErrUnavailable and the cause); any status is the caller's to read.
+func (c *Client) exchange(ctx context.Context, method, path string, body []byte, limit int64) (int, []byte, error) {
+	var deadline time.Time
+	if c.RetryWindow > 0 {
+		deadline = time.Now().Add(c.RetryWindow)
+	}
+	wait := c.RetryBackoff
+	if wait <= 0 {
+		wait = 250 * time.Millisecond
+	}
+	for {
+		status, out, err := c.attempt(ctx, method, path, body, limit)
+		if err == nil {
+			return status, out, nil
+		}
 		if ctx.Err() != nil {
 			return 0, nil, ctx.Err()
 		}
-		return 0, nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		left := time.Until(deadline)
+		if deadline.IsZero() || left <= 0 || !IsTransient(err) || !idempotent(method, path) && !notSent(err) {
+			return status, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+		t := time.NewTimer(min(wait, left))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return 0, nil, ctx.Err()
+		case <-t.C:
+		}
+		wait = min(wait*2, 5*time.Second)
+	}
+}
+
+func (c *Client) attempt(ctx context.Context, method, path string, body []byte, limit int64) (int, []byte, error) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rd)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	out, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("%w: reading response: %v", ErrUnavailable, err)
+		return resp.StatusCode, nil, fmt.Errorf("reading response: %w", err)
+	}
+	return resp.StatusCode, out, nil
+}
+
+func (c *Client) roundTrip(ctx context.Context, method, path string, limit int64) (int, []byte, error) {
+	status, body, err := c.exchange(ctx, method, path, nil, limit)
+	if err != nil {
+		return status, nil, err
 	}
 	switch {
-	case resp.StatusCode == http.StatusNotModified: // already started / stopped
-		return resp.StatusCode, nil, nil
-	case resp.StatusCode == http.StatusNotFound:
-		return resp.StatusCode, nil, apperr.New(http.StatusNotFound, "not_found", "no such container")
-	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusMethodNotAllowed:
+	case status == http.StatusNotModified: // already started / stopped
+		return status, nil, nil
+	case status == http.StatusNotFound:
+		return status, nil, apperr.New(http.StatusNotFound, "not_found", "no such container")
+	case status == http.StatusForbidden || status == http.StatusMethodNotAllowed:
 		// The socket proxy refused the call: its allowlist is narrower.
-		return resp.StatusCode, nil, apperr.New(http.StatusBadGateway, "docker_forbidden",
+		return status, nil, apperr.New(http.StatusBadGateway, "docker_forbidden",
 			"the Docker socket proxy refused "+method+" "+strings.SplitN(path, "?", 2)[0]+"; check its allowlist")
-	case resp.StatusCode >= 400:
+	case status >= 400:
 		var e struct {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &e)
 		if e.Message == "" {
-			e.Message = http.StatusText(resp.StatusCode)
+			e.Message = http.StatusText(status)
 		}
-		return resp.StatusCode, nil, apperr.New(http.StatusBadGateway, "docker_error", "Docker: "+e.Message)
+		return status, nil, apperr.New(http.StatusBadGateway, "docker_error", "Docker: "+e.Message)
 	}
-	return resp.StatusCode, body, nil
+	return status, body, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, op, path string, out any) error {
@@ -220,6 +334,12 @@ func (c *Client) Inspect(ctx context.Context, id string) (*Inspect, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Ping asks GET /_ping (both of the stack's proxies allow it).
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.request(ctx, "ping", http.MethodGet, "/_ping", 4<<10)
+	return err
 }
 
 // Info reads GET /info (the proxy must allow it; an older stack's doesn't,
@@ -426,57 +546,39 @@ type JobsClientImpl interface {
 }
 
 // NewJobsClient talks to a proxy that allows helper jobs.
-func NewJobsClient(baseURL string, timeout time.Duration, observe Observer) JobsClientImpl {
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: timeout}, Observe: observe, MaxLogBytes: 16 << 20}
+func NewJobsClient(baseURL string, timeout time.Duration, observe Observer, opts ...Option) JobsClientImpl {
+	return newClient(baseURL, timeout, observe, opts)
 }
 
 func (c *Client) send(ctx context.Context, op, method, path string, body any, limit int64) ([]byte, error) {
-	var rd io.Reader
+	var raw []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		rd = bytes.NewReader(b)
+		raw = b
 	}
 	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rd)
-	if err != nil {
-		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.HTTP.Do(req)
-	status := 0
+	status, out, err := c.exchange(ctx, method, path, raw, limit)
 	defer func() {
 		if c.Observe != nil {
 			c.Observe(op, status, err, time.Since(start))
 		}
 	}()
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	defer resp.Body.Close()
-	status = resp.StatusCode
-	out, rerr := io.ReadAll(io.LimitReader(resp.Body, limit))
-	if rerr != nil {
-		err = fmt.Errorf("%w: reading response: %v", ErrUnavailable, rerr)
 		return nil, err
 	}
 	switch {
-	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusMethodNotAllowed:
+	case status == http.StatusForbidden || status == http.StatusMethodNotAllowed:
 		err = apperr.New(http.StatusBadGateway, "docker_forbidden",
 			"the Docker socket proxy refused "+method+" "+strings.SplitN(path, "?", 2)[0]+"; check its allowlist (the stack's updates profile)")
 		return nil, err
-	case resp.StatusCode == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		err = apperr.New(http.StatusNotFound, "not_found", "Docker: "+dockerMessage(out, "not found"))
 		return nil, err
-	case resp.StatusCode >= 400:
-		err = apperr.New(http.StatusBadGateway, "docker_error", "Docker: "+dockerMessage(out, http.StatusText(resp.StatusCode)))
+	case status >= 400:
+		err = apperr.New(http.StatusBadGateway, "docker_error", "Docker: "+dockerMessage(out, http.StatusText(status)))
 		return nil, err
 	}
 	return out, nil

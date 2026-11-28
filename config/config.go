@@ -92,6 +92,12 @@ type UpdatesConfig struct {
 	StackVersion string `env:"STACK_VERSION"`
 	// How long services get to become healthy after an update.
 	HealthTimeout time.Duration `default:"3m" env:"UPDATES_HEALTH_TIMEOUT"`
+	// How long a Docker call of the Updates page keeps retrying a proxy
+	// that can't be reached (DNS, refused, reset), as while compose
+	// replaces it; and how long a run waits for both proxies to answer
+	// _ping again after a recreate and before a rollback.
+	DockerRetry time.Duration `default:"45s" env:"UPDATES_DOCKER_RETRY"`
+	ProxyWait   time.Duration `default:"90s" env:"UPDATES_PROXY_WAIT"`
 	// id=url overrides for the post-update checks (api, web, voice, files…).
 	CheckTargets string `env:"UPDATES_CHECK_TARGETS"`
 }
