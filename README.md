@@ -791,8 +791,13 @@ the receiver keeps) is the stack's `docs/telemetry.md` (schema 1);
 - **When:** 5–15 minutes after the panel first starts on a new install
   (`setup`), then once a day at 24 h ± 1 h (a restart sends only when a day
   has passed), and about 5 minutes after an update or a rollback finishes.
-  A failed send is never retried before the next scheduled one; it runs in
-  its own goroutine with a 10 s timeout and is logged at debug level only.
+  A send that fails on the way (network, DNS, TLS, timeout, a 5xx) is
+  retried with backoff: about 15 min, then 30 min, 1 h, 2 h, … (± 20 %,
+  never under 10 min) up to the daily cadence, as the same report (a failed
+  `setup` or `update` stays that). The count is kept in `telemetry.json`, so
+  it survives a restart. A report the receiver refused (4xx) isn't retried:
+  the next daily one goes as usual, and the refusal is logged at info. Each
+  send runs in its own goroutine with a 10 s timeout.
 - **Account counts** come from auth's internal `GET /internal/v1/stats`
   (`AUTH_INTERNAL_URL` with `INTERNAL_API_TOKEN` in `X-Internal-Token`) on
   every report. On an auth without it they fall back to auth's admin API,
