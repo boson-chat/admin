@@ -65,10 +65,14 @@ type HomeChecker struct {
 	Domain string
 	// URL overrides where boson.json is fetched (WELLKNOWN_URL, e.g. the
 	// wellknown container when the panel can't reach its own public name).
-	URL  string
-	HTTP *http.Client
-	TTL  time.Duration
-	Now  func() time.Time
+	URL string
+	// WebHost is the stack's WEB_HOST: when set, boson.json should name
+	// that web client (web.url), or other installs' voice, video and files
+	// refuse its calls (directory-mode origins).
+	WebHost string
+	HTTP    *http.Client
+	TTL     time.Duration
+	Now     func() time.Time
 
 	mu    sync.Mutex
 	key   string
@@ -159,6 +163,9 @@ func (c *HomeChecker) check(ctx context.Context, domain, issuer, mode string) *H
 	}
 	var doc struct {
 		Federation *Discovery `json:"federation"`
+		Web        *struct {
+			URL string `json:"url"`
+		} `json:"web"`
 	}
 	if err := c.get(ctx, h.URL, &doc); err != nil {
 		h.State, h.Error = HomeUnreachable, "boson.json: "+err.Error()
@@ -166,6 +173,19 @@ func (c *HomeChecker) check(ctx context.Context, domain, issuer, mode string) *H
 		return h
 	}
 	add("discovery", "boson.json is served", true, "")
+	if c.WebHost != "" {
+		want := "https://" + c.WebHost
+		hc := HomeCheck{ID: "web", Label: "It names this server’s web client", OK: doc.Web != nil && strings.TrimRight(doc.Web.URL, "/") == want}
+		if !hc.OK {
+			hc.Warn = true
+			got := "no web section"
+			if doc.Web != nil {
+				got = fmt.Sprintf("web.url %q", doc.Web.URL)
+			}
+			hc.Detail = fmt.Sprintf("boson.json has %s, not %s: other servers’ voice, video and files refuse calls from your web client. Add web to WELLKNOWN_SECTIONS in .env (or remove the line) and restart the wellknown service.", got, want)
+		}
+		h.Checks = append(h.Checks, hc)
+	}
 	h.Federation = doc.Federation
 	f := doc.Federation
 	if f == nil {

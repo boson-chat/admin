@@ -13,6 +13,7 @@ import (
 
 type wk struct {
 	fed     map[string]any // nil = no federation block
+	web     string         // web.url ("" = no web section)
 	keys    string
 	status  int
 	fetches atomic.Int32
@@ -35,6 +36,9 @@ func (s *wk) serve(t *testing.T) *httptest.Server {
 					f[k] = v
 				}
 				doc["federation"] = f
+			}
+			if s.web != "" {
+				doc["web"] = map[string]any{"url": s.web}
 			}
 			_ = json.NewEncoder(w).Encode(doc)
 		case "/jwks.json":
@@ -130,5 +134,37 @@ func TestHomeProblems(t *testing.T) {
 	checkState(t, h, HomeUnknown)
 	if !strings.Contains(h.Error, "BOSON_DOMAIN") {
 		t.Fatalf("unknown: %+v", h)
+	}
+}
+
+// WEB_HOST set: boson.json must name it (the ircforever install served
+// the web client with no web section, so other installs refused it).
+// Missing or different is a warning; the home itself stays published.
+func TestHomeWebClient(t *testing.T) {
+	ctx := context.Background()
+	check := func(web string) *Home {
+		srv := (&wk{fed: good(), keys: `{"keys":[{}]}`, web: web}).serve(t)
+		return (&HomeChecker{URL: srv.URL + "/.well-known/boson.json", WebHost: "chat.example.org"}).Check(ctx, "example.org", "", "", true)
+	}
+	h := check("https://chat.example.org")
+	checkState(t, h, HomePublished)
+	if len(failing(h)) != 0 {
+		t.Fatalf("%+v", h.Checks)
+	}
+	for _, web := range []string{"", "https://other.example.org"} {
+		h = check(web)
+		checkState(t, h, HomePublished)
+		got := failing(h)
+		if len(got) != 1 || got[0] != "web" || !h.Checks[1].Warn || !strings.Contains(h.Checks[1].Detail, "WELLKNOWN_SECTIONS") {
+			t.Fatalf("web %q: %v %+v", web, got, h.Checks)
+		}
+	}
+	// No WEB_HOST: no check.
+	srv := (&wk{fed: good(), keys: `{"keys":[{}]}`}).serve(t)
+	h = (&HomeChecker{URL: srv.URL + "/.well-known/boson.json"}).Check(ctx, "example.org", "", "", true)
+	for _, c := range h.Checks {
+		if c.ID == "web" {
+			t.Fatalf("web check without WEB_HOST: %+v", c)
+		}
 	}
 }

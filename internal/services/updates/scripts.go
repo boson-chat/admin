@@ -229,6 +229,14 @@ if [ "$STACK_RESTORE" = 1 ] && [ -f "$BACKUP_DIR/stack-dir.tgz" ]; then
 			rm -f "$STACK_DIR/$p"
 		done < "$BACKUP_DIR/stack-added.txt"
 	fi
+	# The stack's own records (.boson/) go back to the backup's, including
+	# ones the update created: tar puts back what was there, never removes
+	# what wasn't. A migrations.applied left from the update (the first
+	# stack update creates it) would say its migrations ran on the .env
+	# put back from before them, and the next update would skip them.
+	for f in migrations.applied stack-files.sha256 manifest.json; do
+		rm -f "$STACK_DIR/.boson/$f"
+	done
 	tar xzf "$BACKUP_DIR/stack-dir.tgz" -C "$STACK_DIR"
 	# Services the update added are gone from the compose files again.
 	have=" $(dc config --services 2>/dev/null | tr '\n' ' ') "

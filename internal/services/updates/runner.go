@@ -43,6 +43,7 @@ var (
 	errBreaking  = apperr.New(http.StatusPreconditionRequired, "breaking_unacknowledged", "a release in this update is marked breaking; read it and confirm")
 	errApplyOff  = apperr.New(http.StatusServiceUnavailable, "updates_apply_off", "applying updates is off")
 	errNoRun     = apperr.New(http.StatusNotFound, "not_found", "no such update run, or it can't be rolled back")
+	errNotLatest = apperr.New(http.StatusConflict, "not_latest", "a later update changed the stack since: roll that one back first")
 )
 
 func newID() string {

@@ -53,6 +53,13 @@ func (s *Service) Rollback(ctx context.Context, actor string, req RollbackReques
 		s.runMu.Unlock()
 		return nil, errNoRun
 	}
+	// Only the newest change: an older run's backup has the .env (and
+	// stack files) from before every later update, which would undo
+	// those too while their records stay.
+	if s.laterChange(orig) {
+		s.runMu.Unlock()
+		return nil, errNotLatest
+	}
 	// Only what the update got as far as changing.
 	items := slices.Clone(orig.Items)
 	self := slices.ContainsFunc(items, func(i Item) bool { return i.Self }) && orig.step("self") != nil &&
@@ -89,6 +96,24 @@ func (s *Service) Rollback(ctx context.Context, actor string, req RollbackReques
 	bg := logger.WithLogger(context.WithoutCancel(ctx), log)
 	go s.execRollback(bg, run.ID, req.RestoreData == nil)
 	return out, nil
+}
+
+// laterChange: an update that started after orig changed the stack and
+// wasn't rolled back.
+func (s *Service) laterChange(orig *Run) bool {
+	runs := make([]*Run, 0, len(s.journal.Runs)+1)
+	for _, r := range s.journal.Runs {
+		runs = append(runs, r)
+	}
+	if c := s.journal.Current; c != nil {
+		runs = append(runs, c)
+	}
+	for _, r := range runs {
+		if r.ID != orig.ID && r.Kind == "update" && r.Changed && r.State != StateRolledBack && r.StartedAt.After(orig.StartedAt) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) execRollback(ctx context.Context, runID string, autoData bool) {

@@ -500,3 +500,41 @@ func TestMissingComposeFileFailsPreflight(t *testing.T) {
 		t.Fatal("nothing may change")
 	}
 }
+
+// Two updates, then a rollback of the first: refused, its backup's .env is
+// from before the second too (it would undo that one while its records
+// stay). The newest one rolls back; then the first can.
+func TestRollbackOfAnOlderUpdateIsRefused(t *testing.T) {
+	fs, srv := newStack(t)
+	ctx := context.Background()
+	svc := newService(t, fs, srv, "1.26.0", "")
+	svc.Check(ctx)
+	apply := func(comp string) *updates.Run {
+		t.Helper()
+		if _, err := svc.Apply(ctx, "bob", updates.ApplyRequest{Mode: "selected", Components: []string{comp}}, ""); err != nil {
+			t.Fatal(err)
+		}
+		r := waitRun(t, svc, updates.StateSucceeded, updates.StateFailed)
+		if r.State != updates.StateSucceeded || !r.CanRollback {
+			t.Fatalf("%s update: %+v", comp, r)
+		}
+		return r
+	}
+	first := apply("auth")
+	second := apply("web")
+	if _, err := svc.Rollback(ctx, "bob", updates.RollbackRequest{RunID: first.ID}, ""); err == nil || !strings.Contains(err.Error(), "later update") {
+		t.Fatalf("rollback of the older update: err = %v, want refused", err)
+	}
+	if _, err := svc.Rollback(ctx, "bob", updates.RollbackRequest{RunID: second.ID}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if done := waitRun(t, svc, updates.StateRolledBack, updates.StateRollbackFailed); done.State != updates.StateRolledBack {
+		t.Fatalf("%+v", done)
+	}
+	if _, err := svc.Rollback(ctx, "bob", updates.RollbackRequest{RunID: first.ID}, ""); err != nil {
+		t.Fatalf("the first update after the second was rolled back: %v", err)
+	}
+	if done := waitRun(t, svc, updates.StateRolledBack, updates.StateRollbackFailed); done.State != updates.StateRolledBack {
+		t.Fatalf("%+v", done)
+	}
+}
