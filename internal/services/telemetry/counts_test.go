@@ -14,15 +14,11 @@ import (
 )
 
 type fakeCounter struct {
-	c     *ircstats.Counts
-	err   error
-	calls int
+	c   *ircstats.Counts
+	err error
 }
 
-func (f *fakeCounter) Counts(context.Context) (*ircstats.Counts, error) {
-	f.calls++
-	return f.c, f.err
-}
+func (f *fakeCounter) Counts(context.Context) (*ircstats.Counts, error) { return f.c, f.err }
 
 func authStats(st *authapi.Stats, err error) func(context.Context) (*authapi.Stats, error) {
 	return func(context.Context) (*authapi.Stats, error) { return st, err }
