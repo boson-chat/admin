@@ -135,8 +135,9 @@ func TestSampleIRCWithoutGuestAccess(t *testing.T) {
 	s := newSvc(t, t.TempDir(), c, 0.5, Options{Collector: &Collector{S: Sources{Ergo: ergo,
 		IRC: func(context.Context) *ircprobe.Result { return &ircprobe.Result{OK: true} }}}})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go s.sampleIRC(ctx)
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }() // before TempDir's cleanup: it saves the state
+	go func() { defer close(done); s.sampleIRC(ctx) }()
 	deadline := time.Now().Add(2 * time.Second)
 	for s.peak(now) == nil && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
