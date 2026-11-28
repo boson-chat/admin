@@ -22,6 +22,7 @@ import (
 	"github.com/boson-chat/admin/internal/clients/dockerapi"
 	"github.com/boson-chat/admin/internal/clients/health"
 	"github.com/boson-chat/admin/internal/clients/ircprobe"
+	"github.com/boson-chat/admin/internal/clients/ircstats"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/clients/tlsprobe"
 	"github.com/boson-chat/admin/internal/configfile"
@@ -445,6 +446,16 @@ func buildTelemetry(cfg config.Config, h *handlers.Handlers, stack *stackconfig.
 	}
 	if files != nil {
 		src.Files = files
+	}
+	if up := cfg.UpstreamConfig; up.AuthInternalURL != "" && up.InternalAPIToken != "" {
+		src.AuthStats = authapi.NewStatsClient(up.AuthInternalURL, up.InternalAPIToken, 10*time.Second).Stats
+	}
+	if us.ErgoAPIURL != "" {
+		src.Ergo = ircstats.NewErgo(us.ErgoAPIURL, us.ErgoAPIToken, 10*time.Second)
+	}
+	if us.BridgeAPIURL != "" {
+		// up to 5 s while evrd asks the network for LUSERS
+		src.Bridge = ircstats.NewBridge(us.BridgeAPIURL, us.BridgeToken, 10*time.Second)
 	}
 	return telemetry.New(telemetry.Options{
 		Dir: us.Dir, URL: telemetry.Endpoint(us.URL), EnvOff: telemetry.Off(us.Telemetry),

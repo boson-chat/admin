@@ -114,3 +114,69 @@ admin:
 		}
 	}
 }
+
+// The real wiring reads the account counts from auth's internal stats
+// (X-Internal-Token, no admin visit), and IRC users and registered
+// channels from Ergo's API (bearer ERGO_API_TOKEN), with guest access off
+// so the IRC probe couldn't. Against an auth without the endpoint the
+// counts stay null (no visit yet), and nothing breaks.
+func TestTelemetryCountsFromInternalAPIs(t *testing.T) {
+	for _, withStats := range []bool{true, false} {
+		auth := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			switch {
+			case r.URL.Path == "/v1/config":
+				_ = json.NewEncoder(w).Encode(map[string]any{"registration": "closed"})
+			case r.URL.Path == "/internal/v1/stats" && withStats:
+				if r.Header.Get("X-Internal-Token") != "internal-tok" {
+					w.WriteHeader(nethttp.StatusUnauthorized)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"accounts": 140, "active_7d": 12, "active_30d": 51})
+			default:
+				nethttp.NotFound(w, r)
+			}
+		}))
+		ergo := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			if r.Method != "POST" || r.URL.Path != "/v1/status" || r.Header.Get("Authorization") != "Bearer ergo-tok" {
+				nethttp.Error(w, "no", nethttp.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "users": map[string]any{"total": 8}, "channels": 70, "registered_channels": 64})
+		}))
+		docker := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			labels := map[string]string{"com.docker.compose.project": "boson", "com.docker.compose.service": "ergo"}
+			if r.URL.Path == "/containers/json" {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{"Id": "c1", "Image": "harbor.floret.dev/boson/stack-ergo:2.19.1", "State": "running", "Labels": labels}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "c1", "State": map[string]any{"Status": "running", "Running": true}, "Config": map[string]any{"Labels": labels}})
+		}))
+
+		var cfg config.Config
+		cfg.AppConfig.Version = "1.32.0"
+		cfg.UpstreamConfig = config.UpstreamConfig{AuthURL: auth.URL, AuthInternalURL: auth.URL, InternalAPIToken: "internal-tok", Timeout: 2 * time.Second}
+		cfg.DockerConfig = config.DockerConfig{ProxyURL: docker.URL, Project: "boson", Timeout: 2 * time.Second}
+		cfg.UsageStats = config.UsageStatsConfig{Dir: t.TempDir(), URL: "http://127.0.0.1:1", ErgoAPIURL: ergo.URL, ErgoAPIToken: "ergo-tok",
+			BridgeAPIURL: "http://127.0.0.1:1", BridgeToken: "bridge-tok"}
+		store := configfile.Open(filepath.Join(t.TempDir(), "boson.yaml"), configfile.Options{Header: stackconfig.FileHeader})
+		stack := stackconfig.New(stackconfig.Options{Store: store})
+		ac := authapi.NewAuthClient(auth.URL, 2*time.Second, nil)
+		tel := buildTelemetry(cfg, &handlers.Handlers{Config: stack}, stack, ac, nil, nil, nil, func(string) func(string, int, error, time.Duration) { return nil })
+		b, _ := json.Marshal(tel.Preview(context.Background()))
+		want := `"counts":{"accounts":"101-500","active_7d":"11-50","active_30d":"51-100","irc_peak_24h":"2-10","channels":"51-100"}`
+		if !withStats {
+			want = `"counts":{"accounts":null,"active_7d":null,"active_30d":null,"irc_peak_24h":"2-10","channels":"51-100"}`
+		}
+		if !strings.Contains(string(b), want) {
+			t.Errorf("stats endpoint %v: want %s in\n%s", withStats, want, b)
+		}
+		for _, sec := range []string{"internal-tok", "ergo-tok", "bridge-tok"} {
+			if strings.Contains(string(b), sec) {
+				t.Errorf("the report contains %q", sec)
+			}
+		}
+		auth.Close()
+		ergo.Close()
+		docker.Close()
+	}
+}
