@@ -22,7 +22,12 @@ const base: TelemetryStatus = {
 
 function serve(s: TelemetryStatus) {
 	api.mockImplementation(async (method: string, path: string, body?: { enabled: boolean }) => {
-		if (path === '/telemetry/preview') return { schema: 1, install_id: '3f2a9c0e5b7d41e8a6c2f90b1d4e7a53' };
+		if (path === '/telemetry/preview')
+			return {
+				schema: 1,
+				install_id: '3f2a9c0e5b7d41e8a6c2f90b1d4e7a53',
+				host_size: { cpu_cores: '3-4', ram_gb: '4-8', disk_gb: null, arch: 'amd64' }
+			};
 		if (method === 'PUT') return { ...s, enabled: !!body?.enabled, file_on: !!body?.enabled };
 		return s;
 	});
@@ -74,8 +79,10 @@ describe('usage & health stats card', () => {
 		const pre = await screen.findByTestId('usage-preview');
 		expect(JSON.parse(pre.textContent ?? '')).toEqual({
 			schema: 1,
-			install_id: '3f2a9c0e5b7d41e8a6c2f90b1d4e7a53'
+			install_id: '3f2a9c0e5b7d41e8a6c2f90b1d4e7a53',
+			host_size: { cpu_cores: '3-4', ram_gb: '4-8', disk_gb: null, arch: 'amd64' }
 		});
+		expect(screen.getByText(/is a range too, never the exact figure/)).toBeTruthy();
 		expect(api).toHaveBeenCalledWith('GET', '/telemetry/preview');
 	});
 });

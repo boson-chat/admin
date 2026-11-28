@@ -80,6 +80,8 @@ func TestClient(t *testing.T) {
 				t.Errorf("logs query %v", r.URL.Query())
 			}
 			_, _ = w.Write(frame(1, "2026-11-13T10:00:01Z x\n"))
+		case r.URL.Path == "/info":
+			_, _ = w.Write([]byte(`{"ID":"X","Name":"secret-host","NCPU":4,"MemTotal":8232407040,"Architecture":"x86_64","DockerRootDir":"/var/lib/docker","KernelVersion":"6.8"}`))
 		case r.URL.Path == "/containers/zz/json":
 			w.WriteHeader(404)
 			_, _ = w.Write([]byte(`{"message":"No such container: zz"}`))
@@ -107,6 +109,10 @@ func TestClient(t *testing.T) {
 	lines, err := c.Logs(ctx, "a1", LogOptions{Tail: 50, Since: time.Unix(1763028000, 0)})
 	if err != nil || len(lines) != 1 || lines[0].Text != "x" {
 		t.Fatalf("logs: %v %+v", err, lines)
+	}
+	info, err := c.(*Client).Info(ctx)
+	if err != nil || *info != (Info{NCPU: 4, MemTotal: 8232407040, Architecture: "x86_64", DockerRootDir: "/var/lib/docker"}) {
+		t.Fatalf("info: %v %+v", err, info)
 	}
 	if _, err := c.Inspect(ctx, "zz"); err == nil {
 		t.Fatal("missing container")

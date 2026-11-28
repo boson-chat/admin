@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,6 +23,17 @@ type Report struct {
 	Settings   Settings          `json:"settings"`
 	Health     Health            `json:"health"`
 	UptimeDays *int              `json:"uptime_days"`
+	// HostSize is the host's hardware as buckets (optional in schema 1;
+	// null when nothing about it is known). Never exact values.
+	HostSize *HostSize `json:"host_size"`
+}
+
+// HostSize is host_size: each field a bucket, or null when unknown.
+type HostSize struct {
+	CPUCores *string `json:"cpu_cores"`
+	RAMGB    *string `json:"ram_gb"`
+	DiskGB   *string `json:"disk_gb"`
+	Arch     *string `json:"arch"`
 }
 
 type Stack struct {
@@ -256,6 +268,66 @@ func ircdFrom(version string) string {
 		return "hybrid"
 	}
 	return "other"
+}
+
+// host_size buckets. A bucket includes its upper edge: a "4 GB" server,
+// which reports a little under 4 GiB, is 2-4.
+var (
+	CPUBuckets  = []string{"1", "2", "3-4", "5-8", "9-16", "17-32", "33+"}
+	RAMBuckets  = []string{"<1", "1-2", "2-4", "4-8", "8-16", "16-32", "32-64", "64+"}
+	DiskBuckets = []string{"<25", "25-50", "50-100", "100-250", "250-500", "500-1000", "1000+"}
+)
+
+const gib = 1 << 30
+
+// sizeBucket picks the first bucket whose upper edge v is at or under.
+func sizeBucket(v float64, edges []float64, buckets []string) *string {
+	for i, e := range edges {
+		if v <= e {
+			return &buckets[i]
+		}
+	}
+	return &buckets[len(buckets)-1]
+}
+
+// CPUBucket is the bucket of a CPU count (nil: unknown).
+func CPUBucket(n int) *string {
+	if n <= 0 {
+		return nil
+	}
+	return sizeBucket(float64(n), []float64{1, 2, 4, 8, 16, 32}, CPUBuckets)
+}
+
+// RAMBucket is the bucket of a memory size in bytes, in GiB (nil: unknown).
+func RAMBucket(bytes int64) *string {
+	if bytes <= 0 {
+		return nil
+	}
+	return sizeBucket(float64(bytes)/gib, []float64{1, 2, 4, 8, 16, 32, 64}, RAMBuckets)
+}
+
+// DiskBucket is the bucket of a filesystem size in bytes, in GiB (nil: unknown).
+func DiskBucket(bytes float64) *string {
+	if !(bytes > 0) || math.IsInf(bytes, 0) {
+		return nil
+	}
+	return sizeBucket(bytes/gib, []float64{25, 50, 100, 250, 500, 1000}, DiskBuckets)
+}
+
+// dockerArch maps Docker's Architecture (uname -m) to the arch enum (nil: unknown).
+func dockerArch(a string) *string {
+	var v string
+	switch strings.ToLower(strings.TrimSpace(a)) {
+	case "":
+		return nil
+	case "x86_64", "amd64", "x86-64":
+		v = "amd64"
+	case "aarch64", "arm64", "armv8", "armv8l", "arm64v8":
+		v = "arm64"
+	default:
+		v = "other"
+	}
+	return &v
 }
 
 func archOf(goarch string) string {

@@ -80,6 +80,10 @@ type Sources struct {
 	DirectoryListed func(ctx context.Context) bool
 	// GOARCH of the panel (the host's architecture).
 	GOARCH string
+	// DockerInfo is Docker's GET /info through the socket proxy (host_size's
+	// CPUs, memory and architecture, and where Docker keeps its data). nil,
+	// or an error (a proxy that doesn't allow it), leaves those unknown.
+	DockerInfo func(ctx context.Context) (*dockerapi.Info, error)
 }
 
 // Known is what the panel learned from an admin's own requests (auth's
@@ -143,6 +147,7 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *int) {
 		bridgeC *ircstats.Counts
 		hostH   *Host
 		uptime  *int
+		info    *dockerapi.Info
 		feature Features
 	)
 	if s.Docker != nil {
@@ -175,7 +180,11 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *int) {
 	if s.Prom != nil {
 		safeGo(&wg, func() { hostH, uptime = c.host(ctx) })
 	}
+	if s.DockerInfo != nil {
+		safeGo(&wg, func() { info, _ = s.DockerInfo(ctx) })
+	}
 	wg.Wait()
+	r.HostSize = c.hostSize(ctx, info)
 
 	r.Stack.Version = NormaliseVersion(stackV)
 
@@ -569,6 +578,57 @@ func (c *Collector) host(ctx context.Context) (*Host, *int) {
 	})
 	wg.Wait()
 	return h, uptime
+}
+
+// diskFS: real filesystems, Docker's own mount included (its data root may
+// be on one).
+const diskFS = `fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|nsfs|autofs|proc|sysfs|fuse.*"`
+
+// hostSize is host_size: CPUs, memory and architecture from Docker's
+// /info, the disk from node-exporter (the filesystem holding Docker's data
+// root, else /). Only buckets; null when nothing is known.
+func (c *Collector) hostSize(ctx context.Context, info *dockerapi.Info) *HostSize {
+	hs := &HostSize{}
+	root := "/"
+	if info != nil {
+		hs.CPUCores = CPUBucket(info.NCPU)
+		hs.RAMGB = RAMBucket(info.MemTotal)
+		hs.Arch = dockerArch(info.Architecture)
+		if strings.HasPrefix(info.DockerRootDir, "/") {
+			root = info.DockerRootDir
+		}
+	}
+	if c.S.Prom != nil {
+		if smp, err := c.S.Prom.Query(ctx, `node_filesystem_size_bytes{`+nodeSel+`,`+diskFS+`}`); err == nil {
+			if size, ok := mountFor(smp, root); ok {
+				hs.DiskGB = DiskBucket(size)
+			}
+		}
+	}
+	if hs.CPUCores == nil && hs.RAMGB == nil && hs.DiskGB == nil && hs.Arch == nil {
+		return nil
+	}
+	return hs
+}
+
+// mountFor is the size of the filesystem holding path: the longest mount
+// point that contains it.
+func mountFor(smp []promql.Sample, path string) (float64, bool) {
+	best, size := "", 0.0
+	for _, s := range smp {
+		m := s.Labels["mountpoint"]
+		if m == "" || math.IsNaN(s.Value) || s.Value <= 0 {
+			continue
+		}
+		in := m == "/" || path == m || strings.HasPrefix(path, strings.TrimSuffix(m, "/")+"/")
+		if !in || len(m) < len(best) {
+			continue
+		}
+		if len(m) > len(best) || s.Value > size {
+			best, size = m, s.Value
+		}
+	}
+	return size, best != ""
 }
 
 // uploads counts the files uploaded in the last 24 h: the files service's
