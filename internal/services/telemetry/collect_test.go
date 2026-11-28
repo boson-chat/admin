@@ -112,6 +112,9 @@ func fullSources() Sources {
 	d.cs[4].Labels[dockerapi.LabelVersion] = "v1.8.0"
 	return Sources{
 		Docker: d, Project: "boson", SelfVersion: "1.32.0", GOARCH: "amd64",
+		DockerInfo: func(context.Context) (*dockerapi.Info, error) {
+			return &dockerapi.Info{NCPU: 4, MemTotal: 8 * gib, Architecture: "x86_64", DockerRootDir: "/var/lib/docker"}, nil
+		},
 		StackVersion: func(context.Context) string { return "v1.48.0" },
 		Prom: fakeProm{
 			`up{job="node"}`: 1, "quicvoice_participants": 77.4, "quicvideo_sessions": 0, "pushrelay": 12,
@@ -245,6 +248,10 @@ func TestFullReport(t *testing.T) {
 	if r.UptimeDays == nil || *r.UptimeDays != 41 || r.Health.Healthy {
 		t.Errorf("uptime %v healthy %v", r.UptimeDays, r.Health.Healthy)
 	}
+	// 4 CPUs, 8 GiB, x86_64; the fake VictoriaMetrics has no filesystem sizes.
+	if z := r.HostSize; z == nil || *z.CPUCores != "3-4" || *z.RAMGB != "4-8" || z.DiskGB != nil || *z.Arch != "amd64" {
+		t.Errorf("host_size %+v", z)
+	}
 }
 
 func TestMinimalReport(t *testing.T) {
@@ -295,6 +302,9 @@ func TestReportsValidateAgainstTheSchema(t *testing.T) {
 		"exact count":           func(m map[string]any) { m["counts"].(map[string]any)["accounts"] = "42" },
 		"unknown service":       func(m map[string]any) { m["services"].(map[string]any)["my-own-bot"] = "1.0.0" },
 		"bad version":           func(m map[string]any) { m["stack"].(map[string]any)["version"] = "1.2.3+meta" },
+		"exact memory":          func(m map[string]any) { m["host_size"].(map[string]any)["ram_gb"] = "7.7" },
+		"host_size extra":       func(m map[string]any) { m["host_size"].(map[string]any)["cpu_model"] = "EPYC" },
+		"host_size missing key": func(m map[string]any) { delete(m["host_size"].(map[string]any), "disk_gb") },
 	} {
 		var m map[string]any
 		_ = json.Unmarshal(full, &m)
@@ -322,6 +332,9 @@ var secrets = []string{
 func TestReportHasNoSecretsOrNames(t *testing.T) {
 	s := fullSources()
 	s.Project = "secret-project"
+	s.DockerInfo = func(context.Context) (*dockerapi.Info, error) {
+		return &dockerapi.Info{NCPU: 2, MemTotal: 2 * gib, Architecture: "x86_64", DockerRootDir: "/home/alice/example-secret.org/docker"}, nil
+	}
 	// Every source is full of secrets and names where it can be.
 	d := s.Docker.(*fakeDocker)
 	for i := range d.cs {

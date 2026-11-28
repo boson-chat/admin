@@ -76,6 +76,15 @@ type Inspect struct {
 	} `json:"Config"`
 }
 
+// Info is the part of GET /info the usage stats read: the host's size.
+// Nothing else of it (hostname, kernel, OS, IDs) is decoded.
+type Info struct {
+	NCPU          int    `json:"NCPU"`
+	MemTotal      int64  `json:"MemTotal"`
+	Architecture  string `json:"Architecture"`
+	DockerRootDir string `json:"DockerRootDir"`
+}
+
 // Stats is a computed resource snapshot.
 type Stats struct {
 	CPUPercent  float64 `json:"cpu_percent"`
@@ -208,6 +217,16 @@ func idPath(id string) string { return "/containers/" + url.PathEscape(id) }
 func (c *Client) Inspect(ctx context.Context, id string) (*Inspect, error) {
 	var out Inspect
 	if err := c.getJSON(ctx, "inspect", idPath(id)+"/json", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Info reads GET /info (the proxy must allow it; an older stack's doesn't,
+// which is an error here).
+func (c *Client) Info(ctx context.Context) (*Info, error) {
+	var out Info
+	if err := c.getJSON(ctx, "info", "/info", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

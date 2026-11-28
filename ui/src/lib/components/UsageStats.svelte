@@ -94,7 +94,7 @@
 			<div class="row">
 				<Toggle
 					label="Send usage & health stats"
-					detail="One small anonymous report a day, and one after each update. Counts are sent as ranges (11–50), never exact numbers."
+					detail="One small anonymous report a day, and one after each update. Counts and the server’s size are sent as ranges (11–50 accounts, 4–8 GB of memory), never exact numbers."
 					disabled={!status || !canSave || saving}
 					bind:checked={on}
 					onchange={toggle}
@@ -154,7 +154,9 @@
 	<div class="preview">
 		<p class="hint">
 			The next report, exactly as it would go to <code>{endpointHost(status?.endpoint)}</code>. It is built
-			when it’s sent, so the numbers can change by then.
+			when it’s sent, so the numbers can change by then. The server’s size (<code>host_size</code>: CPU cores,
+			memory, disk and architecture) is a range too, never the exact figure; <code>null</code> is a value the
+			panel couldn’t read.
 			{#if installID}
 				To have this install’s reports deleted, email <a href="mailto:hi@boson.chat">hi@boson.chat</a> with
 				its ID <code class="id">{installID}</code>.

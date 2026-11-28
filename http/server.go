@@ -431,7 +431,14 @@ func buildTelemetry(cfg config.Config, h *handlers.Handlers, stack *stackconfig.
 		},
 	}
 	if dc.ProxyURL != "" {
-		src.Docker = dockerapi.NewDockerClient(dc.ProxyURL, min(dc.Timeout, 10*time.Second), upstream("docker"))
+		d := dockerapi.NewDockerClient(dc.ProxyURL, min(dc.Timeout, 10*time.Second), upstream("docker"))
+		src.Docker = d
+		// host_size: GET /info, where the stack's docker-proxy allows it.
+		if ic, ok := d.(interface {
+			Info(context.Context) (*dockerapi.Info, error)
+		}); ok {
+			src.DockerInfo = ic.Info
+		}
 	}
 	if prom != nil {
 		src.Prom = prom

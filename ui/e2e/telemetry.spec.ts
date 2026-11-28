@@ -46,6 +46,7 @@ test('the first report went out, valid, with nothing identifying in it', async (
 			'counts',
 			'features',
 			'health',
+			'host_size',
 			'install',
 			'install_id',
 			'profiles',
@@ -57,6 +58,13 @@ test('the first report went out, valid, with nothing identifying in it', async (
 			'uptime_days'
 		].sort()
 	);
+	// host_size: buckets (or null) from the proxy's GET /info, never exact figures.
+	const hs = r.host_size as Record<string, string | null> | null;
+	if (hs) {
+		expect(Object.keys(hs).sort()).toEqual(['arch', 'cpu_cores', 'disk_gb', 'ram_gb']);
+		expect([null, '1', '2', '3-4', '5-8', '9-16', '17-32', '33+']).toContain(hs.cpu_cores);
+		expect([null, 'amd64', 'arm64', 'other']).toContain(hs.arch);
+	}
 	const text = JSON.stringify(r);
 	for (const s of ['Example Chat', 'localhost', '127.0.0.1', 'admin@', 'e2e']) expect(text).not.toContain(s);
 	// The ID is kept in the data dir, readable by the panel only.

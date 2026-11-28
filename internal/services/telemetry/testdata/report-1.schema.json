@@ -87,6 +87,14 @@
                       "mem_p95": { "$ref": "#/$defs/pct" }, "disk_used": { "$ref": "#/$defs/pct" },
                       "load_per_cpu": { "$ref": "#/$defs/pct" } } }] },
                   "healthy": { "type": "boolean" } } },
-    "uptime_days": { "type": ["integer", "null"], "minimum": 0, "maximum": 3650 }
+    "uptime_days": { "type": ["integer", "null"], "minimum": 0, "maximum": 3650 },
+    "host_size": { "oneOf": [{ "type": "null" }, {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpu_cores", "ram_gb", "disk_gb", "arch"],
+      "properties": {
+        "cpu_cores": { "enum": ["1", "2", "3-4", "5-8", "9-16", "17-32", "33+", null] },
+        "ram_gb": { "enum": ["<1", "1-2", "2-4", "4-8", "8-16", "16-32", "32-64", "64+", null] },
+        "disk_gb": { "enum": ["<25", "25-50", "50-100", "100-250", "250-500", "500-1000", "1000+", null] },
+        "arch": { "enum": ["amd64", "arm64", "other", null] } } }] }
   }
 }
