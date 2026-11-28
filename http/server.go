@@ -254,7 +254,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) (*App, error) {
 		}
 	}
 	fedSvc := federation.New(federation.Options{AuthVersion: authVersion, Client: fedClient, Tokens: adminSvc, Config: stack,
-		Home: &federation.HomeChecker{Domain: cfg.HomeDomain(), URL: bc.WellKnownURL, HTTP: &nethttp.Client{Timeout: min(up.Timeout, 5*time.Second)}}})
+		Home: &federation.HomeChecker{Domain: cfg.HomeDomain(), URL: bc.WellKnownURL, WebHost: up.WebHost, HTTP: &nethttp.Client{Timeout: min(up.Timeout, 5*time.Second)}}})
 	h.Federation = fedSvc
 	stack.AddCheck("auth.federation.", fedSvc.Check)
 	if bc.DirectoryLocalURL != "" {
