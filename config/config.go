@@ -43,6 +43,16 @@ type UsageStatsConfig struct {
 	Dir string `env:"TELEMETRY_DIR"`
 	// Overrides the 5–15 min before the first report (tests).
 	StartDelay time.Duration `env:"TELEMETRY_START_DELAY"`
+	// Ergo's HTTP API (irc profile) and its bearer token: IRC users
+	// connected now and registered channels (POST /v1/status). Empty = not
+	// asked.
+	ErgoAPIURL   string `env:"ERGO_API_URL"`
+	ErgoAPIToken string `env:"ERGO_API_TOKEN"`
+	// The bridge's (evrd) managed API (bridge profile) and its token: the
+	// network's users and channels from LUSERS (GET /api/managed/stats).
+	// Empty = not asked.
+	BridgeAPIURL string `env:"BRIDGE_API_URL"`
+	BridgeToken  string `env:"BRIDGE_TOKEN"`
 }
 
 // UpdatesConfig is the Updates page: release checks against GitHub and the
@@ -314,6 +324,8 @@ func (c *Config) ApplyDefaults() {
 	}
 	t := &c.UsageStats
 	t.URL = trim(t.URL)
+	t.ErgoAPIURL, t.ErgoAPIToken = trim(t.ErgoAPIURL), strings.TrimSpace(t.ErgoAPIToken)
+	t.BridgeAPIURL, t.BridgeToken = trim(t.BridgeAPIURL), strings.TrimSpace(t.BridgeToken)
 	if strings.TrimSpace(t.Dir) == "" {
 		t.Dir = strings.TrimSpace(c.UpdatesConfig.StateDir)
 	}

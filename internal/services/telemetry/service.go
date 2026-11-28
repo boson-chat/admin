@@ -60,11 +60,13 @@ const (
 	SendTimeout = 10 * time.Second
 	// BuildTimeout bounds collecting a report (auth, Docker, VictoriaMetrics…).
 	BuildTimeout = 30 * time.Second
-	// IRCSampleEvery: how often the IRC user count is sampled for the 24 h peak.
-	IRCSampleEvery = 15 * time.Minute
 	// KnownRefresh: how often an admin's visit refreshes the account counts.
 	KnownRefresh = 12 * time.Hour
 )
+
+// IRCSampleEvery: how often the IRC user count is sampled for the 24 h
+// peak (a var for tests).
+var IRCSampleEvery = 15 * time.Minute
 
 // Off reports whether an env value turns the report off.
 func Off(v string) bool {
@@ -507,20 +509,11 @@ func (s *Service) build(ctx context.Context, reason string) *Report {
 	id := s.installIDLocked()
 	known := s.st.Known
 	s.mu.Unlock()
-	r, irc := s.o.Collector.Build(bctx, Input{InstallID: id, Reason: reason, Now: now, Known: known, IRCPeak: s.peak(now)})
-	if irc != nil && irc.Users != nil {
-		// This probe is a sample too.
-		s.addSample(now, *irc.Users)
-		r.Counts.IRCPeak24h = bucketOrNil(s.peak(now))
+	r, users := s.o.Collector.Build(bctx, Input{InstallID: id, Reason: reason, Now: now, Known: known, IRCPeak: s.peak(now)})
+	if users != nil {
+		s.addSample(now, *users) // this count is a sample too (Build counted it in the peak)
 	}
 	return r
-}
-
-func bucketOrNil(n *int) *string {
-	if n == nil {
-		return nil
-	}
-	return bucketPtr(int64(*n))
 }
 
 // Preview is the next report exactly as it would be sent now.
@@ -579,8 +572,8 @@ func (s *Service) peak(now time.Time) *int {
 }
 
 func (s *Service) sampleIRC(ctx context.Context) {
-	irc := s.o.Collector.S.IRC
-	if irc == nil {
+	src := s.o.Collector.S
+	if src.IRC == nil && src.Ergo == nil && src.Bridge == nil {
 		return
 	}
 	t := time.NewTicker(IRCSampleEvery)
@@ -598,8 +591,8 @@ func (s *Service) sampleIRC(ctx context.Context) {
 			defer func() { _ = recover() }()
 			pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			if r := irc(pctx); r != nil && r.Users != nil {
-				s.addSample(s.o.Now(), *r.Users)
+			if n := s.o.Collector.UsersNow(pctx); n != nil {
+				s.addSample(s.o.Now(), *n)
 			}
 		}()
 	}

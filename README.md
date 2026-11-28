@@ -378,6 +378,8 @@ stack's `.env` and recreate the service.
 | `TELEMETRY` | – (on) | `off` (also `false`, `0`, `no`) turns the usage & health stats report off; wins over `admin.telemetry` and the Settings switch, which shows off and locked |
 | `TELEMETRY_URL` | `https://telemetry.boson.chat` | the receiver's base URL; `/v1/report` is appended |
 | `TELEMETRY_DIR` | `UPDATES_STATE_DIR` | where `telemetry-id` (the install ID) and `telemetry.json` (last send, counts) are kept, mode 0600. Neither set = in memory (a new ID every start) |
+| `ERGO_API_URL`, `ERGO_API_TOKEN` | – | Ergo's HTTP API and its bearer token: IRC users now and registered channels for the usage & health stats (`POST /v1/status`). Empty = not asked |
+| `BRIDGE_API_URL`, `BRIDGE_TOKEN` | – | the bridge's (evrd) managed API and its token: the network's users and channels (`GET /api/managed/stats`) for the usage & health stats on an add-on install. Empty = not asked |
 | `BOSON_API_URL` | – | the stack's boson API (`http://api:3000`), for users' boson profiles. Empty = profiles off |
 | `BOSON_API_INTERNAL_URL` | – | the api's internal listener (`http://api:3001`): the Nick registration page's status and Test connection. Empty = the page says the api isn't reachable (settings still save to the file) |
 | `BOSON_API_INTERNAL_TOKEN` | – | the api's `INTERNAL_API_TOKEN`, sent as `X-Internal-Token` |
@@ -791,14 +793,22 @@ the receiver keeps) is the stack's `docs/telemetry.md` (schema 1);
   has passed), and about 5 minutes after an update or a rollback finishes.
   A failed send is never retried before the next scheduled one; it runs in
   its own goroutine with a 10 s timeout and is logged at debug level only.
-- **Account counts** come from auth's admin API, which needs a signed-in
-  admin's token: while someone with `users.view` uses the panel, it reads them
-  in the background at most every 12 h (and guest access with
-  `settings.manage`). Without a recent read they are `null`.
-  `settings.guest_first` is the file's `auth.guest_first`, else what auth
-  reported (`null` on an auth without the setting). `counts.channels`
-  (registered channels) is always `null`: nothing the panel can read
-  reports it yet.
+- **Account counts** come from auth's internal `GET /internal/v1/stats`
+  (`AUTH_INTERNAL_URL` with `INTERNAL_API_TOKEN` in `X-Internal-Token`) on
+  every report. On an auth without it they fall back to auth's admin API,
+  which needs a signed-in admin's token: while someone with `users.view`
+  uses the panel, it reads them in the background at most every 12 h (and
+  guest access with `settings.manage`); without a read in the last 7 days
+  they are `null`. `settings.guest_first` is the file's `auth.guest_first`,
+  else what auth reported (`null` on an auth without the setting).
+- **IRC users and channels** come from Ergo's HTTP API on a fresh install
+  (`ERGO_API_URL`, bearer `ERGO_API_TOKEN`: `POST /v1/status`, users now
+  and the stack's patched Ergo's `registered_channels`) and from the
+  bridge's managed API on an add-on install (`BRIDGE_API_URL`, bearer
+  `BRIDGE_TOKEN`: evrd's `GET /api/managed/stats`, the network's LUSERS).
+  Users are sampled every 15 minutes for the 24 h peak; when the API has
+  no count, the IRC check's LUSERS is used, which needs guest access.
+  `counts.channels` is `null` when the API doesn't say.
 - **Off:** the Settings switch (`admin.telemetry: false` in
   `config/boson.yaml`, live), or `TELEMETRY=off` in the panel's env, which
   wins and locks the switch. Turning it off sends nothing to say so.

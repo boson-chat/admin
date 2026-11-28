@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"github.com/boson-chat/admin/internal/clients/bosonapi"
 	"github.com/boson-chat/admin/internal/clients/dockerapi"
 	"github.com/boson-chat/admin/internal/clients/ircprobe"
+	"github.com/boson-chat/admin/internal/clients/ircstats"
 	"github.com/boson-chat/admin/internal/clients/promql"
 	"github.com/boson-chat/admin/internal/services/updates"
 )
@@ -35,6 +37,12 @@ type Files interface {
 	List(ctx context.Context, q bosonapi.FilesQuery) (*bosonapi.FilePage, error)
 }
 
+// IRCCounter is an IRC-side API that says how big the network is now
+// (Ergo's HTTP API, the bridge's managed API).
+type IRCCounter interface {
+	Counts(ctx context.Context) (*ircstats.Counts, error)
+}
+
 // Sources are where a report's values come from. Each is optional: nil
 // means unknown (null in the report, or the schema's default).
 type Sources struct {
@@ -46,8 +54,20 @@ type Sources struct {
 	StackVersion func(ctx context.Context) string
 	// Prom is the stack's VictoriaMetrics (METRICS_URL); nil = metrics off.
 	Prom Prom
-	// IRC probes IRC_CHECK and reads LUSERS (nil = no IRC check).
+	// IRC probes IRC_CHECK and reads LUSERS (nil = no IRC check). It
+	// can't register without guest access: Ergo and Bridge come first for
+	// the user count.
 	IRC func(ctx context.Context) *ircprobe.Result
+	// AuthStats is auth's GET /internal/v1/stats (account counts with the
+	// internal token). nil, or an error (an auth without it), falls back to
+	// what an admin's visit read (Input.Known).
+	AuthStats func(ctx context.Context) (*authapi.Stats, error)
+	// Ergo is Ergo's HTTP API (irc profile): users now and registered
+	// channels. Bridge is evrd's managed API (bridge profile): the
+	// network's users and channels from LUSERS. nil = not configured. The
+	// one for the install's mode is used.
+	Ergo   IRCCounter
+	Bridge IRCCounter
 	// PublicConfig is auth's GET /v1/config (registration, sign-in
 	// providers, email).
 	PublicConfig func(ctx context.Context) (*authapi.PublicConfig, error)
@@ -98,8 +118,9 @@ type svcInfo struct {
 }
 
 // Build assembles a report. It never fails: what can't be read is null or
-// the schema's "unknown".
-func (c *Collector) Build(ctx context.Context, in Input) (*Report, *ircprobe.Result) {
+// the schema's "unknown". It also returns how many IRC users are connected
+// now (nil = unknown), a sample for the 24 h peak.
+func (c *Collector) Build(ctx context.Context, in Input) (*Report, *int) {
 	s := c.S
 	r := &Report{
 		Schema: 1, InstallID: in.InstallID, Reason: in.Reason,
@@ -117,6 +138,9 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *ircprobe.Res
 		runs    []updates.RunSummary
 		listed  bool
 		stackV  string
+		authSt  *authapi.Stats
+		ergoC   *ircstats.Counts
+		bridgeC *ircstats.Counts
 		hostH   *Host
 		uptime  *int
 		feature Features
@@ -129,6 +153,15 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *ircprobe.Res
 	}
 	if s.PublicConfig != nil {
 		safeGo(&wg, func() { pub, _ = s.PublicConfig(ctx) })
+	}
+	if s.AuthStats != nil {
+		safeGo(&wg, func() { authSt, _ = s.AuthStats(ctx) })
+	}
+	if s.Ergo != nil {
+		safeGo(&wg, func() { ergoC, _ = s.Ergo.Counts(ctx) })
+	}
+	if s.Bridge != nil {
+		safeGo(&wg, func() { bridgeC, _ = s.Bridge.Counts(ctx) })
 	}
 	if s.Runs != nil {
 		safeGo(&wg, func() { runs = s.Runs(ctx) })
@@ -192,17 +225,45 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *ircprobe.Res
 		r.Install.IRCd = ircdFrom(ircVersion)
 	}
 
-	// Counts.
-	if k := in.Known; k != nil && in.Now.Sub(k.At) <= c.maxAge() {
+	// Counts: auth's internal stats, else what an admin's visit read.
+	if authSt != nil {
+		r.Counts.Accounts = bucketPtr(authSt.Accounts)
+		r.Counts.Active7d = bucketPtr(authSt.Active7d)
+		r.Counts.Active30d = bucketPtr(authSt.Active30d)
+	} else if k := in.Known; k != nil && in.Now.Sub(k.At) <= c.maxAge() {
 		r.Counts.Accounts = bucketOf(k.Accounts)
 		r.Counts.Active7d = bucketOf(k.Active7d)
 		r.Counts.Active30d = bucketOf(k.Active30d)
 	}
-	if in.IRCPeak != nil {
-		r.Counts.IRCPeak24h = bucketPtr(int64(*in.IRCPeak))
+	// IRC users now and channels: from the API of the install's mode
+	// (Ergo's registered channels; the bridge's channels formed), the IRC
+	// probe's LUSERS for users when that has none.
+	var ircC *ircstats.Counts
+	switch r.Install.Mode {
+	case "addon":
+		ircC = bridgeC
+	case "fresh":
+		ircC = ergoC
+	default:
+		ircC = cmp.Or(ergoC, bridgeC)
 	}
-	// counts.channels is the registered channels: neither Ergo's LUSERS
-	// (channels formed) nor auth says how many, so it stays null.
+	var usersNow *int
+	if ircC != nil {
+		usersNow = ircC.Users
+		if ircC.Channels != nil {
+			r.Counts.Channels = bucketPtr(int64(*ircC.Channels))
+		}
+	}
+	if usersNow == nil && irc != nil {
+		usersNow = irc.Users
+	}
+	peak := in.IRCPeak
+	if usersNow != nil && (peak == nil || *usersNow > *peak) {
+		peak = usersNow
+	}
+	if peak != nil {
+		r.Counts.IRCPeak24h = bucketPtr(int64(*peak))
+	}
 
 	// Features (24 h), from VictoriaMetrics and the files service.
 	if s.Prom != nil {
@@ -295,7 +356,27 @@ func (c *Collector) Build(ctx context.Context, in Input) (*Report, *ircprobe.Res
 		}
 	}
 	r.Health.Healthy = healthy
-	return r, irc
+	return r, usersNow
+}
+
+// UsersNow is how many IRC users are connected now: Ergo's API, else the
+// bridge's, else the IRC probe's LUSERS (which needs guest access). nil =
+// unknown.
+func (c *Collector) UsersNow(ctx context.Context) *int {
+	for _, api := range []IRCCounter{c.S.Ergo, c.S.Bridge} {
+		if api == nil {
+			continue
+		}
+		if n, err := api.Counts(ctx); err == nil && n.Users != nil {
+			return n.Users
+		}
+	}
+	if c.S.IRC != nil {
+		if r := c.S.IRC(ctx); r != nil {
+			return r.Users
+		}
+	}
+	return nil
 }
 
 func (c *Collector) maxAge() time.Duration {
